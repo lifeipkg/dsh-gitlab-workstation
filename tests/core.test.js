@@ -694,9 +694,16 @@ function runtimeWithPrompt(prompt, options = {}) {
         sessions.set(sessionId, { running: false, events: [] });
         return { sessionId };
       }
+      if (method === 'projections') {
+        if (calls.failProjections) throw new Error('projection unavailable');
+        if (calls.projectionResponse !== undefined) return calls.projectionResponse;
+        const session = sessions.get(request.sessionId);
+        return session ? { kind: 'sequenced', asOfSeq: session.events.length, values: { title: session.title } } : null;
+      }
       if (method === 'rename') {
         calls.renames.push(request);
-        return {};
+        sessions.get(request.sessionId).title = request.title;
+        return { title: request.title, seq: 1 };
       }
       if (method === 'selectModel') {
         calls.modelSelections.push(request);
@@ -816,6 +823,7 @@ test('a failed prompt reuses its pending session on the next dispatch', async ()
   const [todo] = normalizeTodos([sessionTodo]);
   runtime.state.todos = [todo];
   const failed = await runtime.dispatchById(todo.id);
+  assert.equal(runtime.state.pending[todo.id].sessionTitle, 'TODO-issue-7');
   const retried = await runtime.dispatchById(todo.id);
   assert.equal(failed.ok, false);
   assert.equal(retried.ok, true);
@@ -823,6 +831,81 @@ test('a failed prompt reuses its pending session on the next dispatch', async ()
   assert.equal(calls.prompt, 2);
   assert.equal(retried.sessionId, 'session-1');
   assert.equal(runtime.state.pending[todo.id], undefined);
+});
+
+test('legacy pending retry preserves the actual Host title without creating or renaming', async () => {
+  for (const extra of [{}, { sessionTitle: '[协助]-issue-7-note-10' }, { reused: true }, { routed: true, routeMode: 'queue' }]) {
+    const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
+    const [todo] = normalizeTodos([directNoteTodo]);
+    calls.sessions.set('legacy-session', { running: false, title: '[协助]-issue-7-note-10', events: [] });
+    runtime.state.pending[todo.id] = { sessionId: 'legacy-session', requestId: 'legacy-request', createdAt: Date.now(), item: todo, ...extra };
+    const result = await runtime.dispatch(todo);
+    assert.equal(result.ok, true);
+    assert.equal(calls.create, 0);
+    assert.deepEqual(calls.renames, []);
+    assert.equal(runtime.state.handled[todo.id].sessionTitle, '[协助]-issue-7-note-10');
+    await runtime.stop();
+  }
+});
+
+test('legacy pending retry with an unavailable title does not invent the new prefix', async () => {
+  const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
+  const [todo] = normalizeTodos([directNoteTodo]);
+  calls.sessions.set('legacy-session', { running: false, events: [] });
+  calls.failProjections = true;
+  runtime.state.pending[todo.id] = { sessionId: 'legacy-session', requestId: 'legacy-request', createdAt: Date.now(), item: todo };
+  const result = await runtime.dispatch(todo);
+  assert.equal(result.ok, true);
+  assert.equal(runtime.state.handled[todo.id].sessionTitle, '');
+  assert.equal(calls.create, 0);
+  assert.deepEqual(calls.renames, []);
+  await runtime.stop();
+});
+
+test('legacy pending does not treat migration hints or malformed projections as exact titles', async () => {
+  for (const response of [
+    { kind: 'migration-required', values: { title: 'Stale cached title' } },
+    { kind: 'sequenced', asOfSeq: -1, values: { title: 'Invalid cut title' } },
+    { kind: 'sequenced', asOfSeq: 1, values: { title: 42 } },
+  ]) {
+    const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
+    const [todo] = normalizeTodos([directNoteTodo]);
+    calls.sessions.set('legacy-session', { running: false, events: [] });
+    calls.projectionResponse = response;
+    runtime.state.pending[todo.id] = { sessionId: 'legacy-session', requestId: 'legacy-request', createdAt: Date.now(), item: todo };
+    assert.equal((await runtime.dispatch(todo)).ok, true);
+    assert.equal(runtime.state.handled[todo.id].sessionTitle, '');
+    assert.equal(calls.create, 0);
+    assert.deepEqual(calls.renames, []);
+    await runtime.stop();
+  }
+});
+
+test('pending reconciliation preserves a known title and leaves an unknown title empty', async () => {
+  const { runtime } = runtimeWithPrompt(async () => ({ accepted: true }));
+  const [todo] = normalizeTodos([directNoteTodo]);
+  const pending = { sessionId: 'legacy-session', requestId: 'legacy-request', createdAt: 1000, item: todo };
+  const record = runtime.materializePendingRecord(todo.id, pending, { projections: { values: { title: '[协助]-issue-7-note-10' } } });
+  assert.equal(record.sessionTitle, '[协助]-issue-7-note-10');
+  const unknown = runtime.materializePendingRecord(todo.id, { ...pending, sessionId: 'different-session' });
+  assert.equal(unknown.sessionTitle, '');
+  const saved = runtime.materializePendingRecord(todo.id, { ...pending, sessionTitle: 'Saved old title' });
+  assert.equal(saved.sessionTitle, 'Saved old title');
+  await runtime.stop();
+});
+
+test('a failed rename does not journal an unconfirmed new title for pending retry', async () => {
+  const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
+  const [todo] = normalizeTodos([directNoteTodo]);
+  runtime.host.renameSession = async () => { throw new Error('rename unavailable'); };
+  const failed = await runtime.dispatch(todo);
+  assert.equal(failed.ok, false);
+  assert.equal(runtime.state.pending[todo.id].sessionTitle || '', '');
+  const retried = await runtime.dispatch(todo);
+  assert.equal(retried.ok, true);
+  assert.equal(calls.create, 1);
+  assert.equal(runtime.state.handled[todo.id].sessionTitle, '');
+  await runtime.stop();
 });
 
 test('non-mention MR dispatch marks GitLab done without a Session and survives reload', async () => {
