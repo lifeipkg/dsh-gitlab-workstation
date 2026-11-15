@@ -255,17 +255,32 @@ test('prompt identifies the todo as data and defers mark-as-done until completio
   assert.match(prompt, /other-user/);
 });
 
-test('session titles identify the target type, id and note', () => {
+test('session titles identify the target type, id and note with the TODO prefix', () => {
   const title = (url, extra = {}) => buildSessionTitle(normalizeTodos([{ ...sessionTodo, ...extra, target_url: url }])[0]);
-  assert.equal(title('https://gitlab.local/g/p/-/issues/7#note_10'), '[协助]-issue-7-note-10');
-  assert.equal(title('https://gitlab.local/g/p/-/issues/7'), '[协助]-issue-7');
-  assert.equal(title('https://gitlab.local/g/p/-/work_items/186#note_136301'), '[协助]-workitem-186-note-136301');
-  assert.equal(title('https://gitlab.local/g/p/-/merge_requests/1002#note_132985'), '[协助]-mr-1002-note-132985');
-  assert.equal(title('https://gitlab.local/g/p/-/epics/12'), '[协助]-epic-12');
+  assert.equal(title('https://gitlab.local/g/p/-/issues/7#note_10'), 'TODO-issue-7-note-10');
+  assert.equal(title('https://gitlab.local/g/p/-/issues/7'), 'TODO-issue-7');
+  assert.equal(title('https://gitlab.local/g/p/-/work_items/186#note_136301'), 'TODO-workitem-186-note-136301');
+  assert.equal(title('https://gitlab.local/g/p/-/merge_requests/1002#note_132985'), 'TODO-mr-1002-note-132985');
+  assert.equal(title('https://gitlab.local/g/p/-/epics/12'), 'TODO-epic-12');
   // 非标准路径：退回 URL 最后两段。
-  assert.equal(title('https://gitlab.local/g/p/snippets/99'), '[协助]-snippets-99');
+  assert.equal(title('https://gitlab.local/g/p/snippets/99'), 'TODO-snippets-99');
   // 无 URL：退回 todo id。
-  assert.equal(title('', { target: {} }), `[协助]-todo-${sessionTodo.id}`);
+  assert.equal(title('', { target: {} }), `TODO-todo-${sessionTodo.id}`);
+});
+
+test('new TODO titles do not migrate legacy stored session titles or history', () => {
+  const state = initialState();
+  state.handled.legacy = {
+    sessionId: 'legacy-session', sessionTitle: '[协助]-issue-7-note-10-续1', round: 2,
+    acceptedAt: 1000, automatic: true, routed: false,
+    history: [{ sessionId: 'legacy-history', sessionTitle: '[协助]-issue-7-note-10', round: 1 }],
+  };
+  const restored = normalizeState(JSON.parse(JSON.stringify(state)));
+  assert.equal(restored.handled.legacy.sessionTitle, '[协助]-issue-7-note-10-续1');
+  assert.equal(restored.handled.legacy.history[0].sessionTitle, '[协助]-issue-7-note-10');
+  const [todo] = normalizeTodos([directNoteTodo]);
+  assert.equal(buildSessionTitle(todo, 2), 'TODO-issue-7-note-10-续1');
+  assert.equal(state.handled.legacy.sessionTitle, '[协助]-issue-7-note-10-续1');
 });
 
 test('handled projection lists session rows and skipped rows together (merged tabs)', () => {
@@ -679,9 +694,16 @@ function runtimeWithPrompt(prompt, options = {}) {
         sessions.set(sessionId, { running: false, events: [] });
         return { sessionId };
       }
+      if (method === 'projections') {
+        if (calls.failProjections) throw new Error('projection unavailable');
+        if (calls.projectionResponse !== undefined) return calls.projectionResponse;
+        const session = sessions.get(request.sessionId);
+        return session ? { kind: 'sequenced', asOfSeq: session.events.length, values: { title: session.title } } : null;
+      }
       if (method === 'rename') {
         calls.renames.push(request);
-        return {};
+        sessions.get(request.sessionId).title = request.title;
+        return { title: request.title, seq: 1 };
       }
       if (method === 'selectModel') {
         calls.modelSelections.push(request);
@@ -786,7 +808,7 @@ test('dispatch resolves workspaceId and applies the fixed model before prompting
   assert.equal(result.ok, true);
   assert.deepEqual(calls.createRequests, [{ workspaceId: 'workspace-work' }]);
   assert.deepEqual(calls.modelSelections, [{ sessionId: 'session-1', provider: 'deepseek', model: 'deepseek-chat' }]);
-  assert.deepEqual(calls.renames, [{ sessionId: 'session-1', title: '[协助]-issue-7' }]);
+  assert.deepEqual(calls.renames, [{ sessionId: 'session-1', title: 'TODO-issue-7' }]);
   const methods = calls.invocations.map((call) => call.method);
   assert.ok(methods.indexOf('create') < methods.indexOf('selectModel'));
   assert.ok(methods.indexOf('selectModel') < methods.indexOf('prompt'));
@@ -801,6 +823,7 @@ test('a failed prompt reuses its pending session on the next dispatch', async ()
   const [todo] = normalizeTodos([sessionTodo]);
   runtime.state.todos = [todo];
   const failed = await runtime.dispatchById(todo.id);
+  assert.equal(runtime.state.pending[todo.id].sessionTitle, 'TODO-issue-7');
   const retried = await runtime.dispatchById(todo.id);
   assert.equal(failed.ok, false);
   assert.equal(retried.ok, true);
@@ -808,6 +831,81 @@ test('a failed prompt reuses its pending session on the next dispatch', async ()
   assert.equal(calls.prompt, 2);
   assert.equal(retried.sessionId, 'session-1');
   assert.equal(runtime.state.pending[todo.id], undefined);
+});
+
+test('legacy pending retry preserves the actual Host title without creating or renaming', async () => {
+  for (const extra of [{}, { sessionTitle: '[协助]-issue-7-note-10' }, { reused: true }, { routed: true, routeMode: 'queue' }]) {
+    const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
+    const [todo] = normalizeTodos([directNoteTodo]);
+    calls.sessions.set('legacy-session', { running: false, title: '[协助]-issue-7-note-10', events: [] });
+    runtime.state.pending[todo.id] = { sessionId: 'legacy-session', requestId: 'legacy-request', createdAt: Date.now(), item: todo, ...extra };
+    const result = await runtime.dispatch(todo);
+    assert.equal(result.ok, true);
+    assert.equal(calls.create, 0);
+    assert.deepEqual(calls.renames, []);
+    assert.equal(runtime.state.handled[todo.id].sessionTitle, '[协助]-issue-7-note-10');
+    await runtime.stop();
+  }
+});
+
+test('legacy pending retry with an unavailable title does not invent the new prefix', async () => {
+  const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
+  const [todo] = normalizeTodos([directNoteTodo]);
+  calls.sessions.set('legacy-session', { running: false, events: [] });
+  calls.failProjections = true;
+  runtime.state.pending[todo.id] = { sessionId: 'legacy-session', requestId: 'legacy-request', createdAt: Date.now(), item: todo };
+  const result = await runtime.dispatch(todo);
+  assert.equal(result.ok, true);
+  assert.equal(runtime.state.handled[todo.id].sessionTitle, '');
+  assert.equal(calls.create, 0);
+  assert.deepEqual(calls.renames, []);
+  await runtime.stop();
+});
+
+test('legacy pending does not treat migration hints or malformed projections as exact titles', async () => {
+  for (const response of [
+    { kind: 'migration-required', values: { title: 'Stale cached title' } },
+    { kind: 'sequenced', asOfSeq: -1, values: { title: 'Invalid cut title' } },
+    { kind: 'sequenced', asOfSeq: 1, values: { title: 42 } },
+  ]) {
+    const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
+    const [todo] = normalizeTodos([directNoteTodo]);
+    calls.sessions.set('legacy-session', { running: false, events: [] });
+    calls.projectionResponse = response;
+    runtime.state.pending[todo.id] = { sessionId: 'legacy-session', requestId: 'legacy-request', createdAt: Date.now(), item: todo };
+    assert.equal((await runtime.dispatch(todo)).ok, true);
+    assert.equal(runtime.state.handled[todo.id].sessionTitle, '');
+    assert.equal(calls.create, 0);
+    assert.deepEqual(calls.renames, []);
+    await runtime.stop();
+  }
+});
+
+test('pending reconciliation preserves a known title and leaves an unknown title empty', async () => {
+  const { runtime } = runtimeWithPrompt(async () => ({ accepted: true }));
+  const [todo] = normalizeTodos([directNoteTodo]);
+  const pending = { sessionId: 'legacy-session', requestId: 'legacy-request', createdAt: 1000, item: todo };
+  const record = runtime.materializePendingRecord(todo.id, pending, { projections: { values: { title: '[协助]-issue-7-note-10' } } });
+  assert.equal(record.sessionTitle, '[协助]-issue-7-note-10');
+  const unknown = runtime.materializePendingRecord(todo.id, { ...pending, sessionId: 'different-session' });
+  assert.equal(unknown.sessionTitle, '');
+  const saved = runtime.materializePendingRecord(todo.id, { ...pending, sessionTitle: 'Saved old title' });
+  assert.equal(saved.sessionTitle, 'Saved old title');
+  await runtime.stop();
+});
+
+test('a failed rename does not journal an unconfirmed new title for pending retry', async () => {
+  const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
+  const [todo] = normalizeTodos([directNoteTodo]);
+  runtime.host.renameSession = async () => { throw new Error('rename unavailable'); };
+  const failed = await runtime.dispatch(todo);
+  assert.equal(failed.ok, false);
+  assert.equal(runtime.state.pending[todo.id].sessionTitle || '', '');
+  const retried = await runtime.dispatch(todo);
+  assert.equal(retried.ok, true);
+  assert.equal(calls.create, 1);
+  assert.equal(runtime.state.handled[todo.id].sessionTitle, '');
+  await runtime.stop();
 });
 
 test('non-mention MR dispatch marks GitLab done without a Session and survives reload', async () => {
@@ -1299,7 +1397,7 @@ test('workspace overview survives roster failures and tags plugin sessions', asy
   assert.equal(otherSession.plugin, false);
   assert.equal(pluginSession.sessionId, 'session-1');
   assert.equal(pluginSession.plugin, true);
-  assert.equal(pluginSession.sessionTitle, '[协助]-issue-7');
+  assert.equal(pluginSession.sessionTitle, 'TODO-issue-7');
 
   // 名册整体不可用：降级为注册表补充（known=false），插件标记保留。
   runtime.host.listSessions = async () => { throw new Error('roster unavailable'); };
@@ -1411,8 +1509,8 @@ test('follow-up prompt hands over history, carried MRs, missing reply and relate
   assert.match(merged, /必须一并覆盖这些提及的实际内容/);
   assert.match(prompt, /Todo 900：https:\/\/gitlab\.local\/group\/project\/-\/issues\/7#note_5（上次结论：等待决策）/);
   assert.match(prompt, /todos\/<该 Todo ID>\/mark_as_done/);
-  assert.equal(buildSessionTitle(todo, 2), '[协助]-issue-7-note-10-续1');
-  assert.equal(buildSessionTitle(todo, 1), '[协助]-issue-7-note-10');
+  assert.equal(buildSessionTitle(todo, 2), 'TODO-issue-7-note-10-续1');
+  assert.equal(buildSessionTitle(todo, 1), 'TODO-issue-7-note-10');
 });
 
 test('closure report parsing takes the last valid report and only same-origin MR links', () => {
@@ -1523,9 +1621,9 @@ test('an open loop schedules a follow-up session that inherits the handover', as
   await runtime.executePoll('test');
   await runtime.pump();
   assert.equal(calls.create, 2);
-  assert.deepEqual(calls.renames.at(-1), { sessionId: 'session-2', title: '[协助]-issue-7-note-10-续1' });
+  assert.deepEqual(calls.renames.at(-1), { sessionId: 'session-2', title: 'TODO-issue-7-note-10-续1' });
   assert.match(prompts[1], /续办背景（本会话是第 2 轮/);
-  assert.match(prompts[1], /第 1 轮 \[协助\]-issue-7-note-10（.*结论 waiting；说明：等待外部条件：等待 !12 的 CI）/);
+  assert.match(prompts[1], /第 1 轮 TODO-issue-7-note-10（.*结论 waiting；说明：等待外部条件：等待 !12 的 CI）/);
   assert.match(prompts[1], /- https:\/\/gitlab\.local\/group\/project\/-\/merge_requests\/12/);
   const second = runtime.state.handled.direct;
   assert.equal(second.sessionId, 'session-2');
@@ -1545,7 +1643,7 @@ test('an open loop schedules a follow-up session that inherits the handover', as
   const restored = normalizeState(JSON.parse(JSON.stringify(runtime.state)));
   assert.equal(restored.handled.direct.round, 2);
   assert.equal(restored.handled.direct.closure, 'closed');
-  assert.equal(restored.handled.direct.history[0].sessionTitle, '[协助]-issue-7-note-10');
+  assert.equal(restored.handled.direct.history[0].sessionTitle, 'TODO-issue-7-note-10');
   assert.equal(restored.handled.direct.item.project, 'group/project');
   await runtime.stop();
 });
@@ -2703,7 +2801,7 @@ test('batch precheck dispatches by priority and folds duplicates into the primar
   assert.equal(restored.handled.dup.author, directNoteTodo.author.username);
   assert.equal(calls.create, 2);
   // priority 1（urgent）先派发，priority 2（main）随后。
-  assert.deepEqual(calls.renames.map((request) => request.title), ['[协助]-issue-9-note-30', '[协助]-issue-8-note-20']);
+  assert.deepEqual(calls.renames.map((request) => request.title), ['TODO-issue-9-note-30', 'TODO-issue-8-note-20']);
   assert.equal(runtime.judgeVerdicts.size, 0);
   await runtime.stop();
 });
@@ -3606,7 +3704,7 @@ test('issue prompt and title stay minimal without changing todo conventions', ()
   assert.equal(buildSessionTitle(issue, 3), 'project #42');
 
   const todo = normalizeTodo(directNoteTodo);
-  assert.equal(buildSessionTitle(todo, 2), '[协助]-issue-7-note-10-续1');
+  assert.equal(buildSessionTitle(todo, 2), 'TODO-issue-7-note-10-续1');
   const prompt = buildTodoPrompt(todo, { me: { username: 'tester', id: 1 } });
   assert.match(prompt, /\[GITLAB TODO WATCHER\]/);
   assert.match(prompt, /处理要求：/);

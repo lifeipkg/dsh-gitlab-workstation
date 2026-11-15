@@ -551,7 +551,6 @@ export const dispatchMethods = {
       : [];
     const ownMrs = continuing && Array.isArray(previous.openMrs) ? previous.openMrs : [];
     const sessionTitle = buildSessionTitle(todo, round);
-    let routedTitle = '';
     let reserved = false;
     try {
       const kind = classifyTodo(todo, this.gitlabUserId);
@@ -615,8 +614,23 @@ export const dispatchMethods = {
           }
         }
       }
-      if (route) routedTitle = route.title || sessionTitle;
-      const effectiveTitle = route ? routedTitle : (reuse ? (previous.sessionTitle || sessionTitle) : sessionTitle);
+      // 已有会话不能用新 builder 虚构原标题；旧 pending 可能尚未保存标题。
+      let effectiveTitle = sessionTitle;
+      if (sessionId) {
+        effectiveTitle = route?.title || pending?.sessionTitle
+          || (previous?.sessionId === sessionId ? previous.sessionTitle : '') || '';
+        if (!effectiveTitle) {
+          try {
+            const projections = await this.host.invoke('projections', { sessionId });
+            if (projections?.kind === 'sequenced' && Number.isSafeInteger(projections.asOfSeq)
+              && projections.asOfSeq >= 0 && typeof projections.values?.title === 'string') {
+              effectiveTitle = projections.values.title.trim();
+            }
+          } catch {
+            // 标题缺失/查询失败不是删除证据，也不能触发 rename 或重新 create。
+          }
+        }
+      }
       const reused = Boolean(reuse) || pending?.reused === true;
       const reuseCount = reuse
         ? (Number.isSafeInteger(previous.reuseCount) ? previous.reuseCount : 0) + 1
@@ -697,7 +711,15 @@ export const dispatchMethods = {
           item: todo,
         };
         await this.persistQuietly('pending Session');
-        await this.host.renameSession(sessionId, sessionTitle);
+        const renamed = await this.host.renameSession(sessionId, sessionTitle);
+        if (typeof renamed?.title === 'string') {
+          effectiveTitle = renamed.title;
+          const currentPending = this.state.pending[todo.id];
+          if (currentPending?.sessionId === sessionId && currentPending.requestId === requestId) {
+            currentPending.sessionTitle = renamed.title;
+            await this.persistQuietly('pending 会话标题');
+          }
+        }
       }
       if (reserved) {
         this.releaseReservation();

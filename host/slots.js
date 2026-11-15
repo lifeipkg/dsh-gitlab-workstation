@@ -1,6 +1,6 @@
-import { buildSessionTitle, normalizeMrUrls } from '../core.js';
+import { normalizeMrUrls } from '../core.js';
 import { IDLE_SETTLE_POLLS } from './constants.js';
-import { errorMessage } from './util.js';
+import { errorMessage, sessionSummaryTitle } from './util.js';
 
 /**
  * 并发槽与会话跟踪：槽位记账、track/untrack、对账结算（reconcile）。
@@ -135,7 +135,7 @@ export const slotsMethods = {
   },
 
   /** pending 的消息已在日志中证实被接受：补建 handled，再走统一结算，不再丢弃结果。 */
-  materializePendingRecord(todoId, pending) {
+  materializePendingRecord(todoId, pending, summary = null) {
     const item = pending.item;
     const previous = this.state.handled[todoId];
     const continuing = Boolean(previous?.sessionId);
@@ -165,7 +165,9 @@ export const slotsMethods = {
       routed: pending.routed === true,
       routeMode: pending.routeMode ?? '',
       requestId: pending.requestId ?? '',
-      sessionTitle: pending.sessionTitle || buildSessionTitle(item, round),
+      // 名册仅作显示兜底；标题未知时留空，不能给旧 pending 合成新标题。
+      sessionTitle: pending.sessionTitle || sessionSummaryTitle(summary)
+        || (previous?.sessionId === pending.sessionId ? previous.sessionTitle : '') || '',
       archived: false,
       archiveError: '',
       acceptedAt: pending.createdAt,
@@ -308,14 +310,14 @@ export const slotsMethods = {
           let materialized = false;
           if (pendingSupersedesHandled
             && (inspection.messageAccepted === true || inspection.outcome === 'cancelled')) {
-            handled = this.materializePendingRecord(todoId, pendingRecord);
+            handled = this.materializePendingRecord(todoId, pendingRecord, summary);
             materialized = true;
           }
           if (pendingSupersedesHandled && !materialized) {
             if (!pendingRecord.requestId) {
               // v4 及更早 pending 没有幂等标识：无法确认旧消息是否入队时，
               // 转人工而不是生成新 requestId 重发（可能双执行）。
-              handled = this.materializePendingRecord(todoId, pendingRecord);
+              handled = this.materializePendingRecord(todoId, pendingRecord, summary);
               handled.executionStatus = 'failed';
               handled.completedAt = Date.now();
               handled.executionError = '旧版 pending 缺少 requestId，无法确认原消息是否已被 Host 接受';
