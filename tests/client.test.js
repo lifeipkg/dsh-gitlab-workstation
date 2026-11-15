@@ -98,6 +98,7 @@ test('inbox exposes the real archived state and unarchive errors', async () => {
   assert.match(inbox, /item\.archived/);
   assert.match(inbox, /t\('sessionArchived'\)/);
   assert.match(inbox, /item\.archiveError/);
+  assert.match(source, /\.gta-banner\{[^}]*overflow-wrap:anywhere/);
 });
 
 test('compact styles keep controls small and wrap list content responsively', async () => {

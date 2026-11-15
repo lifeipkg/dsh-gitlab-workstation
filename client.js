@@ -1444,7 +1444,7 @@ window.__ModuleLoader__.load({
       .gta-muted{color:var(--dsw-alias-label-secondary);font-size:12px}
       .gta-success{color:var(--dsw-alias-state-success-primary)}
       .gta-attention{color:var(--dsw-alias-state-warn-primary)}
-      .gta-banner{max-width:1180px;margin:8px auto;padding:8px 10px;border-radius:6px;border:1px solid var(--dsw-alias-state-error-primary);background:var(--dsw-alias-bg-layer-1)}
+      .gta-banner{max-width:1180px;min-width:0;overflow-wrap:anywhere;margin:8px auto;padding:8px 10px;border-radius:6px;border:1px solid var(--dsw-alias-state-error-primary);background:var(--dsw-alias-bg-layer-1)}
       .gta-warn{border-color:var(--dsw-alias-state-warn-primary)}
       .gta-card,.gta-stats,.gta-section{max-width:1180px;margin:12px auto}
       .gta-card{border:1px solid var(--dsw-alias-border-l1);border-radius:9px;background:var(--dsw-alias-bg-layer-1);padding:14px}
