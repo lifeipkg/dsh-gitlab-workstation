@@ -7,16 +7,21 @@ window.__ModuleLoader__.load({
     const PANEL_ID = 'gitlab-todos';
     const BRIDGE_PATH = '/api/gitlab-todo-agent';
     const en = {
-      panel: 'GitLab Todo', title: 'GitLab Todo',
-      subtitle: 'Read GitLab todos directly and open sessions for direct mentions in comments from other users.',
-      enable: 'Enable polling', disable: 'Disable polling', checkNow: 'Check now', checking: 'Checking…',
+      panel: 'GitLab Workstation', title: 'GitLab Workstation',
+      subtitle: 'A compact workspace for GitLab tasks, sessions and human follow-up.',
+      enable: 'Enable Todo auto-polling', disable: 'Pause Todo auto-polling', checkNow: 'Check Todos', checking: 'Checking…',
+      todoPolling: 'Todo auto-polling', todoSettings: 'Todo settings', tasksGroup: 'Tasks', environmentGroup: 'Environment',
+      workstationViews: 'Workstation views', searchList: 'Search this list', searchLoaded: 'Search loaded records only',
+      searchNoMatches: 'No loaded items match your search.', clearSearch: 'Clear search', searchResults: 'Matches / loaded',
+      loadedRecords: 'Loaded / total', saving: 'Saving…', settingsSaved: 'Settings saved',
+      modelSummary: 'Model', workspaceSummary: 'Workspace', autoWorkspaceShort: 'Auto', defaultModelShort: 'DSH default',
       settings: 'Settings', save: 'Save settings', cancel: 'Cancel', close: 'Close', advanced: 'Advanced options',
       enabled: 'Enabled', disabled: 'Disabled', running: 'Running', idle: 'Idle',
       activeSessions: 'Active sessions', queuedSessions: 'Queued',
       pending: 'Pending', handled: 'Handled', lastSuccess: 'Last poll', never: 'Never',
       mrDone: 'MR marked done without processing', markDone: 'Mark done',
       newFound: 'New this round',
-      todoList: 'Todo list', noTodos: 'No pending todos.',
+      todoList: 'Todo', noTodos: 'No pending todos.',
       directMention: 'Comment @ me',
       sessionsTitle: 'Recent sessions', noSessions: 'No session has been dispatched yet.', autoDispatch: 'auto', manualDispatch: 'manual',
       loadMore: 'Load more', sessionsError: 'Could not load recent sessions',
@@ -83,7 +88,7 @@ window.__ModuleLoader__.load({
       refresh: 'Refresh', routeSameTarget: 'Same MR/Issue', routeModeQueue: 'Queue', routeModeSteer: 'Steer',
       routeLoad: 'Load', routeNotAccepting: 'Not accepting', routeConfirm: 'Route to session',
       routedQueue: 'Routed · queued', routedSteer: 'Routed · steering', routeFailed: 'Could not route the todo',
-      loading: 'Loading GitLab Todo panel…', renderError: 'The panel failed to render', retry: 'Retry rendering',
+      loading: 'Loading GitLab Workstation…', renderError: 'The panel failed to render', retry: 'Retry rendering',
       localError: 'Action failed',
       defaultPaused: 'Polling starts paused so installation never dispatches your real todos automatically.',
       inboxTitle: 'Inbox', inboxEmpty: 'Nothing is waiting for you.', inboxTakeover: 'Open session to take over',
@@ -106,16 +111,21 @@ window.__ModuleLoader__.load({
       colon: ': ',
     };
     const zh = {
-      panel: 'GitLab Todo', title: 'GitLab Todo',
-      subtitle: '直接读取 GitLab Todo，仅自动处理他人在评论中直接 @ 你的事项。',
-      enable: '启用轮询', disable: '停用轮询', checkNow: '立即检查', checking: '检查中…',
+      panel: 'GitLab 工作台', title: 'GitLab 工作台',
+      subtitle: '集中处理 GitLab 任务、会话与需人工接手的事项。',
+      enable: '启用 Todo 自动轮询', disable: '暂停 Todo 自动轮询', checkNow: '检查 Todo', checking: '检查中…',
+      todoPolling: 'Todo 自动轮询', todoSettings: 'Todo 设置', tasksGroup: '任务', environmentGroup: '环境',
+      workstationViews: '工作台视图', searchList: '搜索当前列表', searchLoaded: '仅搜索已加载记录',
+      searchNoMatches: '已加载条目中没有匹配结果。', clearSearch: '清除搜索', searchResults: '匹配 / 已加载',
+      loadedRecords: '已加载 / 总数', saving: '保存中…', settingsSaved: '设置已保存',
+      modelSummary: '模型', workspaceSummary: '工作区', autoWorkspaceShort: '自动', defaultModelShort: 'DSH 默认',
       settings: '设置', save: '保存设置', cancel: '取消', close: '关闭', advanced: '高级选项',
       enabled: '已启用', disabled: '已停用', running: '运行中', idle: '空闲',
       activeSessions: '运行会话', queuedSessions: '排队',
       pending: '待处理', handled: '已处理', lastSuccess: '最近轮询', never: '从未',
       mrDone: 'MR 已直接标记完成', markDone: '标记完成',
       newFound: '本轮新增',
-      todoList: 'Todo 列表', noTodos: '暂无待处理 Todo。',
+      todoList: 'Todo', noTodos: '暂无待处理 Todo。',
       directMention: '评论中 @ 我',
       sessionsTitle: '最近会话', noSessions: '还没有分派过会话。', autoDispatch: '自动', manualDispatch: '手动',
       loadMore: '加载更多', sessionsError: '无法加载最近会话列表',
@@ -182,7 +192,7 @@ window.__ModuleLoader__.load({
       refresh: '刷新', routeSameTarget: '同目标', routeModeQueue: '排队', routeModeSteer: '引导',
       routeLoad: '负载', routeNotAccepting: '不接受', routeConfirm: '路由到所选会话',
       routedQueue: '已路由·排队', routedSteer: '已路由·引导', routeFailed: '路由 Todo 失败',
-      loading: '正在加载 GitLab Todo 面板…', renderError: '面板渲染失败', retry: '重新渲染',
+      loading: '正在加载 GitLab 工作台…', renderError: '面板渲染失败', retry: '重新渲染',
       localError: '操作失败',
       defaultPaused: '插件默认停用，避免安装后立即处理真实 Todo。',
       inboxTitle: '收件箱', inboxEmpty: '没有等待你处理的 Todo。', inboxTakeover: '打开会话接手',
@@ -196,7 +206,7 @@ window.__ModuleLoader__.load({
       issuesTitle: 'Issue', issuesEmpty: 'GitLab 上没有指派给你的开放 Issue。',
       issuesError: '无法加载 Issue 列表', issuesHint: 'GitLab 上指派给我的开放 Issue',
       issuesOrphans: '已关闭或取消指派', issueTag: 'Issue',
-      logsTitle: 'Log', logsEmpty: '暂无运行时日志。',
+      logsTitle: '日志', logsEmpty: '暂无运行时日志。',
       logsError: '无法加载运行时日志', logsClear: '清空日志', confirmClearLogs: '确认清空日志？',
       logsDropped: '条因超出内存上限被丢弃', logsFilterAll: '全部', logsFilterWarn: '警告及以上',
       logsHint: '只进内存、不落盘；环形缓冲上限', logsEntriesSuffix: '条',
@@ -251,6 +261,12 @@ window.__ModuleLoader__.load({
       return !todo.handled || todo.outcome !== 'merge-request-done';
     }
 
+    /** 非直接提及的 MR 只能走独立的两击“标记完成”，不能从“处理”绕过确认。 */
+    function canProcessTodo(todo) {
+      return !(isMergeRequest(todo) && !todo.directMention)
+        && (!todo.handled || todo.outcome !== 'merge-request-done');
+    }
+
     function routedLabel(record, t) {
       if (record.routed !== true) return '';
       return record.routeMode === 'steer' ? t('routedSteer') : t('routedQueue');
@@ -260,6 +276,7 @@ window.__ModuleLoader__.load({
       if (todo.outcome === 'merge-request-done') return t('mrDone');
       if (todo.outcome === 'precheck-skipped') return t('precheckSkipped');
       if (todo.outcome === 'rule-skipped') return t('ruleSkipped');
+      if (todo.executionStatus === 'starting') return t('sessionStarting');
       if (todo.executionStatus === 'running') return t('executionRunning');
       const closure = closureLabel(todo.closure, t);
       if (closure) return closure;
@@ -384,13 +401,74 @@ window.__ModuleLoader__.load({
     }
 
     /** General 设置草稿的变更补丁；Issue Tab 的即时设置永远不由旧草稿回盖。 */
-    function changedSettingsPatch(draft, current) {
+    function changedSettingsPatch(draft, current, baseline = current) {
       const patch = {};
       for (const key of Object.keys(draft ?? {})) {
         if (key === 'issueSessionCwd' || key === 'issueSessionModel') continue;
-        if (!settingsValueEqual(draft[key], current?.[key])) patch[key] = draft[key];
+        if (!settingsValueEqual(draft[key], baseline?.[key])
+          && !settingsValueEqual(draft[key], current?.[key])) patch[key] = draft[key];
       }
       return patch;
+    }
+
+    const WORKSTATION_TABS = [
+      { id: 'inbox', label: 'inboxTitle', group: 'tasksGroup' },
+      { id: 'todos', label: 'todoList', group: 'tasksGroup' },
+      { id: 'issues', label: 'issuesTitle', group: 'tasksGroup' },
+      { id: 'handled', label: 'handledTitle', group: 'tasksGroup' },
+      { id: 'workspaces', label: 'workspacesTitle', group: 'environmentGroup' },
+      { id: 'logs', label: 'logsTitle', group: 'environmentGroup' },
+    ];
+
+    /** 自动激活的水平 Tabs：只消费导航键，其余键交给原生按钮行为。 */
+    function nextWorkstationTab(current, key) {
+      const index = WORKSTATION_TABS.findIndex((tab) => tab.id === current);
+      if (index < 0) return null;
+      if (key === 'Home') return WORKSTATION_TABS[0].id;
+      if (key === 'End') return WORKSTATION_TABS[WORKSTATION_TABS.length - 1].id;
+      if (key !== 'ArrowLeft' && key !== 'ArrowRight') return null;
+      const step = key === 'ArrowRight' ? 1 : -1;
+      return WORKSTATION_TABS[(index + step + WORKSTATION_TABS.length) % WORKSTATION_TABS.length].id;
+    }
+
+    /** 仅过滤当前已加载数据；不改分页范围、不请求远端、不写入记录。 */
+    function filterWorkstationItems(items, query) {
+      const source = Array.isArray(items) ? items : [];
+      const normalized = String(query ?? '').trim().toLowerCase();
+      if (!normalized) return source;
+      const terms = normalized.split(/\s+/);
+      return source.filter((item) => {
+        const text = [item.title, item.project, item.author, item.id, item.todoId, item.iid,
+          item.sessionTitle, item.closure, item.closureNote, item.skipReason,
+          ...(Array.isArray(item.labels) ? item.labels : [])].filter((value) => value != null).join(' ').toLowerCase();
+        return terms.every((term) => text.includes(term));
+      });
+    }
+
+    /** 与状态文案保持同一优先级，失败/需人工不能被 completed 的绿色覆盖。 */
+    function recordStatusClass(record) {
+      if (record.pending === true || record.executionStatus === 'starting' || record.executionStatus === 'running') return 'gta-tag-mention';
+      if (['merge-request-done', 'precheck-skipped', 'rule-skipped'].includes(record.outcome)) return 'gta-tag-success';
+      if (record.closure === 'needs-human') return 'gta-tag-attention';
+      if (record.closure === 'follow-up' || record.closure === 'verifying') return 'gta-tag-attention';
+      if (record.closure === 'closed') return 'gta-tag-success';
+      if (record.executionStatus === 'failed') return 'gta-tag-error';
+      if (record.executionStatus === 'completed') return 'gta-tag-success';
+      return 'gta-tag-neutral';
+    }
+
+    function issueSettingsSummary(selection, cwd, t) {
+      const model = selection?.model ? `${selection.provider}/${selection.model}` : t('defaultModelShort');
+      const workspace = cwd ? String(cwd).split(/[\\/]+/).filter(Boolean).pop() || cwd : t('autoWorkspaceShort');
+      return `${t('modelSummary')}${t('colon')}${model}${selection?.reasoningEffort ? ` · ${selection.reasoningEffort}` : ''} · ${t('workspaceSummary')}${t('colon')}${workspace}`;
+    }
+
+    /** Only finish the view that submitted the operation; closing a view never cancels its sent POST. */
+    function finishCurrentViewOperation(operation, generation, currentGeneration, complete) {
+      return operation.then((done) => {
+        if (done && currentGeneration.current === generation) complete();
+        return done;
+      });
     }
 
     function PanelIcon({ size = 20 }) {
@@ -399,8 +477,8 @@ window.__ModuleLoader__.load({
         stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round',
         'aria-hidden': true,
       },
-        h('rect', { x: 4, y: 3, width: 16, height: 18, rx: 3 }),
-        h('path', { d: 'm8 8 1.5 1.5L12 6M8 13l1.5 1.5L12 11M14 8h3M14 13h3M9 18a4 4 0 0 0 6-3M15 12v3h-3' }),
+        h('rect', { x: 3, y: 4, width: 18, height: 16, rx: 2 }),
+        h('path', { d: 'M3 8h18M8 8v12M11 11h6M11 14h6M11 17h4' }),
       );
     }
 
@@ -412,6 +490,9 @@ window.__ModuleLoader__.load({
         onClick: props.onClick,
         title: props.title,
         'aria-pressed': props.pressed,
+        'aria-label': props.label,
+        'aria-expanded': props.expanded,
+        'aria-controls': props.controls,
       }, props.children);
     }
 
@@ -450,7 +531,19 @@ window.__ModuleLoader__.load({
       // 轮询类错误单独存放：轮询成功即自动清除；操作类错误仍由下一次主动操作清除。
       const [pollError, setPollError] = React.useState(null);
       const [draft, setDraft] = React.useState(null);
+      const draftBaseline = React.useRef(null);
+      const draftGeneration = React.useRef(0);
       const [activeTab, setActiveTab] = React.useState('todos');
+      const tabRefs = React.useRef(new Map());
+      const [listSearches, setListSearches] = React.useState({});
+      const [settingsFeedback, setSettingsFeedback] = React.useState('');
+      const activateTabByKey = (event, id) => {
+        const next = nextWorkstationTab(id, event.key);
+        if (!next) return;
+        event.preventDefault();
+        setActiveTab(next);
+        tabRefs.current.get(next)?.focus();
+      };
       const [modelCatalog, setModelCatalog] = React.useState(null);
       const [modelCatalogError, setModelCatalogError] = React.useState(null);
       const [workspaceData, setWorkspaceData] = React.useState(null);
@@ -462,6 +555,9 @@ window.__ModuleLoader__.load({
       const [routeSearch, setRouteSearch] = React.useState('');
       const [routeSelection, setRouteSelection] = React.useState('');
       const routeRequest = React.useRef(0);
+      const routeGeneration = React.useRef(0);
+      const routeDialogRef = React.useRef(null);
+      const routeTriggerRef = React.useRef(null);
 
       React.useEffect(() => {
         let disposed = false;
@@ -706,6 +802,8 @@ window.__ModuleLoader__.load({
         confirmTimers.current.set(confirmKey, setTimeout(() => clearConfirm(confirmKey), 3000));
       };
       React.useEffect(() => () => {
+        draftGeneration.current += 1;
+        routeGeneration.current += 1;
         confirmTimers.current.forEach((timer) => clearTimeout(timer));
         confirmTimers.current.clear();
       }, []);
@@ -714,6 +812,7 @@ window.__ModuleLoader__.load({
       const colon = () => t('colon');
 
       const closeRouteTargets = () => {
+        routeGeneration.current += 1;
         routeRequest.current += 1;
         setRouteTodo(null);
         setRouteData(null);
@@ -738,7 +837,9 @@ window.__ModuleLoader__.load({
           if (request === routeRequest.current) setRouteLoading(false);
         }
       };
-      const openRouteTargets = (todo) => {
+      const openRouteTargets = (todo, trigger) => {
+        routeGeneration.current += 1;
+        routeTriggerRef.current = trigger ?? null;
         setRouteTodo(todo);
         setRouteData(null);
         setRouteSearch('');
@@ -748,30 +849,45 @@ window.__ModuleLoader__.load({
       };
       React.useEffect(() => {
         if (!routeTodo) return undefined;
+        const trigger = routeTriggerRef.current;
+        const dialog = routeDialogRef.current;
+        dialog?.querySelector('button:not(:disabled)')?.focus();
         const onKeyDown = (event) => {
-          if (event.key === 'Escape') closeRouteTargets();
+          if (event.key === 'Escape') { event.preventDefault(); closeRouteTargets(); return; }
+          if (event.key !== 'Tab' || !dialog) return;
+          const controls = Array.from(dialog.querySelectorAll('button:not(:disabled), input:not(:disabled)'));
+          // 原生 radio 一组只有选中项（未选时第一项）参与 Tab，方向键由浏览器负责。
+          const radios = controls.filter((node) => node.type === 'radio');
+          const radioTabStop = radios.find((node) => node.checked) ?? radios[0];
+          const stops = controls.filter((node) => node.type !== 'radio' || node === radioTabStop);
+          const first = stops[0];
+          const last = stops[stops.length - 1];
+          const focused = dialog.ownerDocument.activeElement;
+          if (!first) { event.preventDefault(); dialog.focus(); }
+          else if (event.shiftKey && (focused === first || !dialog.contains(focused))) { event.preventDefault(); last.focus(); }
+          else if (!event.shiftKey && (focused === last || !dialog.contains(focused))) { event.preventDefault(); first.focus(); }
         };
         window.addEventListener('keydown', onKeyDown);
-        return () => window.removeEventListener('keydown', onKeyDown);
+        return () => { window.removeEventListener('keydown', onKeyDown); trigger?.focus(); };
         // 关闭函数只需跟随当前弹层生命周期，无需随每次渲染重建监听。
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [routeTodo]);
       const routeToSession = (target) => {
         if (!routeTodo || !target || target.accepting === false || busySet.has(`route:${routeTodo.id}`)) return;
         const todoId = routeTodo.id;
+        const generation = routeGeneration.current;
         setRouteError(null);
-        void perform(`route:${todoId}`, async () => {
+        void finishCurrentViewOperation(perform(`route:${todoId}`, async () => {
           try {
             const data = await post('route', { id: todoId, sessionId: target.sessionId });
-            if (data.result?.ok === false) setRouteError(data.result.error || t('routeFailed'));
+            if (routeGeneration.current === generation && data.result?.ok === false) setRouteError(data.result.error || t('routeFailed'));
             return data;
           } catch (cause) {
-            setRouteError(cause.message);
+            if (routeGeneration.current === generation) setRouteError(cause.message);
             throw cause;
           }
-        }).then((done) => {
+        }), generation, routeGeneration, closeRouteTargets).then((done) => {
           if (!done) return;
-          closeRouteTargets();
           // v2.29 遗留笔误：refreshSessions 已不存在；路由成功的记录进已处理投影，
           // Issue 条目再顺带刷新 Issue 面板。
           void refreshHandled();
@@ -779,12 +895,24 @@ window.__ModuleLoader__.load({
         });
       };
 
-      const updateSettings = (settings) => perform('settings', () => post('updateSettings', { settings }));
-      // 保存时对比当前快照，只提交发生变化的字段（Host 端 updateSettings 为浅合并 patch 语义）：
-      // 面板打开期间页头快捷操作（启停轮询、页头模型下拉）已保存的改动不会被打开面板时的旧 draft 覆盖。
+      const updateSettings = (settings) => {
+        setSettingsFeedback('');
+        return perform('settings', () => post('updateSettings', { settings }))
+          .then((saved) => { if (saved) setSettingsFeedback(t('settingsSaved')); return saved; });
+      };
+      // 对比打开时 baseline，仅提交用户在草稿中改动且当前值尚未生效的字段。
+      // Todo 快捷启停/模型和 Issue 即时设置不会被未编辑的旧草稿回盖（Host 仍浅合并 patch）。
       const saveGeneralSettings = () => {
-        const patch = changedSettingsPatch(draft, snapshot?.settings ?? null);
+        const patch = changedSettingsPatch(draft, snapshot?.settings ?? null, draftBaseline.current);
         return Object.keys(patch).length > 0 ? updateSettings(patch) : Promise.resolve(true);
+      };
+      const closeGeneralSettings = () => {
+        draftGeneration.current += 1;
+        setDraft(null);
+      };
+      const saveAndCloseGeneralSettings = () => {
+        const generation = draftGeneration.current;
+        return finishCurrentViewOperation(saveGeneralSettings(), generation, draftGeneration, closeGeneralSettings);
       };
       const openSession = (sessionId) => ctx.uiWorkspace.openSession(sessionId);
       // 收件箱“我已处理”：成功后连同收件箱一起刷新（snapshot 已由 perform 更新）。
@@ -863,8 +991,28 @@ window.__ModuleLoader__.load({
           .some((value) => String(value ?? '').toLowerCase().includes(routeQuery)))
         .sort((a, b) => Number(b.sameTarget === true) - Number(a.sameTarget === true)
           || routeUpdatedAt(b.updatedAt) - routeUpdatedAt(a.updatedAt));
-      const selectedRouteTarget = allRouteItems.find((item) => item.sessionId === routeSelection) ?? null;
+      const selectedRouteTarget = routeItems.find((item) => item.sessionId === routeSelection) ?? null;
       const routeMaxQueue = routeData?.maxQueuePerSession ?? 3;
+      const listQuery = listSearches[activeTab] ?? '';
+      const visibleTodos = filterWorkstationItems(snapshot?.todos, listQuery);
+      const visibleInbox = filterWorkstationItems(inboxData, listQuery);
+      const visibleIssues = filterWorkstationItems(issuesData?.items, listQuery);
+      const visibleOrphans = filterWorkstationItems(issuesData?.orphans, listQuery);
+      const visibleHandled = filterWorkstationItems(handledData?.items, listQuery);
+      const searchableList = {
+        todos: { loaded: snapshot?.todos.length ?? 0, matches: visibleTodos.length, ready: Boolean(snapshot) },
+        inbox: { loaded: inboxData?.length ?? 0, matches: visibleInbox.length, ready: inboxData !== null },
+        issues: { loaded: (issuesData?.items.length ?? 0) + (issuesData?.orphans.length ?? 0), matches: visibleIssues.length + visibleOrphans.length, ready: issuesData !== null },
+        handled: { loaded: handledData?.items.length ?? 0, matches: visibleHandled.length, ready: handledData !== null },
+      }[activeTab];
+      const tabCounts = {
+        inbox: snapshot?.closure?.needsHuman ?? 0,
+        todos: snapshot?.todos.length ?? 0,
+        issues: issuesData?.items.length ?? snapshot?.issueCount ?? 0,
+        handled: handledData?.total ?? snapshot?.handledCount ?? 0,
+        workspaces: workspaceOptions.length,
+        logs: logData?.items.length ?? 0,
+      };
 
       return h('div', { className: 'gta-root' },
         h('style', { children: CSS }),
@@ -876,31 +1024,23 @@ window.__ModuleLoader__.load({
             ),
           ),
           h('div', { className: 'gta-actions' },
-            h('label', { className: 'gta-model-quick', title: t('sessionModelFixedHint') },
-              h('span', null, t('sessionModel')),
-              h('select', {
-                value: quickModelKey,
-                disabled: !snapshot || busySet.has('settings'),
-                'aria-label': t('sessionModel'),
-                onChange: (event) => updateSettings({ sessionModel: event.target.value ? JSON.parse(event.target.value) : null }),
-              }, modelOptions(settings?.sessionModel)),
-            ),
-            h(Button, {
-              primary: !settings?.enabled,
-              disabled: busySet.has('settings') || !snapshot,
-              title: settings?.enabled ? '' : t('defaultPaused'),
-              onClick: () => updateSettings({ enabled: !settings.enabled }),
-            }, settings?.enabled ? t('disable') : t('enable')),
-            h(Button, {
-              disabled: busySet.has('poll') || !snapshot,
-              onClick: () => perform('poll', () => post('poll')),
-            }, busySet.has('poll') ? t('checking') : t('checkNow')),
+            snapshot && h('span', { className: `gta-poll-state ${settings.enabled ? 'gta-success' : 'gta-muted'}` },
+              `${t('todoPolling')}${colon()}${settings.enabled ? t('enabled') : t('disabled')}`),
+            snapshot && h(Button, {
+              className: (snapshot.closure?.needsHuman ?? 0) > 0 ? 'gta-needs-human' : '',
+              onClick: () => setActiveTab('inbox'),
+            }, `${t('needsHumanCount')} ${snapshot.closure?.needsHuman ?? 0}`),
             h(Button, {
               disabled: !snapshot,
-              onClick: () => setDraft(draft ? null : { ...settings }),
-            }, draft ? t('close') : t('settings')),
+              expanded: Boolean(draft), controls: `${PANEL_ID}-settings`,
+              onClick: () => {
+                if (draft) closeGeneralSettings();
+                else { draftGeneration.current += 1; draftBaseline.current = settings; setDraft({ ...settings }); }
+              },
+            }, draft ? t('close') : t('todoSettings')),
           ),
         ),
+        (busySet.has('settings') || settingsFeedback) && h('div', { className: 'gta-feedback gta-muted', role: 'status' }, busySet.has('settings') ? t('saving') : settingsFeedback),
         !snapshot && !error && h('div', { className: 'gta-empty' }, t('loading')),
         (error || pollError) && h('div', { className: 'gta-banner gta-error', role: 'alert' }, `${t('localError')}${colon()}${error || pollError}`),
         snapshot?.lastPollError && h('div', { className: 'gta-banner gta-error', role: 'alert' }, snapshot.lastPollError),
@@ -909,7 +1049,7 @@ window.__ModuleLoader__.load({
         modelCatalogError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, `${t('modelCatalogError')}${colon()}${modelCatalogError}`),
         snapshot?.digest && h('section', { className: 'gta-card gta-digest' },
           h('div', { className: 'gta-digest-head' },
-            h('h2', null, `${t('digestTitle')}（${snapshot.digest.counts.total}）`),
+            h('h2', null, `${t('digestTitle')} (${snapshot.digest.counts.total})`),
             h('span', { className: 'gta-muted' },
               `${t('closureClosed')} ${snapshot.digest.counts.closed} · ${t('closureFollowUp')} ${snapshot.digest.counts.followUp} · ${t('closureNeedsHuman')} ${snapshot.digest.counts.needsHuman}`),
             h(Button, { onClick: () => setDigestOpen(!digestOpen) }, digestOpen ? t('digestHide') : t('digestShow')),
@@ -920,7 +1060,7 @@ window.__ModuleLoader__.load({
               item.url
                 ? h('a', { href: item.url, target: '_blank', rel: 'noreferrer' }, item.title || `Todo ${item.todoId}`)
                 : h('span', null, item.title || `Todo ${item.todoId}`),
-              h('span', { className: 'gta-tag' }, closureLabel(item.closure, t) || item.closure || '—'),
+              h('span', { className: `gta-tag ${recordStatusClass({ closure: item.closure })}` }, closureLabel(item.closure, t) || item.closure || '—'),
               item.round > 1 && h('span', { className: 'gta-muted' }, `${t('roundLabel')} ${item.round}`),
               item.closureNote && h('span', { className: 'gta-muted gta-digest-note' }, item.closureNote),
               item.replyExcerpt && h('span', { className: 'gta-muted gta-digest-reply' },
@@ -930,8 +1070,8 @@ window.__ModuleLoader__.load({
                   : item.replyExcerpt),
             )))),
         ),
-        draft && h('section', { className: 'gta-card gta-settings' },
-          h('h2', null, t('settings')),
+        draft && h('section', { className: 'gta-card gta-settings', id: `${PANEL_ID}-settings` },
+          h('h2', null, t('todoSettings')),
           h('div', { className: 'gta-form-grid' },
             h('label', null, t('interval'), h('input', {
               type: 'number', min: 30, max: 86400, value: draft.intervalSeconds,
@@ -1092,71 +1232,61 @@ window.__ModuleLoader__.load({
             }), t('signatureLabel')),
           ),
           h('div', { className: 'gta-form-actions' },
-            h(Button, { primary: true, disabled: busySet.has('settings'), onClick: () => saveGeneralSettings().then((saved) => { if (saved) setDraft(null); }) }, t('save')),
-            h(Button, { onClick: () => setDraft(null) }, t('cancel')),
+            h(Button, { primary: true, disabled: busySet.has('settings'), onClick: saveAndCloseGeneralSettings }, t('save')),
+            h(Button, { onClick: closeGeneralSettings }, t('cancel')),
           ),
         ),
-        snapshot && h('section', { className: 'gta-stats' },
-          h('div', { className: 'gta-stat' }, h('span', null, t('enabled')), h('strong', { className: snapshot.settings.enabled ? 'gta-success' : 'gta-muted' }, snapshot.settings.enabled ? t('enabled') : t('disabled'))),
-          h('div', { className: 'gta-stat' }, h('span', null, t('running')), h('strong', null, snapshot.running ? t('running') : t('idle'))),
+        snapshot && h('section', { className: 'gta-stats', 'aria-label': t('todoPolling') },
+          h('div', { className: 'gta-stat' }, h('strong', { className: snapshot.running ? 'gta-success' : 'gta-muted' }, snapshot.running ? t('running') : t('idle'))),
           h('div', { className: 'gta-stat' }, h('span', null, t('pending')), h('strong', null, snapshot.pendingCount)),
-          h('div', { className: 'gta-stat' }, h('span', null, t('handled')), h('strong', null, snapshot.handledCount)),
-          h('div', { className: 'gta-stat' }, h('span', null, t('activeSessions')), h('strong', { className: snapshot.activeSessions > 0 ? 'gta-success' : '' }, `${snapshot.activeSessions ?? 0}/${snapshot.settings.maxConcurrentSessions}`)),
+          h('div', { className: 'gta-stat' }, h('span', null, t('activeSessions')), h('strong', null, `${snapshot.activeSessions ?? 0}/${snapshot.settings.maxConcurrentSessions}`)),
           h('div', { className: 'gta-stat' }, h('span', null, t('queuedSessions')), h('strong', null, snapshot.queuedSessions ?? 0)),
           h('div', { className: 'gta-stat' }, h('span', null, t('followUpCount')), h('strong', null, snapshot.closure?.followUp ?? 0)),
-          h('div', { className: 'gta-stat' }, h('span', null, t('needsHumanCount')), h('strong', { className: (snapshot.closure?.needsHuman ?? 0) > 0 ? 'gta-attention' : '' }, snapshot.closure?.needsHuman ?? 0)),
           h('div', { className: 'gta-stat gta-stat-time' }, h('span', null, t('lastSuccess')), h('strong', null, formatTime(snapshot.lastSuccessAt, t('never')))),
         ),
-        snapshot && h('div', { className: 'gta-tabs', role: 'tablist' },
-          h('button', {
-            type: 'button', role: 'tab', id: `${PANEL_ID}-tab-inbox`, 'aria-selected': activeTab === 'inbox',
-            'aria-controls': `${PANEL_ID}-panel-inbox`,
-            className: `gta-tab${activeTab === 'inbox' ? ' gta-tab-active' : ''}`,
-            onClick: () => setActiveTab('inbox'),
-          }, `${t('inboxTitle')} (${snapshot.closure?.needsHuman ?? 0})`),
-          h('button', {
-            type: 'button', role: 'tab', id: `${PANEL_ID}-tab-todos`, 'aria-selected': activeTab === 'todos',
-            'aria-controls': `${PANEL_ID}-panel-todos`,
-            className: `gta-tab${activeTab === 'todos' ? ' gta-tab-active' : ''}`,
-            onClick: () => setActiveTab('todos'),
-          }, `${t('todoList')} (${snapshot.todos.length})`),
-          h('button', {
-            type: 'button', role: 'tab', id: `${PANEL_ID}-tab-issues`, 'aria-selected': activeTab === 'issues',
-            'aria-controls': `${PANEL_ID}-panel-issues`,
-            className: `gta-tab${activeTab === 'issues' ? ' gta-tab-active' : ''}`,
-            onClick: () => setActiveTab('issues'),
-          }, `${t('issuesTitle')} (${issuesData?.items.length ?? snapshot.issueCount ?? 0})`),
-          h('button', {
-            type: 'button', role: 'tab', id: `${PANEL_ID}-tab-handled`, 'aria-selected': activeTab === 'handled',
-            'aria-controls': `${PANEL_ID}-panel-handled`,
-            className: `gta-tab${activeTab === 'handled' ? ' gta-tab-active' : ''}`,
-            onClick: () => setActiveTab('handled'),
-          }, `${t('handledTitle')} (${handledData?.total ?? snapshot.handledCount})`),
-          h('button', {
-            type: 'button', role: 'tab', id: `${PANEL_ID}-tab-workspaces`, 'aria-selected': activeTab === 'workspaces',
-            'aria-controls': `${PANEL_ID}-panel-workspaces`,
-            className: `gta-tab${activeTab === 'workspaces' ? ' gta-tab-active' : ''}`,
-            onClick: () => setActiveTab('workspaces'),
-          }, `${t('workspacesTitle')} (${workspaceOptions.length})`),
-          h('button', {
-            type: 'button', role: 'tab', id: `${PANEL_ID}-tab-logs`, 'aria-selected': activeTab === 'logs',
-            'aria-controls': `${PANEL_ID}-panel-logs`,
-            className: `gta-tab${activeTab === 'logs' ? ' gta-tab-active' : ''}`,
-            onClick: () => setActiveTab('logs'),
-          }, `${t('logsTitle')} (${logData?.items.length ?? 0})`),
+        snapshot && h('div', { className: 'gta-tabs', role: 'tablist', 'aria-label': t('workstationViews'), 'aria-orientation': 'horizontal' },
+          WORKSTATION_TABS.map((tab, index) => h(React.Fragment, { key: tab.id },
+            (index === 0 || WORKSTATION_TABS[index - 1].group !== tab.group) && h('span', {
+              className: `gta-tab-group${index > 0 ? ' gta-tab-group-environment' : ''}`, role: 'presentation',
+            }, t(tab.group)),
+            h('button', {
+              type: 'button', role: 'tab', id: `${PANEL_ID}-tab-${tab.id}`,
+              'aria-selected': activeTab === tab.id, 'aria-controls': `${PANEL_ID}-panel-${tab.id}`,
+              tabIndex: activeTab === tab.id ? 0 : -1,
+              ref: (node) => { if (node) tabRefs.current.set(tab.id, node); else tabRefs.current.delete(tab.id); },
+              className: `gta-tab${activeTab === tab.id ? ' gta-tab-active' : ''}`,
+              onClick: () => setActiveTab(tab.id), onKeyDown: (event) => activateTabByKey(event, tab.id),
+            }, t(tab.label), h('span', {
+              className: `gta-tab-count${tab.id === 'inbox' && tabCounts.inbox > 0 ? ' gta-attention' : ''}`,
+            }, tabCounts[tab.id])),
+          )),
         ),
-        activeTab === 'inbox' && snapshot && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-inbox`, 'aria-labelledby': `${PANEL_ID}-tab-inbox` },
+        snapshot && searchableList && h('div', { className: 'gta-list-tools' },
+          h('label', { className: 'gta-list-search' },
+            h('span', null, activeTab === 'handled' ? t('searchLoaded') : t('searchList')),
+            h('input', {
+              type: 'search', value: listQuery, disabled: !searchableList.ready,
+              placeholder: activeTab === 'handled' ? t('searchLoaded') : t('searchList'),
+              onChange: (event) => setListSearches({ ...listSearches, [activeTab]: event.target.value }),
+            }),
+          ),
+          listQuery && h(Button, { onClick: () => setListSearches({ ...listSearches, [activeTab]: '' }) }, t('clearSearch')),
+          searchableList.ready && h('span', { className: 'gta-muted', role: 'status' },
+            `${listQuery ? t('searchResults') : t('loadedRecords')}${colon()}${listQuery ? `${searchableList.matches}/${searchableList.loaded}` : `${searchableList.loaded}/${activeTab === 'handled' ? handledData.total : searchableList.loaded}`}`),
+        ),
+        activeTab === 'inbox' && snapshot && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-inbox`, 'aria-labelledby': `${PANEL_ID}-tab-inbox`, tabIndex: 0 },
           inboxError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, `${t('inboxError')}${colon()}${inboxError}`),
           !inboxData && !inboxError && h('div', { className: 'gta-empty' }, t('loading')),
           inboxData && inboxData.length === 0 && h('div', { className: 'gta-empty' }, t('inboxEmpty')),
-          inboxData && inboxData.length > 0 && h('div', { className: 'gta-list gta-scroll-list', role: 'list', 'aria-label': t('inboxTitle') },
-            inboxData.map((item) => h('article', { className: 'gta-todo', key: item.todoId },
+          inboxData && inboxData.length > 0 && visibleInbox.length === 0 && h('div', { className: 'gta-empty', role: 'status' }, t('searchNoMatches')),
+          visibleInbox.length > 0 && h('div', { className: 'gta-list gta-scroll-list', role: 'list', 'aria-label': t('inboxTitle') },
+            visibleInbox.map((item) => h('article', { role: 'listitem', className: 'gta-todo', key: item.todoId },
               h('div', { className: 'gta-todo-main' },
                 h('div', { className: 'gta-todo-title' },
                   item.url
                     ? h('a', { href: item.url, target: '_blank', rel: 'noreferrer' }, item.title)
                     : h('span', null, item.title),
-                  h('span', { className: 'gta-tag' }, t('closureNeedsHuman')),
+                  h('span', { className: 'gta-tag gta-tag-attention' }, t('closureNeedsHuman')),
                   item.archived && h('span', { className: 'gta-tag' }, t('sessionArchived')),
                   item.pendingUnconfirmed && h('span', { className: 'gta-tag' }, t('inboxPendingUnconfirmed')),
                   item.routed && routedLabel(item, t) && h('span', { className: 'gta-tag gta-tag-routed' }, routedLabel(item, t)),
@@ -1178,19 +1308,38 @@ window.__ModuleLoader__.load({
               ),
             ))),
         ),
-        activeTab === 'todos' && snapshot && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-todos`, 'aria-labelledby': `${PANEL_ID}-tab-todos` },
-          h('div', { className: 'gta-section-title' }, h('span', { className: 'gta-muted' }, `${t('newFound')}${colon()}${snapshot.lastNewCount}`)),
+        activeTab === 'todos' && snapshot && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-todos`, 'aria-labelledby': `${PANEL_ID}-tab-todos`, tabIndex: 0 },
+          h('div', { className: 'gta-todo-toolbar' },
+            h('label', { className: 'gta-model-quick', title: t('sessionModelFixedHint') },
+              h('span', null, t('sessionModel')),
+              h('select', {
+                value: quickModelKey, disabled: busySet.has('settings'), 'aria-label': t('sessionModel'),
+                onChange: (event) => updateSettings({ sessionModel: event.target.value ? JSON.parse(event.target.value) : null }),
+              }, modelOptions(settings.sessionModel)),
+            ),
+            h(Button, {
+              pressed: settings.enabled, disabled: busySet.has('settings'),
+              title: settings.enabled ? t('disable') : t('defaultPaused'),
+              label: settings.enabled ? t('disable') : t('enable'),
+              onClick: () => updateSettings({ enabled: !settings.enabled }),
+            }, settings.enabled ? t('disable') : t('enable')),
+            h(Button, {
+              disabled: busySet.has('poll'), onClick: () => perform('poll', () => post('poll')),
+            }, busySet.has('poll') ? t('checking') : t('checkNow')),
+            h('span', { className: 'gta-muted gta-new-count' }, `${t('newFound')}${colon()}${snapshot.lastNewCount}`),
+          ),
           snapshot.todos.length === 0
             ? h('div', { className: 'gta-empty' }, t('noTodos'))
-            : h('div', { className: 'gta-list gta-scroll-list', role: 'list', 'aria-label': t('todoList') }, snapshot.todos.map((todo) =>
-                h('article', { className: 'gta-todo', key: todo.id },
+            : visibleTodos.length === 0 ? h('div', { className: 'gta-empty', role: 'status' }, t('searchNoMatches'))
+            : h('div', { className: 'gta-list gta-scroll-list', role: 'list', 'aria-label': t('todoList') }, visibleTodos.map((todo) =>
+                h('article', { role: 'listitem', className: 'gta-todo', key: todo.id },
                   h('div', { className: 'gta-todo-main' },
                     h('div', { className: 'gta-todo-title' },
                       todo.url
                         ? h('a', { href: todo.url, target: '_blank', rel: 'noreferrer' }, todo.title)
                         : h('span', null, todo.title),
                       todo.directMention && h('span', { className: 'gta-tag gta-tag-mention' }, t('directMention')),
-                      h('span', { className: `gta-tag ${(todo.executionStatus === 'completed' && (!todo.closure || todo.closure === 'closed')) || todo.outcome === 'merge-request-done' || todo.outcome === 'precheck-skipped' ? 'gta-tag-success' : ''}` }, todoStatusLabel(todo, t)),
+                      h('span', { className: `gta-tag ${recordStatusClass(todo)}` }, todoStatusLabel(todo, t)),
                       routedLabel(todo, t) && h('span', { className: 'gta-tag gta-tag-routed' }, routedLabel(todo, t)),
                     ),
                     h('div', { className: 'gta-muted gta-meta' }, [`#${todo.id}`, todo.project, todo.targetType, todo.action, todo.author && `@${todo.author}`, todo.skipReason, ...closureMeta(todo, t)].filter(Boolean).join(' · ')),
@@ -1199,9 +1348,9 @@ window.__ModuleLoader__.load({
                   h('div', { className: 'gta-todo-actions' },
                     todo.sessionId && h(Button, { onClick: () => openSession(todo.sessionId) }, t('openSession')),
                     // 主按钮只负责开会话：未处理开新会话；已处理为“重新处理”（不可逆，需二次确认）。
-                    (!todo.handled || todo.outcome !== 'merge-request-done') && h(Button, {
+                    canProcessTodo(todo) && h(Button, {
                       primary: !todo.handled,
-                      disabled: busySet.has(`dispatch:${todo.id}`) || todo.executionStatus === 'running',
+                      disabled: busySet.has(`dispatch:${todo.id}`) || (todo.executionStatus === 'running' || todo.executionStatus === 'starting'),
                       onClick: todo.handled
                         ? guardedRun(`reprocess:${todo.id}`, () => { void dispatchTodo(todo); })
                         : () => { void dispatchTodo(todo); },
@@ -1211,23 +1360,25 @@ window.__ModuleLoader__.load({
                     // “标记完成”独立为次级按钮（沿用原显示条件：非 directMention 的 MR），
                     // 不再与开会话共用按钮；同样不可逆，需二次确认。
                     !todo.handled && isMergeRequest(todo) && !todo.directMention && h(Button, {
-                      disabled: busySet.has(`dispatch:${todo.id}`) || todo.executionStatus === 'running',
+                      disabled: busySet.has(`dispatch:${todo.id}`) || (todo.executionStatus === 'running' || todo.executionStatus === 'starting'),
                       onClick: guardedRun(`markdone:${todo.id}`, () => { void dispatchTodo(todo); }),
                     }, busySet.has(`dispatch:${todo.id}`) ? '…'
                       : confirmKeys.has(`markdone:${todo.id}`) ? t('confirmMarkDone') : t('markDone')),
                     canRouteTodo(todo) && h(Button, {
-                      disabled: todo.executionStatus === 'running',
-                      onClick: () => openRouteTargets(todo),
+                      disabled: (todo.executionStatus === 'running' || todo.executionStatus === 'starting'),
+                      onClick: (event) => openRouteTargets(todo, event.currentTarget),
                     }, t('routeToSession')),
                   ),
                 ),
               )),
         ),
-        activeTab === 'issues' && snapshot && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-issues`, 'aria-labelledby': `${PANEL_ID}-tab-issues` },
+        activeTab === 'issues' && snapshot && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-issues`, 'aria-labelledby': `${PANEL_ID}-tab-issues`, tabIndex: 0 },
           h('div', { className: 'gta-issue-toolbar' },
             workspaceError && h('div', { className: 'gta-banner gta-warn gta-issue-settings-error', role: 'status' }, `${t('workspacesError')}${colon()}${workspaceError}`),
             h('details', { className: 'gta-advanced gta-issue-settings', title: t('issueSessionSettingsHint') },
-              h('summary', null, t('issueSessionSettings'), busySet.has('settings') && h('span', { className: 'gta-muted', role: 'status' }, ' …')),
+              h('summary', null, t('issueSessionSettings'),
+                h('span', { className: 'gta-muted gta-issue-summary', title: settings.issueSessionCwd || '' }, issueSettingsSummary(issueModel, settings.issueSessionCwd, t)),
+                busySet.has('settings') && h('span', { className: 'gta-muted', role: 'status' }, t('saving'))),
               workspaceData === null && !workspaceError && h('div', { className: 'gta-muted', role: 'status' }, t('loading')),
               h('div', { className: 'gta-form-grid' },
                 h('label', null, t('issueSessionModel'), h('select', {
@@ -1270,9 +1421,10 @@ window.__ModuleLoader__.load({
           issuesError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, `${t('issuesError')}${colon()}${issuesError}`),
           !issuesData && !issuesError && h('div', { className: 'gta-empty' }, t('loading')),
           issuesData && issuesData.items.length === 0 && issuesData.orphans.length === 0 && h('div', { className: 'gta-empty' }, t('issuesEmpty')),
-          issuesData && issuesData.items.length > 0 && h('div', { className: 'gta-list gta-scroll-list', role: 'list', 'aria-label': t('issuesTitle') },
-            issuesData.items.map((issue) =>
-              h('article', { className: 'gta-todo', key: issue.id },
+          issuesData && searchableList.loaded > 0 && searchableList.matches === 0 && h('div', { className: 'gta-empty', role: 'status' }, t('searchNoMatches')),
+          visibleIssues.length > 0 && h('div', { className: 'gta-list gta-scroll-list', role: 'list', 'aria-label': t('issuesTitle') },
+            visibleIssues.map((issue) =>
+              h('article', { role: 'listitem', className: 'gta-todo', key: issue.id },
                 h('div', { className: 'gta-todo-main' },
                   h('div', { className: 'gta-todo-title' },
                     issue.url
@@ -1284,7 +1436,7 @@ window.__ModuleLoader__.load({
                         key: 'label:more', className: 'gta-tag gta-tag-neutral', title: issue.labels.slice(2).join(', '),
                       }, `+${issue.labels.length - 2}`),
                     ] : []),
-                    issue.handled && h('span', { className: `gta-tag ${issue.executionStatus === 'completed' || issue.closure === 'closed' ? 'gta-tag-success' : ''}` }, handledStatusLabel(issue, t)),
+                    issue.handled && h('span', { className: `gta-tag ${recordStatusClass(issue)}` }, handledStatusLabel(issue, t)),
                     routedLabel(issue, t) && h('span', { className: 'gta-tag gta-tag-routed' }, routedLabel(issue, t)),
                   ),
                   h('div', { className: 'gta-muted gta-meta' }, [
@@ -1307,18 +1459,18 @@ window.__ModuleLoader__.load({
                     : issue.handled ? t('reprocess') : t('process')),
                 ),
               ))),
-          issuesData && issuesData.orphans.length > 0 && h('div', { className: 'gta-section-title gta-subsection-title' },
+          visibleOrphans.length > 0 && h('div', { className: 'gta-section-title gta-subsection-title' },
             h('h2', null, t('issuesOrphans')),
-            h('span', { className: 'gta-muted' }, `${issuesData.orphans.length}`)),
-          issuesData && issuesData.orphans.length > 0 && h('div', { className: 'gta-list', role: 'list', 'aria-label': t('issuesOrphans') },
-            issuesData.orphans.map((issue) =>
-              h('article', { className: 'gta-todo', key: `orphan:${issue.id}` },
+            h('span', { className: 'gta-muted' }, `${visibleOrphans.length}`)),
+          visibleOrphans.length > 0 && h('div', { className: 'gta-list', role: 'list', 'aria-label': t('issuesOrphans') },
+            visibleOrphans.map((issue) =>
+              h('article', { role: 'listitem', className: 'gta-todo', key: `orphan:${issue.id}` },
                 h('div', { className: 'gta-todo-main' },
                   h('div', { className: 'gta-todo-title' },
                     issue.url
                       ? h('a', { href: issue.url, target: '_blank', rel: 'noreferrer' }, issue.title)
                       : h('span', null, issue.title),
-                    h('span', { className: `gta-tag ${issue.closure === 'closed' || issue.executionStatus === 'completed' ? 'gta-tag-success' : ''}` }, handledStatusLabel(issue, t)),
+                    h('span', { className: `gta-tag ${recordStatusClass(issue)}` }, handledStatusLabel(issue, t)),
                   ),
                   h('div', { className: 'gta-muted gta-meta' }, [
                     `#${issue.iid ?? ''}`, issue.project,
@@ -1331,23 +1483,24 @@ window.__ModuleLoader__.load({
                 ),
               ))),
         ),
-        activeTab === 'handled' && snapshot && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-handled`, 'aria-labelledby': `${PANEL_ID}-tab-handled` },
+        activeTab === 'handled' && snapshot && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-handled`, 'aria-labelledby': `${PANEL_ID}-tab-handled`, tabIndex: 0 },
           h('div', { className: 'gta-section-title' }, h('span', { className: 'gta-muted' },
             handledData ? `${handledData.items.length}/${handledData.total}` : `${snapshot.handledCount}`)),
           handledError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, `${t('handledTitle')}${colon()}${handledError}`),
           !handledData && !handledError && h('div', { className: 'gta-empty' }, t('loading')),
           handledData && handledData.total === 0 && h('div', { className: 'gta-empty' }, t('handledEmpty')),
-          handledData && handledData.items.length > 0 && h('div', { className: 'gta-list gta-scroll-list', role: 'list', 'aria-label': t('handledTitle') }, handledData.items.map((item) =>
-                h('article', { className: 'gta-todo', key: `${item.todoId}-${item.round}` },
+          handledData && handledData.items.length > 0 && visibleHandled.length === 0 && h('div', { className: 'gta-empty', role: 'status' }, t('searchNoMatches')),
+          visibleHandled.length > 0 && h('div', { className: 'gta-list gta-scroll-list', role: 'list', 'aria-label': t('handledTitle') }, visibleHandled.map((item) =>
+                h('article', { role: 'listitem', className: 'gta-todo', key: `${item.todoId}-${item.round}` },
                   h('div', { className: 'gta-todo-main' },
                     h('div', { className: 'gta-todo-title' },
                       item.url
                         ? h('a', { href: item.url, target: '_blank', rel: 'noreferrer' }, item.title)
                         : h('span', null, item.title),
-                      h('span', { className: `gta-tag ${item.outcome === 'merge-request-done' || item.outcome === 'precheck-skipped' || item.outcome === 'rule-skipped' || item.executionStatus === 'completed' ? 'gta-tag-success' : ''}` }, handledStatusLabel(item, t)),
+                      h('span', { className: `gta-tag ${recordStatusClass(item)}` }, handledStatusLabel(item, t)),
                       routedLabel(item, t) && h('span', { className: 'gta-tag gta-tag-routed' }, routedLabel(item, t)),
                       item.closure && handledStatusLabel(item, t) !== closureLabel(item.closure, t)
-                        && h('span', { className: `gta-tag ${item.closure === 'closed' ? 'gta-tag-success' : ''}` }, closureLabel(item.closure, t)),
+                        && h('span', { className: `gta-tag ${recordStatusClass({ closure: item.closure })}` }, closureLabel(item.closure, t)),
                       item.source === 'issue' && h('span', { className: 'gta-tag gta-tag-mention' }, t('issueTag')),
                       h('span', { className: 'gta-tag gta-tag-mention' }, item.automatic ? t('autoDispatch') : t('manualDispatch')),
                       item.archived && h('span', { className: 'gta-tag gta-tag-success' }, t('sessionArchived')),
@@ -1382,12 +1535,12 @@ window.__ModuleLoader__.load({
           handledData && handledData.items.length < handledData.total && h('div', { className: 'gta-load-more' },
             h(Button, { disabled: Boolean(handledBusy), onClick: () => fetchHandled(true) }, handledBusy ? '…' : t('loadMore'))),
         ),
-        activeTab === 'workspaces' && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-workspaces`, 'aria-labelledby': `${PANEL_ID}-tab-workspaces` },
+        activeTab === 'workspaces' && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-workspaces`, 'aria-labelledby': `${PANEL_ID}-tab-workspaces`, tabIndex: 0 },
           workspaceError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, `${t('workspacesError')}${colon()}${workspaceError}`),
           workspaceOptions.length === 0 && !workspaceError && h('div', { className: 'gta-empty' }, t('noWorkspaces')),
           h('div', { className: 'gta-list gta-scroll-list', role: 'list', 'aria-label': t('workspacesTitle') },
             workspaceOptions.map((workspace) =>
-              h('article', { className: 'gta-todo gta-workspace', key: workspace.workspaceId || 'unassigned' },
+              h('article', { role: 'listitem', className: 'gta-todo gta-workspace', key: workspace.workspaceId || 'unassigned' },
                 h('div', { className: 'gta-todo-main' },
                   h('div', { className: 'gta-todo-title' },
                     h('span', { className: 'gta-workspace-name', title: workspace.path },
@@ -1420,7 +1573,7 @@ window.__ModuleLoader__.load({
               )),
           ),
         ),
-        activeTab === 'logs' && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-logs`, 'aria-labelledby': `${PANEL_ID}-tab-logs` },
+        activeTab === 'logs' && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-logs`, 'aria-labelledby': `${PANEL_ID}-tab-logs`, tabIndex: 0 },
           h('div', { className: 'gta-section-title' },
             h('div', { className: 'gta-todo-actions' },
               logData?.dropped > 0 && h('span', { className: 'gta-muted', title: `${logData.dropped} ${t('logsDropped')}` }, `-${logData.dropped}`),
@@ -1442,12 +1595,12 @@ window.__ModuleLoader__.load({
           logData && logData.items.length === 0 && h('div', { className: 'gta-empty' }, t('logsEmpty')),
           logData && logData.items.length > 0 && h('div', { className: 'gta-list gta-scroll-list', role: 'list', 'aria-label': t('logsTitle') },
             (logFilter === 'warn' ? logData.items.filter((entry) => entry.level === 'warn' || entry.level === 'error') : logData.items).map((entry, index) =>
-              h('article', { className: 'gta-todo', key: `${entry.ts}-${index}` },
+              h('article', { role: 'listitem', className: 'gta-todo', key: `${entry.ts}-${index}` },
                 h('div', { className: 'gta-todo-main' },
                   h('div', { className: 'gta-todo-title', style: { fontFamily: 'monospace', fontSize: '12px', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } },
                     h('span', { className: 'gta-muted', style: { marginRight: '8px', flexShrink: 0 } }, formatTime(entry.ts, '')),
                     h('span', {
-                      className: `gta-tag${entry.level === 'warn' ? ' gta-tag-mention' : entry.level === 'error' ? ' gta-tag-routed' : ''}`,
+                      className: `gta-tag ${entry.level === 'warn' ? 'gta-tag-attention' : entry.level === 'error' ? 'gta-tag-error' : 'gta-tag-neutral'}`,
                       style: { marginRight: '8px', minWidth: '44px', textAlign: 'center', flexShrink: 0 },
                     }, (entry.level ?? 'info').toUpperCase()),
                     h('span', { style: { flex: 1 } }, entry.message),
@@ -1461,6 +1614,7 @@ window.__ModuleLoader__.load({
         },
           h('section', {
             className: 'gta-route-dialog', role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'gta-route-title',
+            ref: routeDialogRef, tabIndex: -1,
           },
             h('div', { className: 'gta-route-header' },
               h('div', { className: 'gta-route-heading' },
@@ -1489,16 +1643,20 @@ window.__ModuleLoader__.load({
             routeLoading && !routeData && h('div', { className: 'gta-empty' }, t('routeLoading')),
             routeData && !routeLoading && allRouteItems.length === 0 && h('div', { className: 'gta-empty' }, t('routeEmpty')),
             routeData && !routeLoading && allRouteItems.length > 0 && routeItems.length === 0 && h('div', { className: 'gta-empty' }, t('routeNoMatches')),
-            routeData && routeItems.length > 0 && h('div', { className: 'gta-route-targets', role: 'listbox', 'aria-label': t('routeToSession') },
-              routeItems.map((item) => h('button', {
-                type: 'button', role: 'option', key: item.sessionId,
+            routeData && routeItems.length > 0 && h('div', { className: 'gta-route-targets', role: 'group', 'aria-label': t('routeToSession') },
+              routeItems.map((item) => h('label', {
+                key: item.sessionId,
                 className: `gta-route-target${routeSelection === item.sessionId ? ' gta-route-target-selected' : ''}`,
-                'aria-selected': routeSelection === item.sessionId,
-                disabled: item.accepting === false || busySet.has(`route:${routeTodo.id}`),
-                onClick: () => setRouteSelection(item.sessionId),
+                'aria-disabled': item.accepting === false || busySet.has(`route:${routeTodo.id}`),
               },
-                h('div', { className: 'gta-route-target-main' },
-                  h('div', { className: 'gta-route-target-title' },
+                h('input', {
+                  type: 'radio', name: `${PANEL_ID}-route-target`, value: item.sessionId,
+                  checked: routeSelection === item.sessionId,
+                  disabled: item.accepting === false || busySet.has(`route:${routeTodo.id}`),
+                  onChange: () => setRouteSelection(item.sessionId),
+                }),
+                h('span', { className: 'gta-route-target-main' },
+                  h('span', { className: 'gta-route-target-title' },
                     h('span', { className: 'gta-route-target-name', title: item.title }, item.title || t('sessionUnknown')),
                     item.sameTarget === true && h('span', { className: 'gta-tag gta-tag-mention' }, t('routeSameTarget')),
                     item.plugin === true && h('span', { className: 'gta-tag gta-tag-mention' }, t('pluginSessionTag')),
@@ -1507,7 +1665,7 @@ window.__ModuleLoader__.load({
                       routeData.busyRouteMode === 'steer' ? t('routeModeSteer') : t('routeModeQueue')),
                     item.accepting === false && h('span', { className: 'gta-tag' }, t('routeNotAccepting')),
                   ),
-                  h('div', {
+                  h('span', {
                     className: 'gta-muted gta-route-target-meta', title: [item.sessionId, item.cwd].filter(Boolean).join(' · '),
                   }, [item.sessionId, item.cwd, item.updatedAt ? `${t('lastActive')}${colon()}${formatTime(item.updatedAt, '')}` : ''].filter(Boolean).join(' · ')),
                 ),
@@ -1526,17 +1684,17 @@ window.__ModuleLoader__.load({
     }
 
     const CSS = `
-      .gta-root{box-sizing:border-box;width:100%;min-width:0;height:100%;min-height:320px;overflow:auto;padding:18px 22px 32px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.45}
+      .gta-root{box-sizing:border-box;width:100%;min-width:0;height:100%;min-height:320px;overflow:auto;padding:12px 16px 20px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-size:13px;line-height:1.45}
       .gta-root *{box-sizing:border-box}
-      .gta-root h1{font-size:20px;line-height:1.25;margin:0;font-weight:650}
+      .gta-root h1{font-size:17px;line-height:1.25;margin:0;font-weight:650}
       .gta-root h2{font-size:15px;margin:0 0 10px;font-weight:600}
       .gta-root p{margin:4px 0 0}
-      .gta-header{display:flex;align-items:center;justify-content:space-between;gap:16px;max-width:1180px;margin:0 auto}
+      .gta-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;max-width:1180px;margin:0 auto}
       .gta-title-row{display:flex;align-items:center;gap:8px}
       .gta-title-icon{color:var(--dsw-alias-brand-primary);display:flex}
       .gta-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
       .gta-model-quick{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dsw-alias-label-secondary)}
-      .gta-root .gta-model-quick select{width:auto;min-width:150px;max-width:220px}
+      .gta-root .gta-model-quick select{width:auto;min-width:140px;max-width:240px}
       .gta-button{appearance:none;min-height:28px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);border-radius:6px;padding:4px 9px;font-family:inherit;font-size:12px;line-height:1.4;cursor:pointer;white-space:nowrap}
       .gta-button:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-brand-primary)}
       .gta-button:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
@@ -1548,44 +1706,63 @@ window.__ModuleLoader__.load({
       .gta-attention{color:var(--dsw-alias-state-warn-primary)}
       .gta-banner{max-width:1180px;min-width:0;overflow-wrap:anywhere;margin:8px auto;padding:8px 10px;border-radius:6px;border:1px solid var(--dsw-alias-state-error-primary);background:var(--dsw-alias-bg-layer-1)}
       .gta-warn{border-color:var(--dsw-alias-state-warn-primary)}
-      .gta-card,.gta-stats,.gta-section{max-width:1180px;margin:12px auto}
-      .gta-card{border:1px solid var(--dsw-alias-border-l1);border-radius:9px;background:var(--dsw-alias-bg-layer-1);padding:14px}
-      .gta-form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px 14px}
+      .gta-card,.gta-stats,.gta-section{max-width:1180px;margin:10px auto}
+      .gta-card{border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-layer-1);padding:10px}
+      .gta-form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:10px 14px}
       .gta-form-grid label{display:flex;flex-direction:column;gap:5px;color:var(--dsw-alias-label-secondary);font-size:12px}
       .gta-wide{grid-column:1/-1}
       .gta-root input[type=text],.gta-root input[type=password],.gta-root input[type=number],.gta-root select,.gta-root textarea{width:100%;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font-family:inherit;font-size:12px;padding:5px 8px}
       .gta-root textarea{resize:vertical;line-height:1.45}
       .gta-check{display:flex;align-items:center;gap:7px;margin:0;font-size:12px}
-      .gta-checks-main{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px 14px;margin-top:12px}
+      .gta-checks-main{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:8px 14px;margin-top:12px}
       .gta-form-actions{display:flex;gap:6px;margin-top:12px;flex-wrap:wrap}
-      .gta-stats{display:flex;flex-wrap:wrap;align-items:center;gap:0;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1);padding:4px 6px}
-      .gta-stat{display:flex;align-items:baseline;gap:6px;padding:4px 9px;border-right:1px solid var(--dsw-alias-border-l1);white-space:nowrap}
+      .gta-stats{display:flex;flex-wrap:wrap;align-items:center;gap:4px 16px;padding:0 0 6px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+      .gta-stat{display:flex;align-items:baseline;gap:5px;padding:2px 0;white-space:nowrap}
       .gta-stat>span{color:var(--dsw-alias-label-secondary);font-size:11.5px}
       .gta-stat>strong{font-size:13px;font-weight:600}
       .gta-stat-time{margin-left:auto;border-right:0}
       .gta-stat-time>strong{font-size:12px}
       .gta-section-title{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-height:28px;margin-bottom:8px}
       .gta-section-title h2{margin:0}
-      .gta-issue-toolbar{display:flex;align-items:flex-start;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+      .gta-issue-toolbar{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:8px}
       .gta-issue-settings-error{flex-basis:100%;min-width:0;overflow-wrap:anywhere}
-      .gta-issue-settings{flex:0 1 auto;min-width:0}
+      .gta-issue-settings{flex:1 1 300px;min-width:0}
       .gta-issue-settings[open]{flex:1 1 720px}
-      .gta-issue-settings>.gta-form-grid{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
+      .gta-issue-settings>.gta-form-grid{grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr))}
       .gta-subsection-title{justify-content:space-between;margin-top:14px}
-      .gta-tabs{max-width:1180px;margin:12px auto 0;display:flex;gap:2px;border-bottom:1px solid var(--dsw-alias-border-l1);overflow-x:auto;scrollbar-width:thin}
+      .gta-feedback{max-width:1180px;margin:4px auto}
+      .gta-poll-state{font-size:12px}
+      .gta-needs-human{color:var(--dsw-alias-state-warn-primary);border-color:var(--dsw-alias-state-warn-primary);font-weight:650}
+      .gta-tab-group{padding:6px 4px;color:var(--dsw-alias-label-secondary);font-size:11px;white-space:nowrap}
+      .gta-tab-group-environment{margin-left:auto;border-left:1px solid var(--dsw-alias-border-l1);padding-left:12px}
+      .gta-tab-count{margin-left:6px;font-size:11px;font-weight:600}
+      .gta-list-tools{max-width:1180px;margin:8px auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+      .gta-list-search{display:flex;align-items:center;gap:8px;flex:1 1 250px;min-width:0;color:var(--dsw-alias-label-secondary);font-size:12px}
+      .gta-list-search>span{flex:none}
+      .gta-root input[type=search]{min-width:0;width:100%;min-height:28px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;padding:4px 8px}
+      .gta-todo-toolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:8px}
+      .gta-new-count{margin-left:auto}
+      .gta-issue-summary{margin-left:10px;overflow-wrap:anywhere}
+      .gta-tag.gta-tag-attention{color:var(--dsw-alias-state-warn-primary);border-color:var(--dsw-alias-state-warn-primary)}
+      .gta-tag.gta-tag-error{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}
+      .gta-root :is(input,select,textarea,summary,.gta-session-link,.gta-reply-toggle):focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
+      .gta-section:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
+      .gta-root .gta-route-target input[type=radio]{width:auto;flex:none;accent-color:var(--dsw-alias-brand-primary)}
+      .gta-tabs{max-width:1180px;margin:8px auto 0;display:flex;flex-wrap:wrap;align-items:center;gap:2px;border-bottom:1px solid var(--dsw-alias-border-l1);overflow-x:auto;scrollbar-width:thin}
       .gta-tab{appearance:none;flex:none;margin-bottom:-1px;padding:6px 10px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);font-family:inherit;font-size:12.5px;cursor:pointer;white-space:nowrap}
       .gta-tab:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1)}
       .gta-tab:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
       .gta-tab-active{border-bottom-color:var(--dsw-alias-brand-primary);color:var(--dsw-alias-brand-primary);font-weight:600}
-      .gta-list{display:flex;flex-direction:column;gap:6px}
+      .gta-list{display:flex;flex-direction:column;gap:0;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;overflow:hidden}
       .gta-load-more{display:flex;justify-content:center;padding:8px 0 2px}
       .gta-scroll-list{padding:0}
-      .gta-todo{display:flex;align-items:center;gap:10px;padding:9px 12px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}
+      .gta-todo{display:flex;align-items:center;gap:10px;padding:7px 10px;border-bottom:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
+      .gta-todo:last-child{border-bottom:0}
       .gta-todo-main{min-width:0;flex:1}
       .gta-todo-title{display:flex;align-items:center;gap:4px 8px;flex-wrap:wrap;font-weight:550;line-height:1.35}
       .gta-todo-title>a{color:var(--dsw-alias-label-primary);text-decoration:none;min-width:0;max-width:100%;flex:1 1 220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .gta-todo-title>a:hover{color:var(--dsw-alias-brand-primary);text-decoration:underline}
-      .gta-tag{flex:none;font-size:10.5px;line-height:1.5;padding:0 6px;border-radius:9px;color:var(--dsw-alias-state-warn-primary);border:1px solid var(--dsw-alias-state-warn-primary)}
+      .gta-tag{flex:none;font-size:10.5px;line-height:1.5;padding:0 6px;border-radius:9px;color:var(--dsw-alias-label-secondary);border:1px solid var(--dsw-alias-border-l2)}
       .gta-tag-success{color:var(--dsw-alias-state-success-primary);border-color:var(--dsw-alias-state-success-primary)}
       .gta-tag-mention{color:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary)}
       .gta-tag-neutral{color:var(--dsw-alias-label-secondary);border-color:var(--dsw-alias-border-l2)}
@@ -1596,7 +1773,7 @@ window.__ModuleLoader__.load({
       .gta-workspace-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .gta-workspace-sessions{display:flex;flex-direction:column;gap:4px;margin-top:2px}
       .gta-workspace-session{display:flex;align-items:center;gap:8px;padding:5px 8px;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-base);min-width:0}
-      .gta-session-link{appearance:none;border:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-weight:550;padding:0;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto;min-width:0}
+      .gta-session-link{appearance:none;min-height:28px;border:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-weight:550;padding:2px 0;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto;min-width:0}
       .gta-session-link:hover{color:var(--dsw-alias-brand-primary);text-decoration:underline}
       .gta-session-name{font-weight:550;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto;min-width:0}
       .gta-session-meta{margin-left:auto;flex:none}
@@ -1610,12 +1787,12 @@ window.__ModuleLoader__.load({
       .gta-security-hint{margin:8px 0 0}
       .gta-advanced .gta-checks{grid-column:1/-1;display:flex;flex-direction:column;gap:6px}
       .gta-advanced .gta-check{margin-top:2px}
-      .gta-empty{padding:18px;border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;text-align:center;color:var(--dsw-alias-label-secondary)}
+      .gta-empty{padding:14px;border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;text-align:center;color:var(--dsw-alias-label-secondary)}
       .gta-fatal{max-width:720px;margin:48px auto;padding:24px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:12px;background:var(--dsw-alias-bg-layer-1)}
       .gta-fatal p{white-space:pre-wrap;word-break:break-word;margin:12px 0 20px;color:var(--dsw-alias-state-error-primary)}
       .gta-root .gta-tag-routed{color:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary)}
-      .gta-root .gta-route-backdrop{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;background:rgb(0 0 0 / .38)}
-      .gta-root .gta-route-dialog{display:flex;flex-direction:column;width:min(680px,100%);max-height:min(80dvh,680px);overflow:hidden;padding:14px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);box-shadow:0 18px 60px rgb(0 0 0 / .25)}
+      .gta-root .gta-route-backdrop{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 38%,transparent)}
+      .gta-root .gta-route-dialog{display:flex;flex-direction:column;width:min(680px,100%);max-height:min(80dvh,680px);overflow:hidden;padding:14px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);box-shadow:0 18px 60px color-mix(in srgb,var(--dsw-alias-label-primary) 25%,transparent)}
       .gta-root .gta-route-header{display:flex;align-items:center;gap:12px;flex:none}
       .gta-root .gta-route-heading{min-width:0;flex:1}
       .gta-root .gta-route-heading h2{margin:0}
@@ -1627,18 +1804,18 @@ window.__ModuleLoader__.load({
       .gta-root .gta-route-dialog>.gta-empty{flex:none}
       .gta-root .gta-route-targets{display:flex;flex:1 1 auto;flex-direction:column;gap:6px;min-height:80px;overflow-y:auto;overscroll-behavior:contain;padding:2px;scrollbar-width:thin}
       .gta-root .gta-route-target{appearance:none;width:100%;display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:7px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;text-align:left;cursor:pointer}
-      .gta-root .gta-route-target:hover:not(:disabled){border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2)}
-      .gta-root .gta-route-target:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
-      .gta-root .gta-route-target:disabled{opacity:.5;cursor:default}
-      .gta-root .gta-route-target-selected:not(:disabled){border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2)}
-      .gta-root .gta-route-target-main{min-width:0;flex:1}
+      .gta-root .gta-route-target:hover:not([aria-disabled=true]){border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2)}
+      .gta-root .gta-route-target:focus-within{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
+      .gta-root .gta-route-target[aria-disabled=true]{opacity:.5;cursor:default}
+      .gta-root .gta-route-target-selected:not([aria-disabled=true]){border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2)}
+      .gta-root .gta-route-target-main{display:block;min-width:0;flex:1}
       .gta-root .gta-route-target-title{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-weight:550}
       .gta-root .gta-route-target-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .gta-root .gta-route-target-meta{margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .gta-root .gta-route-target-meta{display:block;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .gta-root .gta-route-load{flex:none;margin-left:auto;color:var(--dsw-alias-label-secondary);font-size:11.5px;white-space:nowrap}
       .gta-root .gta-route-footer{display:flex;justify-content:flex-end;gap:6px;flex:none;padding-top:10px}
-      .gta-reply{margin-top:6px}
-      .gta-reply-toggle{appearance:none;border:0;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:12px;padding:0;cursor:pointer}
+      .gta-reply{margin-top:2px}
+      .gta-reply-toggle{appearance:none;min-height:28px;border:0;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:12px;padding:0;cursor:pointer}
       .gta-reply-toggle:hover{text-decoration:underline}
       .gta-reply-body{margin-top:5px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-base);max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12px}
       .gta-reply-link{color:var(--dsw-alias-brand-primary);text-decoration:none;margin-right:6px}
@@ -1649,8 +1826,12 @@ window.__ModuleLoader__.load({
       .gta-digest-list a{color:var(--dsw-alias-label-primary);text-decoration:none}
       .gta-digest-list a:hover{color:var(--dsw-alias-brand-primary)}
       .gta-digest-note,.gta-digest-reply{flex-basis:100%}
-      @media(max-width:720px){.gta-root{padding:14px 16px 24px}
+      @media(max-width:720px){.gta-root{padding:12px 12px 20px}
       .gta-header{align-items:flex-start;flex-direction:column}
+      .gta-tab-group-environment{margin-left:0}
+      .gta-issue-summary{display:block;margin:4px 0 0}
+      .gta-list-search{flex-wrap:wrap;flex-basis:100%}
+      .gta-new-count{margin-left:0}
       .gta-actions{justify-content:flex-start;width:100%}
       .gta-model-quick{flex:1 1 100%}
       .gta-root .gta-model-quick select{flex:1;max-width:none}
@@ -1658,9 +1839,9 @@ window.__ModuleLoader__.load({
       .gta-todo-actions{width:100%;justify-content:flex-end}
       .gta-stat-time{margin-left:0}}
       @media(max-width:640px){.gta-root{padding:12px 12px 20px}
-      .gta-stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding:5px}
-      .gta-stat{padding:4px 6px;border-right:0;white-space:normal}
-      .gta-stat-time{grid-column:1/-1}
+      .gta-stats{display:flex;flex-wrap:wrap;padding:0 0 6px}
+      .gta-stat{padding:2px 0;white-space:normal}
+      .gta-stat-time{flex-basis:100%}
       .gta-root .gta-route-backdrop{padding:8px}
       .gta-root .gta-route-dialog{padding:12px;max-height:calc(100dvh - 16px)}}
     `;

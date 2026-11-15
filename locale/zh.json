@@ -1,6 +1,6 @@
 {
   "meta": {
-    "title": "GitLab Todo 轮询助手",
-    "description": "直接读取 GitLab Todo，并为他人在评论中直接提及你的事项创建 DSH 会话。"
+    "title": "GitLab 工作台",
+    "description": "紧凑的 GitLab 工作台：自动处理 Todo 提及、手动处理指派 Issue，并跟踪会话、闭环与人工接手。"
   }
 }
