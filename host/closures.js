@@ -62,7 +62,8 @@ export const closuresMethods = {
   /**
    * 闭环裁决。todos 必须是 fetchStartedAt 时刻之后取得的待办列表：
    * - verifying：回合在取数之前就已结束的记录才裁决（取数早于回合结束的列表可能还带着已标记的 Todo）。
-   * - follow-up / needs-human：Todo 已从待办列表消失（被续办会话、关联会话或人标记完成）→ 闭环。
+   * - follow-up：Todo 已从待办列表消失（被续办会话、关联会话或人标记完成）→ 闭环。
+   * - Todo needs-human：保持待人工确认，不因 Todo 消失而自动闭环；Issue 仍只认实际关闭。
    */
   async assessClosures(todos, fetchStartedAt) {
     const pendingIds = new Set(todos.map((todo) => todo.id));
@@ -79,6 +80,13 @@ export const closuresMethods = {
         continue;
       }
       const issue = isIssueItem(record.item);
+      // 取消归档失败不能靠改标志掩盖：保留下轮重试；人工后来手动归档会清空该错误，不再强开。
+      if (record.closure === 'needs-human' && record.archived === true
+        && String(record.archiveError ?? '').startsWith('需人工会话取消归档失败')) {
+        await this.restoreNeedsHumanSession(record);
+        changed = true;
+      }
+      if (!issue && record.closure === 'needs-human') continue;
       const todoPending = pendingIds.has(record.id);
       // Issue 闭环事实：只认“Issue 已关闭”——证明为 true 才算 closed，
       // 其余（仍开放、不可判定）一律按“仍开放”保守处理。
@@ -155,14 +163,34 @@ export const closuresMethods = {
       && Array.isArray(record.openMrs) && record.openMrs.length > 0) {
       record.watch = { mrs: record.openMrs.slice(0, 3), lastStates: {} };
     }
-    // 需人工接手的会话保留不归档，方便人直接打开接着做；闭环或已排续办的才归档。
-    if (verdict.closure !== 'needs-human') await this.archiveRecord(record);
+    // 需人工接手的会话保留不归档；若上一轮 follow-up 已归档，必须真实取消归档。
+    if (verdict.closure === 'needs-human') await this.restoreNeedsHumanSession(record);
+    else await this.archiveRecord(record);
   },
 
-  /** 归档一条记录的会话：路由目标不归档；共享会话还有其他任务时也不归档。 */
+  /** 确保 needs-human 可接手：只管理插件自己的非路由会话；失败保留真实 archived 并留错误。 */
+  async restoreNeedsHumanSession(record) {
+    if (!record?.sessionId || record.routed === true || record.archived !== true) return false;
+    try {
+      await this.host.unarchiveSession(record.sessionId);
+      record.archived = false;
+      record.archiveError = '';
+      this.logger.info(`需人工会话 ${record.sessionId} 已取消归档，保留供人工接手。`);
+      return true;
+    } catch (error) {
+      record.archiveError = `需人工会话取消归档失败：${errorMessage(error)}`.slice(0, 500);
+      this.logger.warn(record.archiveError);
+      return false;
+    }
+  },
+
+  /** 归档一条记录的会话：需人工/路由目标不归档；共享会话还有其他任务时也不归档。 */
   async archiveRecord(record) {
-    if (!record?.sessionId || record.archived || record.routed === true) return;
+    if (!record?.sessionId || record.archived || record.routed === true || record.closure === 'needs-human') return;
     if (record.executionStatus !== 'completed' || this.state.settings.autoArchive === false) return;
+    // 同会话的另一条 Todo 可能已停但仍需人工，不能经 closed 主记录的补归档绕过保护。
+    if (Object.values(this.state.handled).some((other) => other?.sessionId === record.sessionId
+      && other.closure === 'needs-human' && !other.acknowledgedAt)) return;
     const tracked = this.trackedSessions.get(record.sessionId);
     if ([...tracked?.todos.keys() ?? []].some((todoId) => todoId !== record.id)) return;
     if (Object.values(this.state.pending).some((pending) => pending.sessionId === record.sessionId && pending.item?.id !== record.id)) return;

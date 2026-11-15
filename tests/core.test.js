@@ -593,6 +593,7 @@ function runtimeWithPrompt(prompt, options = {}) {
     archives: [],
     unarchives: [],
     failArchive: false,
+    failUnarchive: false,
     sessions,
     failList: false,
     listRequests: [],
@@ -634,6 +635,7 @@ function runtimeWithPrompt(prompt, options = {}) {
         assert.ok(['archiveSession', 'unarchiveSession'].includes(call.method));
         assert.deepEqual(call.args, { request: { sessionId: call.args.request.sessionId } });
         if (call.method === 'unarchiveSession') {
+          if (calls.failUnarchive) throw new Error('unarchive unavailable');
           calls.unarchives.push(call.args.request.sessionId);
           return { archivedSessionIds: [] };
         }
@@ -1450,7 +1452,11 @@ test('closure verdict trusts GitLab facts over the session report', () => {
   assert.equal(assessClosure({ todoPending: true, report: { status: 'waiting' }, round: 2, baseDelayMinutes: 15 }).delayMinutes, 30);
   // 需人工：不续办；但漏回复时先续办补回复。
   assert.equal(assessClosure({ todoPending: true, replied: true, report: { status: 'needs-human', summary: '等决策' } }).closure, 'needs-human');
+  // 即使会话同时把 Todo 标完成，自述需人工也不能被自动改成 closed 并归档。
+  assert.equal(assessClosure({ todoPending: false, replied: null, report: { status: 'needs-human', summary: '等决策' } }).closure, 'needs-human');
   assert.equal(assessClosure({ todoPending: true, replied: false, report: { status: 'needs-human' } }).closure, 'follow-up');
+  // Issue 的闭环仍只认实际关闭状态，不套用 Todo 的需人工优先规则。
+  assert.equal(assessClosure({ todoPending: false, unit: 'issue', report: { status: 'needs-human' } }).closure, 'closed');
   // Todo 已标记但讨论串没有回复 → 仍未闭环。
   const noReply = assessClosure({ todoPending: false, replied: false });
   assert.equal(noReply.closure, 'follow-up');
@@ -1544,7 +1550,7 @@ test('an open loop schedules a follow-up session that inherits the handover', as
   await runtime.stop();
 });
 
-test('needs-human keeps the session unarchived and closes once the todo disappears', async () => {
+test('needs-human stays unarchived until explicit acknowledgement even when the todo disappears', async () => {
   const { runtime, calls } = autoRuntime();
   let pending = [directNoteTodo];
   runtime.fetchTodos = async () => normalizeTodos(pending);
@@ -1558,14 +1564,21 @@ test('needs-human keeps the session unarchived and closes once the todo disappea
   assert.equal(record.archived, false);
   assert.deepEqual(calls.archives, []);
   assert.equal(runtime.snapshot().closure.needsHuman, 1);
-  // 不自动续办。
+  // 不自动续办；Todo 消失也不会越过需人工状态自动闭环归档。
+  pending = [];
   await runtime.executePoll('test');
   await runtime.pump();
   assert.equal(calls.create, 1);
-  // 人（或关联会话）把 Todo 标记完成后，下一轮轮询闭环并归档。
-  pending = [];
-  await runtime.executePoll('test');
+  assert.equal(record.closure, 'needs-human');
+  assert.equal(record.archived, false);
+  assert.deepEqual(calls.archives, []);
+  assert.equal(runtime.snapshot().closure.needsHuman, 1);
+  // 只有明确的“我已处理”才闭环并按设置归档。
+  runtime.markTodoDone = async () => {};
+  const acknowledged = await runtime.acknowledgeNeedsHuman(record.id);
+  assert.equal(acknowledged.ok, true);
   assert.equal(record.closure, 'closed');
+  assert.ok(record.acknowledgedAt > 0);
   assert.deepEqual(calls.archives, ['session-1']);
   await runtime.stop();
 });
@@ -1697,12 +1710,17 @@ test('a new mention on the same target is told about the open todo left behind',
   assert.match(prompts[1], /同一对象上遗留的未闭环 Todo/);
   assert.match(prompts[1], /Todo direct：https:\/\/gitlab\.local\/group\/project\/-\/issues\/7#note_10（上次结论：等待 @other-user 选择方案）/);
   assert.match(prompts[1], /- https:\/\/gitlab\.local\/group\/project\/-\/merge_requests\/12/);
-  // 新会话把两条 Todo 都标记完成 → 两条记录都闭环。
+  // 新会话完成新 Todo；旧需人工记录仍须由人确认，不能因关联会话标记完成而静默归档。
   pending = [];
   calls.complete('session-2', 'completed', closureLine({ status: 'done', summary: '按方案 A 完成', resumeAfterMinutes: 0, openMrs: [] }));
   await runtime.reconcileSessions();
   assert.equal(runtime.state.handled.reply.closure, 'closed');
+  assert.equal(runtime.state.handled.direct.closure, 'needs-human');
+  assert.equal(runtime.state.handled.direct.archived, false);
+  runtime.markTodoDone = async () => {};
+  await runtime.acknowledgeNeedsHuman('direct');
   assert.equal(runtime.state.handled.direct.closure, 'closed');
+  assert.equal(runtime.state.handled.direct.archived, true);
   await runtime.stop();
 });
 
@@ -2058,6 +2076,26 @@ test('closed shared-session record retries archive after the other routed todo s
   assert.deepEqual(calls.archives, []);
   runtime.untrackTodo('shared', 'second');
   // 不再手工调用 archiveRecord：下一轮闭环核对必须自己补偿归档。
+  await runtime.assessClosures([], Date.now());
+  assert.deepEqual(calls.archives, ['shared']);
+  await runtime.stop();
+});
+
+test('a closed owner cannot auto-archive a shared session still needing human attention', async () => {
+  const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
+  runtime.state.handled.owner = {
+    id: 'owner', sessionId: 'shared', executionStatus: 'completed', acceptedAt: Date.now(),
+    closure: 'closed', archived: false,
+  };
+  runtime.state.handled.routed = {
+    id: 'routed', sessionId: 'shared', executionStatus: 'completed', acceptedAt: Date.now(),
+    closure: 'needs-human', routed: true, archived: false,
+  };
+  await runtime.assessClosures([], Date.now());
+  assert.deepEqual(calls.archives, []);
+  assert.equal(runtime.state.handled.routed.closure, 'needs-human');
+  runtime.markTodoDone = async () => {};
+  await runtime.acknowledgeNeedsHuman('routed');
   await runtime.assessClosures([], Date.now());
   assert.deepEqual(calls.archives, ['shared']);
   await runtime.stop();
@@ -2928,10 +2966,12 @@ test('follow-up dispatch failures back off and escalate to needs-human instead o
   runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
   await runtime.executePoll('test');
   await runtime.pump();
-  calls.complete('session-1', 'error');
+  calls.complete('session-1', 'completed', closureLine({ status: 'done', summary: '漏标记', openMrs: [] }));
   await runtime.reconcileSessions();
   const record = runtime.state.handled.direct;
+  assert.equal(record.executionStatus, 'completed');
   assert.equal(record.closure, 'follow-up');
+  assert.equal(record.archived, true);
   // 续办会话创建持续失败。
   runtime.host.createSession = async () => { throw new Error('host down'); };
   let previousDelay = 0;
@@ -2952,25 +2992,117 @@ test('follow-up dispatch failures back off and escalate to needs-human instead o
   assert.equal(record.closure, 'needs-human');
   assert.match(record.closureNote, /连续 5 次派发失败.*host down/);
   assert.equal(record.nextAttemptAt, null);
+  assert.equal(record.archived, false);
+  assert.deepEqual(calls.unarchives, ['session-1']);
   assert.equal(runtime.snapshot().closure.needsHuman, 1);
   await runtime.stop();
 });
 
-test('aged follow-ups are escalated instead of being deferred forever', async () => {
+test('an archived completed follow-up is unarchived when age escalates it to needs-human', async () => {
   const { runtime, calls } = autoRuntime();
   runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
   await runtime.executePoll('test');
   await runtime.pump();
-  calls.complete('session-1', 'error');
+  // 正常完成但漏标记：follow-up 阶段先按既有规则归档。
+  calls.complete('session-1', 'completed', closureLine({ status: 'done', summary: '漏标记', openMrs: [] }));
   await runtime.reconcileSessions();
   const record = runtime.state.handled.direct;
+  assert.equal(record.executionStatus, 'completed');
+  assert.equal(record.closure, 'follow-up');
+  assert.equal(record.archived, true);
+  assert.deepEqual(calls.archives, ['session-1']);
   record.firstAcceptedAt = Date.now() - 73 * 60 * 60 * 1000;
   record.nextAttemptAt = Date.now() - 1;
   await runtime.executePoll('test');
   await runtime.pump();
   assert.equal(record.closure, 'needs-human');
   assert.match(record.closureNote, /超出自动续办时限/);
+  assert.equal(record.archived, false);
+  assert.deepEqual(calls.unarchives, ['session-1']);
   assert.equal(calls.create, 1);
+  await runtime.stop();
+});
+
+test('a follow-up missing todo data is unarchived when it becomes needs-human', async () => {
+  const { runtime, calls } = autoRuntime();
+  runtime.state.handled.missing = {
+    id: 'missing', sessionId: 'session-1', closure: 'follow-up', closureNote: '等待续办',
+    nextAttemptAt: Date.now() - 1, firstAcceptedAt: Date.now() - 1000,
+    executionStatus: 'completed', archived: true, routed: false, item: null,
+    watch: { mrs: [], lastStates: {} },
+  };
+  await runtime.enqueueFollowUps();
+  const record = runtime.state.handled.missing;
+  assert.equal(record.closure, 'needs-human');
+  assert.match(record.closureNote, /缺少 Todo 数据/);
+  assert.equal(record.nextAttemptAt, null);
+  assert.equal(record.watch, null);
+  assert.equal(record.archived, false);
+  assert.deepEqual(calls.unarchives, ['session-1']);
+  await runtime.stop();
+});
+
+test('needs-human unarchive failures preserve the real state and retry on the next poll', async () => {
+  const { runtime, calls } = autoRuntime();
+  runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
+  await runtime.executePoll('test');
+  await runtime.pump();
+  calls.complete('session-1', 'completed', closureLine({ status: 'done', summary: '漏标记', openMrs: [] }));
+  await runtime.reconcileSessions();
+  const record = runtime.state.handled.direct;
+  assert.equal(record.closure, 'follow-up');
+  assert.equal(record.archived, true);
+  record.firstAcceptedAt = Date.now() - 73 * 60 * 60 * 1000;
+  record.nextAttemptAt = Date.now() - 1;
+  calls.failUnarchive = true;
+  await runtime.executePoll('test');
+  await runtime.pump();
+  assert.equal(record.closure, 'needs-human');
+  assert.equal(record.archived, true);
+  assert.match(record.archiveError, /取消归档失败.*unarchive unavailable/);
+  assert.deepEqual(calls.unarchives, []);
+  const inbox = buildInbox(runtime.state).find((item) => item.todoId === record.id);
+  assert.equal(inbox.archived, true);
+  assert.match(inbox.archiveError, /取消归档失败/);
+
+  // 状态序列化/恢复后仍保留下轮重试所需的真实 archived 与错误标记。
+  runtime.state = normalizeState(JSON.parse(JSON.stringify(runtime.state)));
+  const restored = runtime.state.handled.direct;
+  assert.equal(restored.archived, true);
+  assert.match(restored.archiveError, /取消归档失败/);
+  calls.failUnarchive = false;
+  await runtime.executePoll('test');
+  assert.equal(restored.closure, 'needs-human');
+  assert.equal(restored.archived, false);
+  assert.equal(restored.archiveError, '');
+  assert.deepEqual(calls.unarchives, ['session-1']);
+  await runtime.stop();
+});
+
+test('manual unarchive and acknowledgement clear stale needs-human restoration errors', async () => {
+  const { runtime } = runtimeWithPrompt(async () => ({ accepted: true }));
+  const [item] = normalizeTodos([directNoteTodo]);
+  runtime.state.handled.direct = {
+    id: 'direct', sessionId: 'session-1', closure: 'needs-human', closureNote: '需要人工',
+    acceptedAt: Date.now() - 2000, completedAt: Date.now() - 1000,
+    executionStatus: 'completed', archived: true,
+    archiveError: '需人工会话取消归档失败：temporary', item,
+  };
+  const unarchived = await runtime.setSessionArchived('session-1', false);
+  assert.equal(unarchived.ok, true);
+  assert.equal(runtime.state.handled.direct.archived, false);
+  assert.equal(runtime.state.handled.direct.archiveError, '');
+
+  // 已归档记录被人工确认时无需重复 archive 调用，但必须清掉不再适用的旧错误。
+  Object.assign(runtime.state.handled.direct, {
+    archived: true, archiveError: '需人工会话取消归档失败：stale', closure: 'needs-human',
+  });
+  runtime.markTodoDone = async () => {};
+  const acknowledged = await runtime.acknowledgeNeedsHuman('direct');
+  assert.equal(acknowledged.ok, true);
+  assert.equal(runtime.state.handled.direct.closure, 'closed');
+  assert.equal(runtime.state.handled.direct.archived, true);
+  assert.equal(runtime.state.handled.direct.archiveError, '');
   await runtime.stop();
 });
 
@@ -3610,6 +3742,31 @@ test('assessClosures leaves an open issue for a human instead of closing it', as
   // 会话自述 done 但 Issue 未关：手动链路不续办，转需人工。
   assert.equal(record.closure, 'needs-human');
   assert.match(record.closureNote, /Issue 仍未关闭/);
+  await runtime.stop();
+});
+
+test('issue needs-human still closes and archives only after the issue actually closes', async () => {
+  const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
+  const issue = normalizeIssue(gitlabIssue);
+  runtime.state.issues = [issue];
+  runtime.state.handled[issue.id] = {
+    id: issue.id, sessionId: 'session-1', item: issue, automatic: false,
+    executionStatus: 'completed', completedAt: Date.now() - 1000,
+    closure: 'verifying', acceptedAt: Date.now() - 2000, firstAcceptedAt: Date.now() - 2000,
+    reportStatus: 'needs-human', reportSummary: '需要人工确认', archived: false,
+  };
+  runtime.runGlab = async () => JSON.stringify({ state: 'opened' });
+  await runtime.assessClosures([], Date.now());
+  const record = runtime.state.handled[issue.id];
+  assert.equal(record.closure, 'needs-human');
+  assert.equal(record.archived, false);
+  assert.deepEqual(calls.archives, []);
+
+  runtime.runGlab = async () => JSON.stringify({ state: 'closed' });
+  await runtime.assessClosures([], Date.now());
+  assert.equal(record.closure, 'closed');
+  assert.equal(record.archived, true);
+  assert.deepEqual(calls.archives, ['session-1']);
   await runtime.stop();
 });
 

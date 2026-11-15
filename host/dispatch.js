@@ -115,7 +115,7 @@ export const dispatchMethods = {
         // 0.1) 到期的续办先入队：先把已经开了头的事收尾，再开新的。
         if (this.state.settings.followUpEnabled !== false) {
           await this.probeWaitingFollowUps();
-          this.enqueueFollowUps();
+          await this.enqueueFollowUps();
         }
         // 0.1) pending 是可能已被 Host 接受的消息：不参与下面的二次预检，但必须自动重试。
         this.enqueuePendingRetries();
@@ -472,7 +472,7 @@ export const dispatchMethods = {
       if (archived) await this.host.archiveSession(sessionId);
       else await this.host.unarchiveSession(sessionId);
       archiveState.archived = archived;
-      if (archived) archiveState.archiveError = '';
+      archiveState.archiveError = '';
       await this.persistQuietly('会话归档状态');
       return { ok: true };
     } catch (error) {
@@ -508,6 +508,7 @@ export const dispatchMethods = {
     record.nextAttemptAt = null;
     record.watch = null;
     record.pendingUnconfirmed = false;
+    if (record.archived === true) record.archiveError = '';
     await this.archiveRecord(record);
     // 回合异常结束的会话不会被自动归档：把这一情况写进结论，提示去“最近会话”手动处理。
     if (record.archived !== true && record.executionStatus !== 'completed') {
@@ -819,6 +820,7 @@ export const dispatchMethods = {
           previous.closureNote = `续办会话连续 ${previous.dispatchFailures} 次派发失败：${errorMessage(error)}`.slice(0, 500);
           previous.nextAttemptAt = null;
           previous.watch = null;
+          await this.restoreNeedsHumanSession(previous);
         } else {
           const retryMs = Math.min(FOLLOW_UP_RETRY_MS * 2 ** (previous.dispatchFailures - 1), 60 * 60 * 1000);
           previous.nextAttemptAt = Date.now() + retryMs;

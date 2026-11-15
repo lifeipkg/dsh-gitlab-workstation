@@ -89,6 +89,17 @@ test('panel drops repeated introductions and long settings help while retaining 
   }
 });
 
+test('inbox exposes the real archived state and unarchive errors', async () => {
+  const source = await clientSource();
+  const start = source.indexOf("activeTab === 'inbox' && snapshot && h('section'");
+  const end = source.indexOf("activeTab === 'todos' &&", start);
+  assert.ok(start >= 0 && end > start, 'inbox panel markers must remain present');
+  const inbox = source.slice(start, end);
+  assert.match(inbox, /item\.archived/);
+  assert.match(inbox, /t\('sessionArchived'\)/);
+  assert.match(inbox, /item\.archiveError/);
+});
+
 test('compact styles keep controls small and wrap list content responsively', async () => {
   const source = await clientSource();
   const start = source.indexOf('    const CSS = `');

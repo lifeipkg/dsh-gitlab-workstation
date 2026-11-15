@@ -156,7 +156,7 @@ export const followupsMethods = {
   },
 
   /** 把到期的续办排进派发队列；同一对象上有别的会话在跑时顺延到下一轮。 */
-  enqueueFollowUps() {
+  async enqueueFollowUps() {
     const now = Date.now();
     const queued = new Set(this.dispatchQueue.map((entry) => entry.todo.id));
     for (const record of Object.values(this.state.handled)) {
@@ -169,6 +169,7 @@ export const followupsMethods = {
         record.closureNote = `${record.closureNote}；缺少 Todo 数据，无法续办`.replace(/^；/, '');
         record.nextAttemptAt = null;
         record.watch = null;
+        await this.restoreNeedsHumanSession(record);
         continue;
       }
       // 链路超龄（如长期被同目标会话占住而无限顺延）：转需人工，不再自动续办。
@@ -177,6 +178,7 @@ export const followupsMethods = {
         record.closureNote = `${record.closureNote}；超出自动续办时限，转人工接手`.replace(/^；/, '');
         record.nextAttemptAt = null;
         record.watch = null;
+        await this.restoreNeedsHumanSession(record);
         continue;
       }
       if (this.targetBusy(item)) continue;
