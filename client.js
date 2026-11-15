@@ -30,7 +30,7 @@ window.__ModuleLoader__.load({
       openSession: 'Open session',
       interval: 'Poll interval (seconds)', limit: 'Maximum new sessions per poll', concurrency: 'Automatic dispatch concurrency',
       cwd: 'GitLab working directory', cwdHint: 'Leave empty to use the Host process directory.',
-      sessionCwd: 'New session workspace', sessionCwdHint: 'Pick the DSH workspace for new sessions. "Auto" follows the most recently used workspace.',
+      sessionCwd: 'Todo session workspace', sessionCwdHint: 'Pick the DSH workspace for new Todo sessions. "Auto" follows the most recently used workspace.',
       sessionCwdAuto: 'Auto (most recently used workspace)', sessionCwdUnregistered: 'Current setting (not registered)',
       customRules: 'Todo session rules', customRulesHint: 'Appended to Todo prompts only. Issue prompts contain just the issue link and a start instruction. Todo rules override the generic prompt on conflict; empty keeps the generic prompt.',
       workspacesTitle: 'Workspaces', noWorkspaces: 'No DSH workspace is registered yet.',
@@ -38,7 +38,11 @@ window.__ModuleLoader__.load({
       workspacesError: 'Could not load the DSH workspace list',
       configuredWorkspace: 'plugin target', pluginSessionTag: 'plugin',
       sessionUnknown: 'Untitled session', lastActive: 'Last activity',
-      sessionModel: 'Session model', sessionModelDefault: 'Use the DSH default model',
+      sessionModel: 'Todo session model', sessionModelDefault: 'Use the DSH default model',
+      issueSessionSettings: 'Issue session settings', issueSessionModel: 'Issue model', issueSessionCwd: 'Issue workspace',
+      issueSessionSettingsHint: 'Saved immediately. Applies only to new Issue sessions.',
+      reasoningEffort: 'Thinking effort', reasoningEffortDefault: 'Provider default',
+      reasoningEffortUnavailable: 'Saved effort (not advertised)',
       judgeModel: 'Precheck model', judgeModelDefault: 'Follow the session model',
       judgeModelHint: 'Pin a fast, lightweight model here so the need-to-handle judgment returns quickly; new sessions keep using the session model above.',
       precheckEngine: 'Precheck engine',
@@ -125,7 +129,7 @@ window.__ModuleLoader__.load({
       openSession: '打开会话',
       interval: '轮询间隔（秒）', limit: '每轮最多创建 Session 数', concurrency: '自动处理并发数',
       cwd: 'GitLab 工作目录', cwdHint: '留空使用 Host 进程目录。',
-      sessionCwd: '新开会话的工作区', sessionCwdHint: '选择新会话归属的 DSH 工作区；“自动”跟随最近使用的工作区。',
+      sessionCwd: 'Todo 新开会话的工作区', sessionCwdHint: '选择 Todo 新会话归属的 DSH 工作区；“自动”跟随最近使用的工作区。',
       sessionCwdAuto: '自动（最近使用的工作区）', sessionCwdUnregistered: '当前配置（未注册）',
       customRules: 'Todo 会话附加规则', customRulesHint: '仅追加到 Todo 会话提示词；Issue 只发送链接和“开始处理”。Todo 附加规则与其他条款冲突时优先适用；留空使用通用提示词。',
       workspacesTitle: '工作区', noWorkspaces: 'DSH 尚未注册工作区。',
@@ -133,7 +137,11 @@ window.__ModuleLoader__.load({
       workspacesError: '无法加载 DSH 工作区列表',
       configuredWorkspace: '插件目标', pluginSessionTag: '插件',
       sessionUnknown: '未命名会话', lastActive: '最近活动',
-      sessionModel: '会话模型', sessionModelDefault: '跟随 DSH 默认模型',
+      sessionModel: 'Todo 会话模型', sessionModelDefault: '跟随 DSH 默认模型',
+      issueSessionSettings: 'Issue 会话设置', issueSessionModel: 'Issue 模型', issueSessionCwd: 'Issue 工作区',
+      issueSessionSettingsHint: '修改后立即保存，仅影响之后新开的 Issue 会话。',
+      reasoningEffort: '思考强度', reasoningEffortDefault: '提供方默认',
+      reasoningEffortUnavailable: '当前配置（目录未提供）',
       judgeModel: '预检模型', judgeModelDefault: '跟随会话模型',
       judgeModelHint: '固定一个更快的轻量模型可显著缩短“是否需要处理”的判断耗时；新会话仍使用上面的会话模型。',
       precheckEngine: '预检引擎',
@@ -322,6 +330,44 @@ window.__ModuleLoader__.load({
       });
     }
 
+    /** 精确 provider/model 的 Host 思考能力；未声明或元数据无效时不显示强度选择。 */
+    function reasoningForSelection(catalog, selection) {
+      if (typeof selection?.provider !== 'string' || typeof selection?.model !== 'string') return null;
+      for (const group of Array.isArray(catalog?.groups) ? catalog.groups : []) {
+        if ((group?.id ?? group?.provider) !== selection.provider || !Array.isArray(group?.models)) continue;
+        const model = group.models.find((entry) => entry?.id === selection.model);
+        const efforts = Array.isArray(model?.reasoning?.efforts)
+          ? model.reasoning.efforts.filter((effort) => typeof effort?.id === 'string' && effort.id
+            && typeof effort?.name === 'string' && effort.name)
+          : [];
+        if (efforts.length === 0) return null;
+        const defaultEffort = efforts.some((effort) => effort.id === model.reasoning.defaultEffort)
+          ? model.reasoning.defaultEffort
+          : undefined;
+        return { efforts, ...(defaultEffort === undefined ? {} : { defaultEffort }) };
+      }
+      return null;
+    }
+
+    /** 构造 Host selectModel 的完整 Issue 选择；空强度表示省略字段、跟随提供方默认。 */
+    function withReasoningEffort(selection, reasoningEffort) {
+      if (!selection) return null;
+      return {
+        provider: selection.provider,
+        model: selection.model,
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+      };
+    }
+
+    /** Issue 模型下拉变更：只有 exact provider/model 不变才保留原强度。 */
+    function issueModelFromOption(raw, previous) {
+      const selected = raw ? JSON.parse(raw) : null;
+      const keepEffort = selected && previous
+        && selected.provider === previous.provider && selected.model === previous.model
+        ? previous.reasoningEffort ?? '' : '';
+      return withReasoningEffort(selected, keepEffort);
+    }
+
     /**
      * 设置字段级比较：原始值直接比对；sessionModel 等嵌套对象递归按字段比对，
      * 引用不同但等值不算变更；undefined 与 null 归一后视为相同。
@@ -335,6 +381,16 @@ window.__ModuleLoader__.load({
       const bKeys = Object.keys(b);
       if (aKeys.length !== bKeys.length) return false;
       return aKeys.every((key) => Object.prototype.hasOwnProperty.call(b, key) && settingsValueEqual(a[key], b[key]));
+    }
+
+    /** General 设置草稿的变更补丁；Issue Tab 的即时设置永远不由旧草稿回盖。 */
+    function changedSettingsPatch(draft, current) {
+      const patch = {};
+      for (const key of Object.keys(draft ?? {})) {
+        if (key === 'issueSessionCwd' || key === 'issueSessionModel') continue;
+        if (!settingsValueEqual(draft[key], current?.[key])) patch[key] = draft[key];
+      }
+      return patch;
     }
 
     function PanelIcon({ size = 20 }) {
@@ -417,13 +473,14 @@ window.__ModuleLoader__.load({
         return () => { disposed = true; };
       }, []);
 
-      // 工作区列表：挂载时先拉一次供 Tab 计数与设置下拉使用；
-      // 打开“工作区”Tab 或设置面板时再按 10s 间隔刷新。
+      // 工作区列表：挂载时先拉一次；打开相关 Tab 时再按 10s 间隔刷新。
       React.useEffect(() => {
         let disposed = false;
         bridge('workspaces').then((data) => {
           if (!disposed) setWorkspaceData(Array.isArray(data.workspaces) ? data.workspaces : []);
-        }).catch(() => {});
+        }).catch((cause) => {
+          if (!disposed) setWorkspaceError(cause.message);
+        });
         return () => { disposed = true; };
       }, []);
 
@@ -558,7 +615,7 @@ window.__ModuleLoader__.load({
 
       const [digestOpen, setDigestOpen] = React.useState(false);
 
-      const needWorkspacePolling = activeTab === 'workspaces' || Boolean(draft);
+      const needWorkspacePolling = activeTab === 'workspaces' || activeTab === 'issues' || Boolean(draft);
       React.useEffect(() => {
         if (!needWorkspacePolling) return undefined;
         let disposed = false;
@@ -726,16 +783,8 @@ window.__ModuleLoader__.load({
       // 保存时对比当前快照，只提交发生变化的字段（Host 端 updateSettings 为浅合并 patch 语义）：
       // 面板打开期间页头快捷操作（启停轮询、页头模型下拉）已保存的改动不会被打开面板时的旧 draft 覆盖。
       const saveGeneralSettings = () => {
-        const current = snapshot?.settings ?? null;
-        const patch = {};
-        let changed = false;
-        Object.keys(draft ?? {}).forEach((key) => {
-          if (!settingsValueEqual(draft[key], current ? current[key] : undefined)) {
-            patch[key] = draft[key];
-            changed = true;
-          }
-        });
-        return changed ? updateSettings(patch) : Promise.resolve(true);
+        const patch = changedSettingsPatch(draft, snapshot?.settings ?? null);
+        return Object.keys(patch).length > 0 ? updateSettings(patch) : Promise.resolve(true);
       };
       const openSession = (sessionId) => ctx.uiWorkspace.openSession(sessionId);
       // 收件箱“我已处理”：成功后连同收件箱一起刷新（snapshot 已由 perform 更新）。
@@ -745,8 +794,11 @@ window.__ModuleLoader__.load({
       const dispatchTodo = (todo) => perform(`dispatch:${todo.id}`, () => post('dispatch', { id: todo.id }));
       // Issue 面板「处理」：同一 dispatch 通道（Host 端按合成 id 找到缓存条目）；
       // 成功后立刻刷新投影，把行状态换成“执行中”。
-      const dispatchIssue = (issue) => perform(`dispatch:${issue.id}`, () => post('dispatch', { id: issue.id }))
-        .then((done) => { if (done) void fetchIssues(false); });
+      const dispatchIssue = (issue) => {
+        if (busyKeysRef.current.has('settings')) return Promise.resolve(false);
+        return perform(`dispatch:${issue.id}`, () => post('dispatch', { id: issue.id }))
+          .then((done) => { if (done) void fetchIssues(false); });
+      };
       // 快捷切换归档状态：成功后连同已处理页一起刷新。
       const toggleSessionArchive = (record) => perform(`archive:${record.sessionId}`, () => post('setSessionArchived', {
         sessionId: record.sessionId,
@@ -775,11 +827,23 @@ window.__ModuleLoader__.load({
         ];
       };
       const quickModelKey = sessionModelKey(settings?.sessionModel);
+      const issueModel = settings?.issueSessionModel ?? null;
+      const issueReasoning = reasoningForSelection(modelCatalog, issueModel);
+      const issueEffort = issueModel?.reasoningEffort ?? '';
+      const issueEffortAdvertised = !issueEffort || issueReasoning?.efforts.some((effort) => effort.id === issueEffort);
+      const updateIssueModel = (raw) => updateSettings({
+        issueSessionModel: issueModelFromOption(raw, issueModel),
+      });
+      const updateIssueEffort = (effort) => updateSettings({
+        issueSessionModel: withReasoningEffort(issueModel, effort),
+      });
       // 工作区下拉：值仍是工作区路径（sessionCwd 语义不变）；比较忽略大小写/斜杠差异。
       const workspaceOptions = Array.isArray(workspaceData) ? workspaceData : [];
       const normalizePathKey = (value) => String(value ?? '').replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
       const registeredWorkspacePaths = new Set(workspaceOptions.map((workspace) => normalizePathKey(workspace.path)));
       const draftSessionCwdUnregistered = Boolean(draft?.sessionCwd) && !registeredWorkspacePaths.has(normalizePathKey(draft.sessionCwd));
+      const issueSessionCwdUnregistered = Boolean(settings?.issueSessionCwd)
+        && !registeredWorkspacePaths.has(normalizePathKey(settings.issueSessionCwd));
       const sessionDisplayName = (session, label, workspacePath) => {
         if (session.sessionTitle) return session.sessionTitle;
         const sameAsWorkspace = workspacePath && normalizePathKey(session.cwd) === normalizePathKey(workspacePath);
@@ -1158,11 +1222,49 @@ window.__ModuleLoader__.load({
               )),
         ),
         activeTab === 'issues' && snapshot && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-issues`, 'aria-labelledby': `${PANEL_ID}-tab-issues` },
-          h('div', { className: 'gta-section-title' },
+          h('div', { className: 'gta-issue-toolbar' },
+            workspaceError && h('div', { className: 'gta-banner gta-warn gta-issue-settings-error', role: 'status' }, `${t('workspacesError')}${colon()}${workspaceError}`),
+            h('details', { className: 'gta-advanced gta-issue-settings', title: t('issueSessionSettingsHint') },
+              h('summary', null, t('issueSessionSettings'), busySet.has('settings') && h('span', { className: 'gta-muted', role: 'status' }, ' …')),
+              workspaceData === null && !workspaceError && h('div', { className: 'gta-muted', role: 'status' }, t('loading')),
+              h('div', { className: 'gta-form-grid' },
+                h('label', null, t('issueSessionModel'), h('select', {
+                  value: sessionModelKey(issueModel),
+                  disabled: busySet.has('settings'),
+                  'aria-label': t('issueSessionModel'),
+                  onChange: (event) => { void updateIssueModel(event.target.value); },
+                }, modelOptions(issueModel))),
+                issueReasoning && h('label', null, t('reasoningEffort'), h('select', {
+                  value: issueEffort,
+                  disabled: busySet.has('settings'),
+                  'aria-label': t('reasoningEffort'),
+                  onChange: (event) => { void updateIssueEffort(event.target.value); },
+                },
+                  h('option', { value: '' }, `${t('reasoningEffortDefault')}${issueReasoning.defaultEffort
+                    ? ` (${issueReasoning.efforts.find((effort) => effort.id === issueReasoning.defaultEffort)?.name ?? issueReasoning.defaultEffort})` : ''}`),
+                  !issueEffortAdvertised && h('option', { value: issueEffort }, `${t('reasoningEffortUnavailable')}${colon()}${issueEffort}`),
+                  issueReasoning.efforts.map((effort) => h('option', {
+                    key: effort.id, value: effort.id, title: effort.description ?? '',
+                  }, `${effort.name} · ${effort.id}`)),
+                )),
+                h('label', null, t('issueSessionCwd'), h('select', {
+                  value: settings.issueSessionCwd ?? '',
+                  disabled: busySet.has('settings'),
+                  'aria-label': t('issueSessionCwd'),
+                  onChange: (event) => { void updateSettings({ issueSessionCwd: event.target.value }); },
+                },
+                  h('option', { value: '' }, t('sessionCwdAuto')),
+                  issueSessionCwdUnregistered && h('option', { value: settings.issueSessionCwd }, `${t('sessionCwdUnregistered')}${colon()}${settings.issueSessionCwd}`),
+                  workspaceOptions.map((workspace) => h('option', { key: workspace.workspaceId, value: workspace.path },
+                    `${workspace.title || workspace.path} · ${workspace.path}`)),
+                )),
+              ),
+            ),
             h('div', { className: 'gta-todo-actions' },
               h(Button, { disabled: issuesBusy, onClick: () => { void fetchIssues(true); } },
                 issuesBusy ? '…' : t('refresh')),
-            )),
+            ),
+          ),
           issuesError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, `${t('issuesError')}${colon()}${issuesError}`),
           !issuesData && !issuesError && h('div', { className: 'gta-empty' }, t('loading')),
           issuesData && issuesData.items.length === 0 && issuesData.orphans.length === 0 && h('div', { className: 'gta-empty' }, t('issuesEmpty')),
@@ -1194,7 +1296,7 @@ window.__ModuleLoader__.load({
                   issue.sessionId && h(Button, { onClick: () => openSession(issue.sessionId) }, t('openSession')),
                   h(Button, {
                     primary: !issue.handled,
-                    disabled: busySet.has(`dispatch:${issue.id}`) || issue.executionStatus === 'running' || issue.executionStatus === 'starting',
+                    disabled: busySet.has('settings') || busySet.has(`dispatch:${issue.id}`) || issue.executionStatus === 'running' || issue.executionStatus === 'starting',
                     onClick: issue.handled
                       ? guardedRun(`reprocess:${issue.id}`, () => { void dispatchIssue(issue); })
                       : () => { void dispatchIssue(issue); },
@@ -1462,6 +1564,11 @@ window.__ModuleLoader__.load({
       .gta-stat-time>strong{font-size:12px}
       .gta-section-title{display:flex;align-items:center;justify-content:flex-end;gap:12px;min-height:28px;margin-bottom:8px}
       .gta-section-title h2{margin:0}
+      .gta-issue-toolbar{display:flex;align-items:flex-start;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+      .gta-issue-settings-error{flex-basis:100%;min-width:0;overflow-wrap:anywhere}
+      .gta-issue-settings{flex:0 1 auto;min-width:0}
+      .gta-issue-settings[open]{flex:1 1 720px}
+      .gta-issue-settings>.gta-form-grid{grid-template-columns:repeat(auto-fit,minmax(180px,1fr))}
       .gta-subsection-title{justify-content:space-between;margin-top:14px}
       .gta-tabs{max-width:1180px;margin:12px auto 0;display:flex;gap:2px;border-bottom:1px solid var(--dsw-alias-border-l1);overflow-x:auto;scrollbar-width:thin}
       .gta-tab{appearance:none;flex:none;margin-bottom:-1px;padding:6px 10px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);font-family:inherit;font-size:12.5px;cursor:pointer;white-space:nowrap}

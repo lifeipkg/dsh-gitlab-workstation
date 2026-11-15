@@ -3653,6 +3653,155 @@ test('normalizeState preserves issue cache and issue-shaped handled items', () =
   assert.equal(state.handled[issue.id].item.projectId, '555');
 });
 
+test('issue session settings validate independently and keep todo settings unchanged', () => {
+  const todo = {
+    sessionCwd: 'D:\\todo-workspace',
+    sessionModel: { provider: 'todo-provider', model: 'todo-model' },
+  };
+  const configured = validateSettings({
+    ...todo,
+    issueSessionCwd: ' D:\\issue-workspace ',
+    issueSessionModel: { provider: ' issue-provider ', model: ' issue-model ', reasoningEffort: ' high ' },
+  }, defaultSettings());
+  assert.equal(configured.issueSessionCwd, 'D:\\issue-workspace');
+  assert.deepEqual(configured.issueSessionModel, {
+    provider: 'issue-provider', model: 'issue-model', reasoningEffort: 'high',
+  });
+  assert.deepEqual(configured.sessionModel, todo.sessionModel);
+  assert.equal(configured.sessionCwd, todo.sessionCwd);
+
+  const todoOnly = validateSettings({
+    sessionCwd: 'D:\\new-todo-workspace',
+    sessionModel: { provider: 'new-todo-provider', model: 'new-todo-model' },
+  }, configured);
+  assert.equal(todoOnly.issueSessionCwd, configured.issueSessionCwd);
+  assert.deepEqual(todoOnly.issueSessionModel, configured.issueSessionModel);
+  assert.deepEqual(validateSettings({ issueSessionModel: {
+    provider: 'issue-provider', model: 'issue-model', reasoningEffort: undefined,
+  } }, configured).issueSessionModel, { provider: 'issue-provider', model: 'issue-model' });
+  assert.equal(validateSettings({ issueSessionModel: null, issueSessionCwd: '' }, configured).issueSessionModel, null);
+  assert.throws(() => validateSettings({ issueSessionModel: { provider: 'issue-provider' } }, configured), /Issue Session 模型/);
+  assert.throws(() => validateSettings({ issueSessionModel: {
+    provider: 'issue-provider', model: 'issue-model', reasoningEffort: '',
+  } }, configured), /思考强度/);
+  assert.throws(() => validateSettings({ issueSessionModel: {
+    provider: 'issue-provider', model: 'issue-model', reasoningEffort: 3,
+  } }, configured), /思考强度/);
+  assert.throws(() => validateSettings({ issueSessionCwd: 42 }, configured), /Issue Session 工作区文件夹/);
+});
+
+test('legacy shared session values copy to issue settings once and then diverge', () => {
+  const legacy = initialState();
+  legacy.settings.sessionCwd = 'D:\\shared-workspace';
+  legacy.settings.sessionModel = { provider: 'shared-provider', model: 'shared-model' };
+  delete legacy.settings.issueSessionCwd;
+  delete legacy.settings.issueSessionModel;
+  const migrated = normalizeState(JSON.parse(JSON.stringify(legacy)));
+  assert.equal(migrated.settings.issueSessionCwd, 'D:\\shared-workspace');
+  assert.deepEqual(migrated.settings.issueSessionModel, { provider: 'shared-provider', model: 'shared-model' });
+
+  const independent = validateSettings({
+    issueSessionCwd: 'D:\\issue-only',
+    issueSessionModel: { provider: 'issue-only', model: 'reasoning-model', reasoningEffort: 'maximum' },
+  }, migrated.settings);
+  const restored = normalizeState(JSON.parse(JSON.stringify({ ...migrated, settings: independent })));
+  assert.equal(restored.settings.sessionCwd, 'D:\\shared-workspace');
+  assert.deepEqual(restored.settings.sessionModel, { provider: 'shared-provider', model: 'shared-model' });
+  assert.equal(restored.settings.issueSessionCwd, 'D:\\issue-only');
+  assert.deepEqual(restored.settings.issueSessionModel, {
+    provider: 'issue-only', model: 'reasoning-model', reasoningEffort: 'maximum',
+  });
+  assert.deepEqual(publicState(restored).settings.issueSessionModel, restored.settings.issueSessionModel);
+});
+
+test('issue dispatch uses its own workspace model and reasoning effort without changing todo requests', async () => {
+  const prompts = [];
+  const { runtime, calls } = runtimeWithPrompt(async (request) => {
+    prompts.push(request.content.map((part) => part.text).join(''));
+    return { accepted: true };
+  });
+  runtime.state.settings.sessionCwd = 'D:\\agent-workspace';
+  runtime.state.settings.sessionModel = { provider: 'todo-provider', model: 'todo-model' };
+  runtime.state.settings.issueSessionCwd = 'D:\\work\\repo';
+  runtime.state.settings.issueSessionModel = {
+    provider: 'issue-provider', model: 'reasoning-model', reasoningEffort: 'high',
+  };
+  const issue = normalizeIssue(gitlabIssue);
+  const [todo] = normalizeTodos([{ ...sessionTodo, id: 'todo-independent-settings' }]);
+  assert.equal((await runtime.dispatch(issue)).ok, true);
+  assert.equal((await runtime.dispatch(todo)).ok, true);
+  assert.deepEqual(calls.createRequests, [
+    { workspaceId: 'workspace-work' },
+    { workspaceId: 'workspace-default' },
+  ]);
+  assert.deepEqual(calls.modelSelections, [
+    {
+      sessionId: 'session-1', provider: 'issue-provider', model: 'reasoning-model', reasoningEffort: 'high',
+    },
+    { sessionId: 'session-2', provider: 'todo-provider', model: 'todo-model' },
+  ]);
+  assert.equal(Object.hasOwn(calls.modelSelections[1], 'reasoningEffort'), false);
+  assert.equal(prompts[0], `${issue.url}\n开始处理`);
+  assert.match(prompts[1], /\[GITLAB TODO WATCHER\]/);
+  await runtime.stop();
+});
+
+test('issue dispatch omits reasoning effort when the provider default is selected', async () => {
+  const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
+  runtime.state.settings.issueSessionModel = { provider: 'issue-provider', model: 'reasoning-model' };
+  const issue = normalizeIssue(gitlabIssue);
+  assert.equal((await runtime.dispatch(issue)).ok, true);
+  assert.deepEqual(calls.modelSelections, [
+    { sessionId: 'session-1', provider: 'issue-provider', model: 'reasoning-model' },
+  ]);
+  assert.equal(Object.hasOwn(calls.modelSelections[0], 'reasoningEffort'), false);
+  await runtime.stop();
+});
+
+test('issue pending retry reuses session and workspace while applying the latest issue model', async () => {
+  const promptRequests = [];
+  const { runtime, calls } = runtimeWithPrompt(async (request) => {
+    promptRequests.push(request);
+    if (calls.prompt === 1) throw new Error('temporary prompt failure');
+    return { accepted: true };
+  });
+  runtime.state.settings.sessionModel = { provider: 'todo-provider', model: 'must-not-be-used' };
+  runtime.state.settings.issueSessionCwd = 'D:\\work\\repo';
+  runtime.state.settings.issueSessionModel = { provider: 'issue-provider', model: 'old-model', reasoningEffort: 'low' };
+  const originalResolve = runtime.resolveWorkspaceId.bind(runtime);
+  let workspaceCalls = 0;
+  runtime.resolveWorkspaceId = (...args) => {
+    workspaceCalls += 1;
+    return originalResolve(...args);
+  };
+  const issue = normalizeIssue(gitlabIssue);
+  runtime.state.issues = [issue];
+  const failed = await runtime.dispatchById(issue.id);
+  assert.equal(failed.ok, false);
+  const requestId = runtime.state.pending[issue.id].requestId;
+  assert.ok(requestId);
+
+  // pending 复用原工作区；即使之后配置了未注册路径也不会重新解析，但模型按 Issue 最新设置重放。
+  runtime.state.settings.issueSessionCwd = 'D:\\not-registered-after-pending';
+  runtime.state.settings.issueSessionModel = { provider: 'issue-provider', model: 'new-model', reasoningEffort: 'maximum' };
+  const retried = await runtime.dispatchById(issue.id);
+  assert.equal(retried.ok, true);
+  assert.equal(retried.sessionId, failed.sessionId);
+  assert.equal(calls.create, 1);
+  assert.equal(workspaceCalls, 1);
+  assert.deepEqual(calls.createRequests, [{ workspaceId: 'workspace-work' }]);
+  assert.equal(promptRequests.length, 2);
+  assert.equal(promptRequests[0].requestId, requestId);
+  assert.equal(promptRequests[1].requestId, requestId);
+  assert.equal(runtime.state.handled[issue.id].requestId, requestId);
+  assert.equal(runtime.state.pending[issue.id], undefined);
+  assert.deepEqual(calls.modelSelections, [
+    { sessionId: 'session-1', provider: 'issue-provider', model: 'old-model', reasoningEffort: 'low' },
+    { sessionId: 'session-1', provider: 'issue-provider', model: 'new-model', reasoningEffort: 'maximum' },
+  ]);
+  await runtime.stop();
+});
+
 test('log buffer normalizes lines, truncates, and enforces entry/char caps', () => {
   const logs = createLogBuffer({ maxEntries: 3, maxChars: 1024, maxLineChars: 12 });
   logs.push('info', 'first');

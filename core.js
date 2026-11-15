@@ -11,6 +11,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
   cwd: '',
   sessionCwd: '',
   sessionModel: null,
+  // Issue 新会话独立配置；null/空串跟随 DSH 默认模型/最近工作区，不继承 Todo 后续修改。
+  issueSessionCwd: '',
+  issueSessionModel: null,
   judgeModel: null,
   // 预检引擎：auto（Jev 优先，不可用时自动回退 LLM）、jev（仅 Jev，失败跳过本轮）、llm（仅聊天模型批量判定）。
   precheckEngine: 'auto',
@@ -337,10 +340,12 @@ export function validateSettings(input, current = defaultSettings()) {
     }
     next.signatureText = value.trim();
   }
-  for (const key of ['cwd', 'sessionCwd']) {
+  for (const key of ['cwd', 'sessionCwd', 'issueSessionCwd']) {
     if (key in input) {
       if (typeof input[key] !== 'string' || input[key].length > 1024) {
-        throw new Error(`${key === 'cwd' ? 'GitLab 工作目录' : 'Session 工作区文件夹'}必须是不超过 1024 字符的字符串。`);
+        const label = key === 'cwd' ? 'GitLab 工作目录'
+          : key === 'issueSessionCwd' ? 'Issue Session 工作区文件夹' : 'Session 工作区文件夹';
+        throw new Error(`${label}必须是不超过 1024 字符的字符串。`);
       }
       next[key] = input[key].trim();
     }
@@ -365,6 +370,23 @@ export function validateSettings(input, current = defaultSettings()) {
         model: value.model.trim(),
       };
     }
+  }
+  if ('issueSessionModel' in input) {
+    const value = input.issueSessionModel;
+    if (value !== null && (!isRecord(value)
+      || typeof value.provider !== 'string' || !value.provider.trim() || value.provider.length > 200
+      || typeof value.model !== 'string' || !value.model.trim() || value.model.length > 200)) {
+      throw new Error('Issue Session 模型必须是 null，或包含非空 provider 和 model 的对象。');
+    }
+    if (value?.reasoningEffort !== undefined
+      && (typeof value.reasoningEffort !== 'string' || !value.reasoningEffort.trim() || value.reasoningEffort.length > 200)) {
+      throw new Error('Issue 思考强度必须省略，或是不超过 200 字符的非空字符串。');
+    }
+    next.issueSessionModel = value === null ? null : {
+      provider: value.provider.trim(),
+      model: value.model.trim(),
+      ...(typeof value.reasoningEffort === 'string' ? { reasoningEffort: value.reasoningEffort.trim() } : {}),
+    };
   }
   if ('precheckEngine' in input) {
     if (!PRECHECK_ENGINES.includes(input.precheckEngine)) {
@@ -1540,6 +1562,14 @@ export function normalizeState(value) {
   if (!('sessionCwd' in storedSettings) && typeof storedSettings.cwd === 'string') {
     storedSettings.sessionCwd = storedSettings.cwd;
   }
+  // 旧版本 Issue 与 Todo 共用设置：升级时只复制一次，避免更新瞬间改变既有 Issue 行为；
+  // 新字段一旦落盘，之后修改任意一边都不再同步另一边。
+  if (!('issueSessionCwd' in storedSettings) && typeof storedSettings.sessionCwd === 'string') {
+    storedSettings.issueSessionCwd = storedSettings.sessionCwd;
+  }
+  if (!('issueSessionModel' in storedSettings) && 'sessionModel' in storedSettings) {
+    storedSettings.issueSessionModel = storedSettings.sessionModel;
+  }
   return {
     ...base,
     settings: validateSettings(storedSettings, base.settings),
@@ -1998,6 +2028,7 @@ export function publicState(state, running = false, currentUserId = null) {
     settings: {
       ...state.settings,
       sessionModel: state.settings.sessionModel ? { ...state.settings.sessionModel } : null,
+      issueSessionModel: state.settings.issueSessionModel ? { ...state.settings.issueSessionModel } : null,
       // 分类器 API key 不出主机边界：面板只见是否已配置与尾号，不回传明文。
       precheckClassifier: state.settings.precheckClassifier
         ? {

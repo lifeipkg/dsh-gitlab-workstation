@@ -89,6 +89,84 @@ test('panel drops repeated introductions and long settings help while retaining 
   }
 });
 
+test('issue session controls use exact-model reasoning metadata and independent settings', async () => {
+  const source = await clientSource();
+  const marker = '    function PanelIcon({ size = 20 }) {';
+  assert.ok(source.includes(marker), 'client model helper test marker must remain present');
+  const instrumented = source.replace(marker,
+    `    globalThis.__clientModelForTest = { reasoningForSelection, withReasoningEffort, issueModelFromOption, changedSettingsPatch };\n${marker}`);
+  let definition;
+  const context = vm.createContext({
+    window: { __ModuleLoader__: { load(value) { definition = value; } } },
+  });
+  vm.runInContext(instrumented, context, { filename: 'client.js' });
+  definition.factory(() => ({ createElement() {}, Component: class {} }));
+  const {
+    reasoningForSelection, withReasoningEffort, issueModelFromOption, changedSettingsPatch,
+  } = context.__clientModelForTest;
+  const catalog = {
+    groups: [{
+      id: 'deepseek',
+      models: [
+        { id: 'plain', name: 'Plain' },
+        { id: 'reasoning', name: 'Reasoning', reasoning: {
+          defaultEffort: 'low',
+          efforts: [{ id: 'low', name: 'Low' }, { id: 'high', name: 'High' }],
+        } },
+      ],
+    }],
+  };
+  const route = { provider: 'deepseek', model: 'reasoning' };
+  const reasoning = reasoningForSelection(catalog, route);
+  assert.equal(reasoning.defaultEffort, 'low');
+  assert.deepEqual(Array.from(reasoning.efforts, (effort) => effort.id), ['low', 'high']);
+  assert.equal(reasoningForSelection(catalog, { provider: 'deepseek', model: 'plain' }), null);
+  assert.equal(reasoningForSelection(catalog, { provider: 'other', model: 'reasoning' }), null);
+  assert.equal(reasoningForSelection(catalog, null), null);
+  assert.deepEqual(JSON.parse(JSON.stringify(withReasoningEffort(route, 'high'))), { ...route, reasoningEffort: 'high' });
+  assert.deepEqual(JSON.parse(JSON.stringify(withReasoningEffort({ ...route, reasoningEffort: 'high' }, ''))), route);
+
+  const previous = { ...route, reasoningEffort: 'high' };
+  assert.deepEqual(JSON.parse(JSON.stringify(issueModelFromOption(JSON.stringify(route), previous))), previous);
+  assert.deepEqual(JSON.parse(JSON.stringify(issueModelFromOption(JSON.stringify({ provider: 'deepseek', model: 'plain' }), previous))), {
+    provider: 'deepseek', model: 'plain',
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(issueModelFromOption(JSON.stringify({ provider: 'other', model: 'reasoning' }), previous))), {
+    provider: 'other', model: 'reasoning',
+  });
+  assert.equal(issueModelFromOption('', previous), null);
+  const staleDraft = {
+    intervalSeconds: 300,
+    issueSessionCwd: 'D:\\stale-issue',
+    issueSessionModel: previous,
+  };
+  const current = {
+    intervalSeconds: 60,
+    issueSessionCwd: 'D:\\current-issue',
+    issueSessionModel: { provider: 'other', model: 'new', reasoningEffort: 'maximum' },
+  };
+  assert.deepEqual(JSON.parse(JSON.stringify(changedSettingsPatch(staleDraft, current))), { intervalSeconds: 300 });
+  assert.deepEqual(JSON.parse(JSON.stringify(changedSettingsPatch({ issueSessionModel: previous }, { issueSessionModel: previous }))), {});
+
+  const issueStart = source.indexOf("activeTab === 'issues' && snapshot && h('section'");
+  const issueEnd = source.indexOf("activeTab === 'handled' &&", issueStart);
+  const issues = source.slice(issueStart, issueEnd);
+  assert.match(issues, /t\('issueSessionSettings'\)/);
+  assert.match(issues, /modelOptions\(issueModel\)/);
+  assert.match(issues, /updateSettings\(\{ issueSessionCwd/);
+  assert.match(issues, /settings\.issueSessionCwd/);
+  assert.match(issues, /updateIssueModel\(event\.target\.value\)/);
+  assert.match(issues, /updateIssueEffort\(event\.target\.value\)/);
+  assert.match(issues, /issueSessionCwdUnregistered && h\('option'/);
+  assert.match(issues, /issueReasoning && h\('label'/);
+  assert.match(issues, /reasoningEffort/);
+  assert.match(source, /const needWorkspacePolling = [^;]*activeTab === 'issues'/);
+  assert.match(issues, /workspaceError && h\('div'/);
+  assert.match(issues, /workspaceData === null && !workspaceError/);
+  assert.match(issues, /disabled: busySet\.has\('settings'\) \|\| busySet\.has\(`dispatch:\$\{issue\.id\}`\)/);
+  assert.match(source, /const dispatchIssue = \(issue\) => \{\s*if \(busyKeysRef\.current\.has\('settings'\)\) return Promise\.resolve\(false\)/);
+});
+
 test('compact styles keep controls small and wrap list content responsively', async () => {
   const source = await clientSource();
   const start = source.indexOf('    const CSS = `');

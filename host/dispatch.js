@@ -164,9 +164,8 @@ export const dispatchMethods = {
     return this.snapshot();
   },
 
-  resolveWorkspaceId() {
+  resolveWorkspaceId(configured = this.state.settings.sessionCwd) {
     const items = this.ctx.workspaceRegistry?.list?.() ?? [];
-    const configured = this.state.settings.sessionCwd;
     if (configured) {
       const match = items.find((item) => normalizeWorkspacePath(item.path ?? item.cwd) === normalizeWorkspacePath(configured));
       if (match?.id) return match.id;
@@ -674,7 +673,9 @@ export const dispatchMethods = {
       }
       if (!sessionId) {
         const request = {
-          workspaceId: this.resolveWorkspaceId(),
+          workspaceId: this.resolveWorkspaceId(isIssueItem(todo)
+            ? this.state.settings.issueSessionCwd
+            : this.state.settings.sessionCwd),
         };
         if (typeof this.config.agentPreset === 'string' && this.config.agentPreset) {
           request.agentPreset = this.config.agentPreset;
@@ -702,8 +703,10 @@ export const dispatchMethods = {
         reserved = false;
       }
       if (!route && !reuse) {
-        // 新开会话固定用会话模型；路由到已有会话与复用回合不改其模型。
-        const modelSelection = this.state.settings.sessionModel;
+        // Issue 用独立的模型与可选思考强度；Todo 请求形状保持不变。路由/复用不改目标会话。
+        const modelSelection = isIssueItem(todo)
+          ? this.state.settings.issueSessionModel
+          : this.state.settings.sessionModel;
         if (modelSelection) {
           await this.host.selectModel({
             sessionId,
