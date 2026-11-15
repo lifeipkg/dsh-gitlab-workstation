@@ -28,7 +28,7 @@ async function loadClientBridge(fetchImpl) {
   assert.ok(definition, 'client module must register itself');
   definition.factory((name) => {
     assert.equal(name, 'react');
-    return { createElement() {}, Component: class {} };
+    return { createElement() { assert.fail('bridge tests never render React'); }, Component: class {} };
   });
   return context.__clientBridgeForTest;
 }
@@ -100,7 +100,7 @@ test('issue session controls use exact-model reasoning metadata and independent 
     window: { __ModuleLoader__: { load(value) { definition = value; } } },
   });
   vm.runInContext(instrumented, context, { filename: 'client.js' });
-  definition.factory(() => ({ createElement() {}, Component: class {} }));
+  definition.factory(() => ({ createElement() { assert.fail('model helper tests never render React'); }, Component: class {} }));
   const {
     reasoningForSelection, withReasoningEffort, issueModelFromOption, changedSettingsPatch,
   } = context.__clientModelForTest;
@@ -431,7 +431,7 @@ test('all six session entries share the guard, archived rows remain reachable, a
   assert.match(source, /taskId: item\.todoId/); assert.match(source, /taskId: todo\.id/); assert.match(source, /taskId: issue\.id/);
   assert.match(source, /requestId = entry\.handoff\?\.requestId/);
   assert.match(source, /readOnly: true, rows: 7/);
-  assert.match(source, /inject: \['slots', 'locale', 'uiWorkspace', 'sessions', 'workspaces'\]/);
+  assert.match(source, /inject: \['slots', 'locale', 'uiWorkspace', 'sessions', 'workspaces', 'connection'\]/);
   assert.match(source, /handoff: result\.handoff \|\| sessionEntryRef\.current\.handoff/);
   assert.match(source, /sessionEntry\.handoff\.sessionId && h\(Button/);
   const handoff = source.slice(source.indexOf('      const createHandoff ='), source.indexOf('      const copyHandoff ='));
@@ -579,4 +579,259 @@ test('old route and settings completions cannot close a reopened view', async ()
   assert.match(source, /finishCurrentViewOperation\(saveGeneralSettings\(\), generation, draftGeneration, closeGeneralSettings\)/);
   assert.match(source, /onClick: closeGeneralSettings/);
   assert.match(source, /draftGeneration\.current \+= 1; draftBaseline\.current = settings/);
+});
+
+async function loadLeaderHelpers() {
+  const source = await clientSource();
+  const marker = '    function PanelIcon({ size = 20 }) {';
+  assert.ok(source.includes(marker));
+  const instrumented = source.replace(marker,
+    `    globalThis.__leaderHelpers = { callLeader, LEADER_RPC_OPERATIONS, normalizeLeaderProjection, readLeaderResponse, validLeaderSessionId, leaderItemForSession, canGrantLeaderAccess, canCreateLeader, canRetryLeaderSetup, leaderHumanItems, createSessionEntryGuard, issueModelFromOption, withReasoningEffort, en, zh };\n${marker}`);
+  let definition;
+  const context = vm.createContext({ AbortController, AbortSignal,
+    fetch() { assert.fail('Leader mutations must never fall back to HTTP'); },
+    window: { __ModuleLoader__: { load(value) { definition = value; } } },
+  });
+  vm.runInContext(instrumented, context, { filename: 'client.js' });
+  definition.factory(() => ({
+    createElement() { assert.fail('Leader tests exercise pure helpers only, never render React or mock DOM'); },
+    Component: class {},
+  }));
+  return context.__leaderHelpers;
+}
+
+function leaderProjection(overrides = {}) {
+  return { enabled: false, sessionId: null, phase: 'not-created',
+    settings: { model: null, autoEnrollNew: false }, items: [], events: [], error: '', ...overrides };
+}
+
+const translateKey = (key) => key;
+
+test('Leader snapshot alone uses read-only POST and carries no session creation or grants', async () => {
+  const calls = [];
+  const { post } = await loadClientBridge(async (url, options) => {
+    calls.push({ url, options });
+    return { ok: true, status: 200, async json() {
+      return { ok: true, result: { ok: true }, projection: leaderProjection() };
+    } };
+  });
+  await post('leader', { operation: 'snapshot' });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, '/api/gitlab-todo-agent');
+  assert.equal(calls[0].options.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[0].options.body), { action: 'leader', operation: 'snapshot' });
+});
+
+test('all eight Leader mutations use authenticated native RPC and unwrap ConnectionRpcResult.value', async () => {
+  const { callLeader, LEADER_RPC_OPERATIONS } = await loadLeaderHelpers();
+  const calls = [];
+  const value = { ok: true, result: { ok: true }, projection: leaderProjection() };
+  const rpc = { async call(channel, operation, payload, signal) {
+    assert.equal(this, rpc); calls.push({ channel, operation, payload, signal }); return { ok: true, value };
+  } };
+  const ctx = { connection: { rpc } };
+  const operations = ['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue'];
+  assert.deepEqual(Array.from(LEADER_RPC_OPERATIONS), operations);
+  for (const operation of operations) {
+    const payload = operation === 'configure' ? { settings: { model: { provider: 'p', model: 'm', reasoningEffort: 'high' }, autoEnrollNew: false } }
+      : ['enroll', 'unenroll', 'pauseIssue', 'resumeIssue'].includes(operation) ? { taskId: 'issue:7', sessionId: 'worker-7' } : {};
+    assert.equal(await callLeader(ctx, operation, payload), value);
+  }
+  assert.equal(calls.length, 8);
+  calls.forEach((call, index) => {
+    assert.equal(call.channel, '/gitlab-workstation-leader'); assert.equal(call.operation, operations[index]);
+    assert.equal(call.signal.aborted, false); assert.equal(typeof call.signal.addEventListener, 'function');
+    assert.equal(Object.hasOwn(call.payload, 'action'), false); assert.equal(Object.hasOwn(call.payload, 'operation'), false);
+  });
+  assert.deepEqual(calls[1].payload.settings, { model: { provider: 'p', model: 'm', reasoningEffort: 'high' }, autoEnrollNew: false });
+  assert.deepEqual(calls[4].payload, { taskId: 'issue:7', sessionId: 'worker-7' });
+  const partialValue = { ok: true, result: { ok: false, sessionId: 'known-partial', error: 'save failed' }, projection: leaderProjection({ phase: 'uncertain' }) };
+  assert.equal(await callLeader({ connection: { rpc: { async call() { return { ok: true, value: partialValue }; } } } }, 'create'), partialValue);
+});
+
+test('Leader native RPC errors, missing value, absent connection and cancellation fail closed without HTTP fallback', async () => {
+  const { callLeader } = await loadLeaderHelpers();
+  await assert.rejects(callLeader({}, 'create'), /Authenticated browser connection is unavailable/);
+  await assert.rejects(callLeader({ connection: { rpc: { async call() { return { ok: false, error: { code: 'forbidden', message: 'browser owner required' } }; } } } }, 'start'), /browser owner required/);
+  for (const response of [null, {}, { ok: true }, { ok: true, value: null }, { ok: true, value: {} }, { ok: true, value: [] }, { ok: true, value: { ok: false } }]) {
+    await assert.rejects(callLeader({ connection: { rpc: { async call() { return response; } } } }, 'create'));
+  }
+  const rpc = { async call() { assert.fail('snapshot and already-aborted mutations must not use native RPC'); } };
+  await assert.rejects(callLeader({ connection: { rpc } }, 'snapshot'), /Leader response could not be verified/);
+  const cancelled = new AbortController(); cancelled.abort();
+  await assert.rejects(callLeader({ connection: { rpc } }, 'enroll', { taskId: '7', sessionId: 'worker' }, cancelled.signal));
+  const controller = new AbortController(); let forwardedSignal;
+  await callLeader({ connection: { rpc: { async call(channel, operation, payload, signal) {
+    forwardedSignal = signal; return { ok: true, value: { ok: true } };
+  } } } }, 'pause', {}, controller.signal);
+  controller.abort(); assert.equal(forwardedSignal.aborted, true);
+  const source = await clientSource();
+  const lifecycle = source.slice(source.indexOf('      const runLeader ='), source.indexOf('      const confirmLeaderAccess ='));
+  assert.match(lifecycle, /callLeader\(ctx, operation, payload, signal\)/);
+  assert.doesNotMatch(lifecycle, /post\(|bridge\(|fetch\(|Origin|token/);
+  assert.match(source, /inject: \['slots', 'locale', 'uiWorkspace', 'sessions', 'workspaces', 'connection'\]/);
+});
+
+test('Leader projections require real settings and phase, keep default off, and sanitize uncertain workers', async () => {
+  const { normalizeLeaderProjection, canGrantLeaderAccess, canCreateLeader, validLeaderSessionId } = await loadLeaderHelpers();
+  const initial = normalizeLeaderProjection(leaderProjection());
+  assert.deepEqual(plain(initial), leaderProjection());
+  assert.equal(canGrantLeaderAccess(initial), false);
+  assert.equal(canCreateLeader(initial, null, false), true);
+  assert.equal(canCreateLeader(initial, 'known-id', false), false);
+  assert.equal(canCreateLeader(initial, null, true), false);
+  for (const value of [null, {}, leaderProjection({ phase: 'enabled' }), leaderProjection({ phase: 'constructor' }),
+    leaderProjection({ settings: {} }), leaderProjection({ sessionId: '  invalid  ' }), leaderProjection({ enabled: 'false' }),
+    leaderProjection({ settings: { model: { provider: 'p' }, autoEnrollNew: false } })]) {
+    assert.equal(normalizeLeaderProjection(value), null);
+    assert.equal(canGrantLeaderAccess(normalizeLeaderProjection(value)), false);
+  }
+  for (const id of ['', ' ', ' id', 'id\n', 7, null]) assert.equal(validLeaderSessionId(id), false);
+  const ready = normalizeLeaderProjection(leaderProjection({ sessionId: 'leader-1', phase: 'ready', items: [
+    { taskId: 'issue:7', sessionId: 'worker-7', title: 'Worker', status: 'constructor', summary: null, error: '', alerts: [null, { question: '' }, { id: 'q1', question: 'Approve?', status: 'pending' }] },
+  ] }));
+  assert.equal(canGrantLeaderAccess(ready), true);
+  assert.equal(ready.items[0].status, 'unknown');
+  assert.equal(ready.items[0].summary, '');
+  assert.equal(ready.items[0].alerts.length, 1);
+  for (const phase of ['error', 'uncertain', 'not-created']) assert.equal(canGrantLeaderAccess({ ...ready, phase }), false);
+});
+
+test('Leader snapshot prefers projection, supports direct result, and mutation errors preserve known IDs', async () => {
+  const { readLeaderResponse } = await loadLeaderHelpers();
+  const ready = leaderProjection({ sessionId: 'leader-good', phase: 'ready' });
+  const paused = leaderProjection({ sessionId: 'leader-old', phase: 'paused' });
+  const preferred = readLeaderResponse({ ok: true, projection: ready, result: paused }, 'snapshot', null, translateKey);
+  assert.equal(preferred.projection.phase, 'ready'); assert.equal(preferred.sessionId, 'leader-good'); assert.equal(preferred.error, '');
+  const direct = readLeaderResponse({ ok: true, result: paused }, 'snapshot', null, translateKey);
+  assert.equal(direct.sessionId, 'leader-old'); assert.equal(direct.error, '');
+  const partial = readLeaderResponse({ ok: true, result: { ok: false, sessionId: 'partial-known', error: 'save failed' },
+    projection: leaderProjection({ phase: 'uncertain' }) }, 'create', null, translateKey);
+  assert.equal(partial.sessionId, 'partial-known'); assert.equal(partial.error, 'save failed');
+  const rollback = readLeaderResponse({ ok: true, result: { ok: false, error: 'journal rollback' }, projection: leaderProjection() },
+    'create', partial.sessionId, translateKey);
+  assert.equal(rollback.sessionId, 'partial-known'); assert.equal(rollback.error, 'journal rollback');
+  const malformed = readLeaderResponse({ ok: true, result: { ok: true, sessionId: 'known-without-projection' } }, 'create', null, translateKey);
+  assert.equal(malformed.sessionId, 'known-without-projection'); assert.equal(malformed.error, 'leaderInvalidResponse');
+  assert.equal(readLeaderResponse({ ok: true, result: { ok: false, error: 'snapshot failed' }, projection: ready }, 'snapshot', null, translateKey).error, 'snapshot failed');
+});
+
+test('known partial Leader setup can retry only the authoritative same ID while unknown creation stays blocked', async () => {
+  const { canRetryLeaderSetup, canCreateLeader, callLeader } = await loadLeaderHelpers();
+  for (const phase of ['error', 'uncertain']) {
+    const partial = leaderProjection({ sessionId: 'known-leader', phase, error: 'setup failed' });
+    assert.equal(canRetryLeaderSetup(partial, 'known-leader'), true);
+    assert.equal(canCreateLeader(partial, 'known-leader', true), false);
+    assert.equal(canRetryLeaderSetup({ ...partial, enabled: true }, 'known-leader'), false);
+    assert.equal(canRetryLeaderSetup(partial, 'different-leader'), false);
+    assert.equal(canRetryLeaderSetup({ ...partial, sessionId: null }, 'known-leader'), false);
+    assert.equal(canRetryLeaderSetup(partial, null), false);
+  }
+  assert.equal(canRetryLeaderSetup(leaderProjection({ sessionId: 'known-leader', phase: 'paused', error: 'setup still failed' }), 'known-leader'), true);
+  for (const phase of ['ready', 'paused', 'not-created']) {
+    assert.equal(canRetryLeaderSetup(leaderProjection({ sessionId: 'known-leader', phase }), 'known-leader'), false);
+  }
+  assert.equal(canRetryLeaderSetup(null, 'known-leader'), false);
+  assert.equal(canCreateLeader(leaderProjection({ phase: 'uncertain' }), null, true), false);
+  assert.equal(canRetryLeaderSetup(leaderProjection({ phase: 'uncertain' }), null), false);
+  let actualPayload;
+  await callLeader({ connection: { rpc: { async call(channel, operation, payload) {
+    assert.equal(channel, '/gitlab-workstation-leader'); assert.equal(operation, 'create'); actualPayload = payload;
+    return { ok: true, value: { ok: true, result: { ok: true, sessionId: 'known-leader' }, projection: leaderProjection({ sessionId: 'known-leader', phase: 'ready' }) } };
+  } } } }, 'create', { sessionId: 'known-leader' });
+  assert.deepEqual(actualPayload, { sessionId: 'known-leader' });
+  const source = await clientSource();
+  const gate = source.slice(source.indexOf('      const runLeader ='), source.indexOf('      const confirmLeaderAccess ='));
+  assert.match(gate, /operation === 'create' && \(!leaderFresh/);
+  assert.match(gate, /!canCreateLeader\(leaderViewRef\.current\.projection/);
+  assert.match(gate, /&& !canRetryLeaderSetup\(leaderViewRef\.current\.projection, leaderViewRef\.current\.sessionId\)/);
+  const issues = source.slice(source.indexOf("activeTab === 'issues' && snapshot && h('section'"), source.indexOf("activeTab === 'handled' &&"));
+  assert.match(issues, /canRetryLeaderSetup\(leaderProjection, leaderView\.sessionId\) && h\(Button/);
+  assert.match(issues, /runLeader\('create', \{ sessionId: leaderView\.sessionId \}\)/);
+  assert.match(issues, /t\('leaderRetrySetup'\)/);
+});
+
+test('Leader managed lookup matches both task and session and human follow-up is per Issue, read-only', async () => {
+  const { normalizeLeaderProjection, leaderItemForSession, leaderHumanItems } = await loadLeaderHelpers();
+  const items = [
+    { taskId: '7', sessionId: 'a', title: 'Native question', status: 'needs-human', alerts: [{ id: 'q1', question: 'Pick one', status: 'pending' }] },
+    { taskId: '8', sessionId: 'b', title: 'Running', status: 'running', alerts: [] },
+    { taskId: '9', sessionId: 'c', title: 'Human decision', status: 'paused', alerts: [{ id: 'q2', question: 'Scope?', status: 'pending' }] },
+    { taskId: '10', sessionId: 'd', title: 'Handled', status: 'watching', alerts: [{ id: 'q3', question: 'Old question', status: 'resolved' }] },
+    { taskId: '11', sessionId: 'e', title: 'Resumed', status: 'watching', alerts: [{ id: 'q4', question: 'Already acknowledged', status: 'acknowledged' }] },
+  ];
+  const projection = normalizeLeaderProjection(leaderProjection({ sessionId: 'leader', phase: 'ready', items }));
+  assert.equal(leaderItemForSession(projection, 7, 'a').title, 'Native question');
+  assert.equal(leaderItemForSession(projection, 7, 'wrong'), null);
+  assert.equal(leaderItemForSession(projection, 8, 'a'), null);
+  assert.deepEqual(Array.from(leaderHumanItems(projection), (item) => item.taskId), ['7', '9']);
+  assert.equal(projection.items[1].status, 'running');
+  assert.deepEqual(items[0].alerts, [{ id: 'q1', question: 'Pick one', status: 'pending' }]);
+});
+
+test('Leader read and action guard rejects duplicates, aborts old reads, and ignores tab-exit results', async () => {
+  const { createSessionEntryGuard } = await loadLeaderHelpers();
+  const guard = createSessionEntryGuard();
+  let settleRead; let oldSignal; let completes = 0;
+  const read = guard.run(({ signal }) => { oldSignal = signal; return new Promise((done) => { settleRead = done; }); },
+    () => assert.fail('old snapshot must not overwrite mutation'));
+  guard.reset(); assert.equal(oldSignal.aborted, true);
+  let settleWrite; let actionSignal;
+  const write = guard.run(({ signal }) => { actionSignal = signal; return new Promise((done) => { settleWrite = done; }); },
+    () => assert.fail('leaving Issue tab must suppress mutation callback'));
+  assert.equal(await guard.run(() => assert.fail('duplicate mutation'), () => assert.fail('duplicate completion')), false);
+  settleRead('old snapshot'); assert.equal(await read, false);
+  guard.reset(); assert.equal(actionSignal.aborted, true);
+  settleWrite('old mutation'); assert.equal(await write, false);
+  assert.equal(await guard.run(async () => 'fresh status', () => { completes += 1; }), true);
+  assert.equal(completes, 1);
+  const source = await clientSource();
+  const lifecycle = source.slice(source.indexOf('      // Leader has its own'), source.indexOf('      // Log Tab'));
+  assert.match(lifecycle, /activeTab !== 'issues'/);
+  assert.match(lifecycle, /setInterval\(\(\) => void fetchLeaderSnapshot\(\), 15000\)/);
+  assert.match(lifecycle, /clearInterval\(timer\); leaderActiveRef\.current = false/);
+  assert.match(lifecycle, /leaderGuard\.current\.reset\(\); leaderActionRef\.current = ''/);
+  assert.match(lifecycle, /post\('leader', \{ operation: 'snapshot' \}, signal\)/);
+  assert.match(lifecycle, /callLeader\(ctx, operation, payload, signal\)/);
+  assert.match(lifecycle, /creationAttempted: leaderViewRef\.current\.creationAttempted \|\| operation === 'create'/);
+});
+
+test('Leader entry points reuse safeSessionOpener, keep worker task identity, and never create handoffs for Leader', async () => {
+  const source = await clientSource();
+  const entries = source.slice(source.indexOf('      const safeSessionOpener ='), source.indexOf('      const createHandoff ='));
+  assert.match(entries, /const safeSessionOpener = openSession/);
+  assert.match(entries, /safeSessionOpener\(\{ sessionId, title: 'Issue Leader' \}, trigger\)/);
+  assert.match(entries, /safeSessionOpener\(\{ sessionId: item\.sessionId, taskId: item\.taskId/);
+  assert.doesNotMatch(entries, /uiWorkspace|createHandoff|post\(/);
+  assert.equal((source.match(/ctx\.uiWorkspace\.openSession\(sessionId\)/g) || []).length, 1);
+  const { en, zh } = await loadLeaderHelpers();
+  assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort());
+});
+
+test('Leader controls are optional and compact, enrollment is explicit in active and orphan rows, questions are not answered', async () => {
+  const source = await clientSource();
+  const start = source.indexOf("activeTab === 'issues' && snapshot && h('section'");
+  const end = source.indexOf("activeTab === 'handled' &&", start);
+  const issues = source.slice(start, end);
+  const leader = issues.slice(0, issues.indexOf("h('div', { className: 'gta-issue-toolbar' }"));
+  assert.match(source, /const \[leaderOpen, setLeaderOpen\] = React\.useState\(false\)/);
+  assert.match(source, /model: null, autoEnrollNew: false/);
+  assert.ok(leader.indexOf("checked: leaderSettings.autoEnrollNew === true") < leader.indexOf("leaderOpen && h('div'"), 'auto-enrollment stays visible when collapsed');
+  assert.match(leader, /confirmLeaderAccess\('start'/);
+  assert.match(source, /confirmLeaderAccess\('enroll', \{ taskId: String\(issue\.id\), sessionId: issue\.sessionId \}/);
+  assert.match(leader, /confirmLeaderAccess\('configure', \{ settings: \{ autoEnrollNew: true \} \}/);
+  assert.match(leader, /t\('leaderScope'\)/);
+  assert.match(leader, /t\('leaderNativeHuman'\)/);
+  assert.match(leader, /t\('leaderResumeHint'\)/);
+  assert.match(source, /\['paused', 'needs-human'\]\.includes\(item\.status\) && h\(Button/);
+  assert.match(source, /confirmLeaderAccess\('resumeIssue', \{ taskId: item\.taskId, sessionId: item\.sessionId \}/);
+  assert.match(leader, /role: 'region', 'aria-label': t\('leaderConfirm'\)/);
+  assert.doesNotMatch(leader, /role: 'dialog'|aria-modal|prompt\(|post\('answer'|post\('approval'|question\/answer|approval\/answer/);
+  assert.match(leader, /openManagedIssue\(item, event\.currentTarget\)/);
+  assert.equal((issues.match(/issueLeaderControl\(issue\)/g) || []).length, 2);
+  assert.equal((issues.match(/t\('leaderEnrolled'\)/g) || []).length, 2);
+  assert.match(leader, /modelOptions\(leaderModel\)/);
+  assert.match(leader, /withReasoningEffort\(leaderModel, event\.target\.value\)/);
+  assert.doesNotMatch(leader, /updateSettings\(|issueSessionModel|issueSessionCwd/);
+  assert.match(source, /\.gta-leader-settings select\{min-height:28px\}/);
 });
