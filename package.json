@@ -1,6 +1,6 @@
 {
-  "name": "@lifeipkg/dsh-gitlab-todo-agent",
-  "version": "2.33.0",
+  "name": "@lifeipkg/dsh-gitlab-workstation",
+  "version": "2.33.1",
   "description": "GitLab Workstation for DSH: automate Todo mentions, manually process assigned issues, track sessions and closure, and surface human follow-up in a compact workbench.",
   "type": "module",
   "license": "MIT",
@@ -41,7 +41,7 @@
   ],
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "check": "node --check index.js && node --check core.js && node --check client.js && node --check dsh-host.js && node --check host/constants.js && node --check host/util.js && node --check host/gitlab.js && node --check host/precheck.js && node --check host/precheck-jev.js && node --check host/slots.js && node --check host/closures.js && node --check host/followups.js && node --check host/dispatch.js && node --check host/issues.js && node --check host/logs.js",
+    "check": "node --check index.js && node --check core.js && node --check client.js && node --check dsh-host.js && node --check host/constants.js && node --check host/util.js && node --check host/gitlab.js && node --check host/precheck.js && node --check host/precheck-jev.js && node --check host/slots.js && node --check host/closures.js && node --check host/followups.js && node --check host/dispatch.js && node --check host/issues.js && node --check host/logs.js && node --check host/session-entries.js",
     "pack:check": "npm pack --dry-run --json"
   },
   "publishConfig": {
@@ -59,7 +59,7 @@
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
-    "dsh": ">=0.2.0-rc.1 <0.3.0-0"
+    "dsh": ">=0.2.2-rc.3 <0.3.0-0"
   },
   "keywords": [
     "deepseek-harness",

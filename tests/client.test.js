@@ -221,6 +221,225 @@ async function loadWorkstationHelpers() {
 
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
+async function loadSessionEntryHelpers() {
+  const source = await clientSource();
+  const marker = '    function PanelIcon({ size = 20 }) {';
+  const instrumented = source.replace(marker,
+    `    globalThis.__entryHelpers = { inspectSessionEntry, clientSessionArchive, navigateSessionSafely, createSessionEntryGuard, handoffsForTask, canCreateSessionHandoff, readHandoffResult, refreshedSessionHandoff, en, zh };\n${marker}`);
+  let definition;
+  const context = vm.createContext({ AbortController, AbortSignal,
+    window: { __ModuleLoader__: { load(value) { definition = value; } } },
+  });
+  vm.runInContext(instrumented, context, { filename: 'client.js' });
+  definition.factory(() => ({
+    createElement() { assert.fail('safe-entry tests exercise pure logic only, not React or DOM'); },
+    Component: class {},
+  }));
+  return context.__entryHelpers;
+}
+
+function sessionEntryFixture({ statuses = ['active'], loaded = { openState: 'open', removed: false }, archived = [], phase = 'ready' } = {}) {
+  const calls = [];
+  let index = 0;
+  const workspace = { phase, state: 'idle', archivedSessionIds: archived };
+  const binding = { session: { getSnapshot() { calls.push('snapshot'); return loaded; } } };
+  const ctx = {
+    workspaces: { list: { getSnapshot() { return workspace; } } },
+    sessions: {
+      async refresh() { calls.push('refresh'); },
+      retain(id, options) {
+        calls.push('retain'); assert.equal(id, 'session-a'); assert.equal(options.source, 'controllerOperation');
+        return { ready: Promise.resolve(binding), release() { calls.push('release'); } };
+      },
+    },
+    uiWorkspace: {
+      async unarchiveSession(id) { calls.push('unarchive'); workspace.archivedSessionIds = workspace.archivedSessionIds.filter((item) => item !== id); },
+      openSession(id) { calls.push('open'); assert.equal(id, 'session-a'); },
+    },
+  };
+  const request = async (action, payload) => {
+    calls.push('inspect'); assert.equal(action, 'inspectSession'); assert.equal(payload.sessionId, 'session-a');
+    return { ok: true, result: { sessionId: 'session-a', status: statuses[Math.min(index++, statuses.length - 1)] } };
+  };
+  return { ctx, request, sessionId: 'session-a', calls, workspace };
+}
+
+test('safe navigation transfers a retained open session only after final live and archive checks', async () => {
+  const { navigateSessionSafely } = await loadSessionEntryHelpers();
+  const fixture = sessionEntryFixture();
+  assert.equal((await navigateSessionSafely(fixture)).status, 'opened');
+  assert.deepEqual(fixture.calls, ['inspect', 'refresh', 'retain', 'inspect', 'snapshot', 'open', 'release']);
+});
+
+test('missing, unknown and archived inspection do not navigate, load or silently restore', async () => {
+  const { navigateSessionSafely } = await loadSessionEntryHelpers();
+  for (const status of ['missing', 'unknown', 'archived']) {
+    const fixture = sessionEntryFixture({ statuses: [status] });
+    assert.equal((await navigateSessionSafely(fixture)).status, status);
+    assert.deepEqual(fixture.calls, ['inspect']);
+  }
+});
+
+test('explicit recovery waits for Client acknowledgement then rechecks existence and loaded state', async () => {
+  const { navigateSessionSafely } = await loadSessionEntryHelpers();
+  const fixture = sessionEntryFixture({ statuses: ['archived', 'active', 'active'], archived: ['session-a'] });
+  assert.equal((await navigateSessionSafely({ ...fixture, restore: true })).status, 'opened');
+  assert.deepEqual(fixture.calls, ['inspect', 'unarchive', 'inspect', 'refresh', 'retain', 'inspect', 'snapshot', 'open', 'release']);
+  const deleted = sessionEntryFixture({ statuses: ['archived', 'missing'], archived: ['session-a'] });
+  assert.equal((await navigateSessionSafely({ ...deleted, restore: true })).status, 'missing');
+  assert.deepEqual(deleted.calls, ['inspect', 'unarchive', 'inspect']);
+});
+
+test('Client stale archive requires explicit recovery and a superseding archive refuses navigation', async () => {
+  const { navigateSessionSafely } = await loadSessionEntryHelpers();
+  const stale = sessionEntryFixture({ archived: ['session-a'] });
+  assert.equal((await navigateSessionSafely(stale)).status, 'archived');
+  assert.deepEqual(stale.calls, ['inspect']);
+  const superseded = sessionEntryFixture({ statuses: ['archived', 'active', 'active'], archived: ['session-a'] });
+  superseded.ctx.uiWorkspace.unarchiveSession = async () => { superseded.calls.push('unarchive'); };
+  assert.equal((await navigateSessionSafely({ ...superseded, restore: true })).status, 'archived');
+  assert.ok(!superseded.calls.includes('open'));
+  assert.equal(superseded.calls.at(-1), 'release');
+});
+
+test('settled ready in error, removed or cold state is not a successful open', async () => {
+  const { navigateSessionSafely } = await loadSessionEntryHelpers();
+  for (const loaded of [
+    { openState: 'error', removed: false, openError: { code: 'session/not-found', message: 'load failed' } },
+    { openState: 'open', removed: true }, { openState: 'cold', removed: false }, { openState: 'open' },
+  ]) {
+    const fixture = sessionEntryFixture({ loaded });
+    assert.equal((await navigateSessionSafely(fixture)).status, 'unknown');
+    assert.ok(!fixture.calls.includes('open'));
+    assert.equal(fixture.calls.at(-1), 'release');
+  }
+  const deleted = sessionEntryFixture({ statuses: ['active', 'missing'] });
+  assert.equal((await navigateSessionSafely(deleted)).status, 'missing');
+  assert.equal(deleted.calls.at(-1), 'release');
+});
+
+test('catalog errors and malformed or unavailable capabilities fail closed, never imply deletion', async () => {
+  const { navigateSessionSafely, clientSessionArchive, inspectSessionEntry } = await loadSessionEntryHelpers();
+  for (const alter of [
+    (f) => { f.ctx.sessions.refresh = async () => { throw new Error('permission denied'); }; },
+    (f) => { f.ctx.sessions.retain = () => { throw new Error('sessions.retain: unknown session session-a'); }; },
+    (f) => { delete f.ctx.sessions; },
+    (f) => { f.workspace.phase = 'pending'; },
+    (f) => { f.workspace.archivedSessionIds = [false]; },
+    (f) => { f.workspace.state = 'error'; },
+  ]) {
+    const fixture = sessionEntryFixture(); alter(fixture);
+    assert.equal((await navigateSessionSafely(fixture)).status, 'unknown');
+    assert.ok(!fixture.calls.includes('open'));
+  }
+  assert.equal(clientSessionArchive({}, 'session-a'), null);
+  for (const data of [null, { ok: false }, { ok: true, result: { sessionId: 'wrong', status: 'missing' } },
+    { ok: true, result: { sessionId: 'session-a', status: 'deleted' } }]) {
+    assert.equal((await inspectSessionEntry(async () => data, 'session-a')).status, 'unknown');
+  }
+});
+
+test('reference readiness and navigation throws release the temporary reference', async () => {
+  const { navigateSessionSafely } = await loadSessionEntryHelpers();
+  const fixture = sessionEntryFixture();
+  fixture.ctx.uiWorkspace.openSession = () => { fixture.calls.push('open'); throw new Error('main acquisition failed'); };
+  assert.equal((await navigateSessionSafely(fixture)).status, 'unknown');
+  assert.equal(fixture.calls.at(-1), 'release');
+  const rejected = sessionEntryFixture();
+  rejected.ctx.sessions.retain = () => ({ ready: Promise.reject(new Error('generation disposed')), release() { rejected.calls.push('release'); } });
+  assert.equal((await navigateSessionSafely(rejected)).status, 'unknown');
+  assert.equal(rejected.calls.at(-1), 'release');
+});
+
+test('duplicate entry operations are rejected and closing or reopening invalidates old callbacks', async () => {
+  const { createSessionEntryGuard, navigateSessionSafely } = await loadSessionEntryHelpers();
+  const guard = createSessionEntryGuard();
+  let resolve; let completed = 0;
+  const first = guard.run(() => new Promise((done) => { resolve = done; }), () => { completed += 1; });
+  assert.equal(await guard.run(() => assert.fail('duplicate operation'), () => assert.fail('duplicate callback')), false);
+  guard.reset();
+  assert.equal(await guard.run(async () => 'new', () => { completed += 1; }), true);
+  resolve('old'); assert.equal(await first, false); assert.equal(completed, 1);
+  const fixture = sessionEntryFixture();
+  let settle;
+  fixture.request = () => new Promise((done) => { settle = done; });
+  const pending = guard.run((options) => navigateSessionSafely({ ...fixture, ...options }), () => assert.fail('stale navigation callback'));
+  guard.reset(); settle({ ok: true, result: { sessionId: 'session-a', status: 'active' } });
+  assert.equal(await pending, false); assert.ok(!fixture.calls.includes('open'));
+});
+
+test('handoff history preserves unknown creation and existing sessions, with safe partial response handling', async () => {
+  const { handoffsForTask, canCreateSessionHandoff, readHandoffResult } = await loadSessionEntryHelpers();
+  const journal = [{ taskId: '7', sessionId: '', status: 'creation-unknown', requestId: 'same' },
+    { taskId: '8', sessionId: 'other' }, { taskId: '7', sessionId: 'new', status: 'created', handoffText: 'context' }];
+  assert.deepEqual(plain(handoffsForTask({ manualHandoffs: journal }, 7)), [journal[0], journal[2]]);
+  const entry = { taskId: '7', sessionId: 'old', result: { status: 'missing', sessionId: 'old' } };
+  assert.equal(canCreateSessionHandoff(entry), true);
+  assert.equal(canCreateSessionHandoff({ ...entry, manualHandoffs: [journal[0]] }), false);
+  assert.equal(canCreateSessionHandoff({ ...entry, handoff: journal[2] }), true);
+  assert.equal(canCreateSessionHandoff({ ...entry, handoff: { ...journal[2], status: 'ready' } }), false);
+  assert.equal(canCreateSessionHandoff({ ...entry, taskId: undefined }), false);
+  assert.equal(canCreateSessionHandoff({ ...entry, busy: true }), false);
+  assert.equal(canCreateSessionHandoff({ ...entry, result: { status: 'unknown', sessionId: 'old' } }), false);
+  const t = (key) => key;
+  const partial = readHandoffResult({ ok: true, result: { ok: false, sessionId: 'new', handoffText: 'context', error: 'rename failed' } }, t);
+  assert.equal(partial.handoff.sessionId, 'new'); assert.equal(partial.handoff.handoffText, 'context'); assert.equal(partial.error, 'rename failed');
+  const missingText = readHandoffResult({ ok: true, result: { ok: true, sessionId: 'new' } }, t);
+  assert.equal(missingText.handoff.sessionId, 'new'); assert.equal(missingText.handoff.handoffText, ''); assert.ok(missingText.error);
+  assert.equal(readHandoffResult({ ok: true, result: { ok: true, sessionId: '  ', handoffText: 'bad' } }, t).handoff, null);
+});
+
+test('fresh handoff inspection updates selected requests without losing historical selection', async () => {
+  const { refreshedSessionHandoff } = await loadSessionEntryHelpers();
+  const creating = { requestId: 'selected', sessionId: '', status: 'creating', error: '' };
+  const ready = { requestId: 'selected', sessionId: 'new-session', status: 'ready', error: '', handoffText: 'context' };
+  const newerHistory = { requestId: 'newer', sessionId: 'another-session', status: 'ready' };
+  assert.deepEqual(plain(refreshedSessionHandoff(creating, [ready, newerHistory])), ready);
+  const partial = { ...ready, status: 'created', error: 'rename failed' };
+  const refreshed = refreshedSessionHandoff(partial, [ready, newerHistory]);
+  assert.equal(refreshed.status, 'ready'); assert.equal(refreshed.error, '');
+  assert.equal(refreshedSessionHandoff(ready, [ready, newerHistory]).requestId, 'selected');
+  assert.deepEqual(plain(refreshedSessionHandoff(creating, [newerHistory])), creating);
+  assert.deepEqual(plain(refreshedSessionHandoff(null, [ready, newerHistory])), newerHistory);
+  assert.equal(refreshedSessionHandoff(null, []), undefined);
+  const legacyPartial = { sessionId: 'new-session', error: 'rename failed' };
+  const legacyFresh = refreshedSessionHandoff(legacyPartial, [ready, newerHistory]);
+  assert.equal(legacyFresh.requestId, 'selected'); assert.equal(legacyFresh.error, ''); assert.equal(legacyFresh.status, 'ready');
+});
+
+test('journal rollback preserves known handoff identity and text while adopting fresh uncertainty', async () => {
+  const { refreshedSessionHandoff, canCreateSessionHandoff } = await loadSessionEntryHelpers();
+  const known = { requestId: 'same', sessionId: 'known-new', handoffText: 'known-context', status: 'created', error: 'save failed' };
+  for (const status of ['creating', 'creation-unknown']) {
+    const rolledBack = { requestId: 'same', sessionId: '', handoffText: '', status, error: 'Host outcome unknown' };
+    const selected = refreshedSessionHandoff(known, [rolledBack]);
+    assert.equal(selected.sessionId, 'known-new'); assert.equal(selected.handoffText, 'known-context');
+    assert.equal(selected.status, status); assert.equal(selected.error, 'Host outcome unknown');
+    assert.equal(canCreateSessionHandoff({ taskId: 'task', sessionId: 'old', result: { sessionId: 'old', status: 'missing' },
+      handoff: selected, manualHandoffs: [rolledBack] }), false);
+  }
+  const source = await clientSource();
+  assert.match(source, /\['creating', 'creation-unknown'\]\.includes\(sessionEntry\.handoff\.status\) \? 'sessionHandoffUncertain'/);
+});
+
+test('all six session entries share the guard, archived rows remain reachable, and locales match', async () => {
+  const source = await clientSource();
+  assert.equal((source.match(/=> openSession\(\{/g) || []).length, 6);
+  assert.equal((source.match(/ctx\.uiWorkspace\.openSession\(sessionId\)/g) || []).length, 1);
+  assert.doesNotMatch(source, /item\.sessionId && !item\.archived && h\(Button/);
+  assert.doesNotMatch(source, /session\.archived\s*\? h\('span'/);
+  assert.match(source, /taskId: item\.todoId/); assert.match(source, /taskId: todo\.id/); assert.match(source, /taskId: issue\.id/);
+  assert.match(source, /requestId = entry\.handoff\?\.requestId/);
+  assert.match(source, /readOnly: true, rows: 7/);
+  assert.match(source, /inject: \['slots', 'locale', 'uiWorkspace', 'sessions', 'workspaces'\]/);
+  assert.match(source, /handoff: result\.handoff \|\| sessionEntryRef\.current\.handoff/);
+  assert.match(source, /sessionEntry\.handoff\.sessionId && h\(Button/);
+  const handoff = source.slice(source.indexOf('      const createHandoff ='), source.indexOf('      const copyHandoff ='));
+  assert.doesNotMatch(handoff, /dispatch|prompt|acknowledge|routeToSession/);
+  const { en, zh } = await loadSessionEntryHelpers();
+  assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort());
+});
+
 test('grouped workstation tabs navigate across groups, wrap, and ignore unrelated keys', async () => {
   const { WORKSTATION_TABS: tabs, nextWorkstationTab } = await loadWorkstationHelpers();
   assert.deepEqual(Array.from(tabs, (tab) => tab.id), ['inbox', 'todos', 'issues', 'handled', 'workspaces', 'logs']);

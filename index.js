@@ -31,6 +31,7 @@ import { slotsMethods } from './host/slots.js';
 import { closuresMethods } from './host/closures.js';
 import { followupsMethods } from './host/followups.js';
 import { dispatchMethods } from './host/dispatch.js';
+import { sessionEntryMethods } from './host/session-entries.js';
 
 const PACKAGE_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_DIRECTORY = join(homedir(), '.dsh-plugins', 'gitlabtodo');
@@ -281,6 +282,16 @@ export class GitlabTodoRuntime {
         return jsonResponse(413, { ok: false, error: `请求体超过 ${MAX_REQUEST_BYTES} 字节上限。` });
       }
       const body = JSON.parse(raw || '{}');
+      if (body.action === 'inspectSession') {
+        if (typeof body.sessionId !== 'string' || !body.sessionId.trim() || body.sessionId.trim() !== body.sessionId || body.sessionId.length > 200 || /[\u0000-\u001f]/u.test(body.sessionId)) {
+          return jsonResponse(400, { ok: false, error: '无效会话 ID。' });
+        }
+        return jsonResponse(200, { ok: true, result: await this.inspectSession(body.sessionId) });
+      }
+      if (body.action === 'createHandoff') {
+        const result = await this.createHandoff(typeof body.taskId === 'number' ? String(body.taskId) : body.taskId, body.sessionId, body.requestId);
+        return jsonResponse(200, { ok: true, result, state: this.snapshot() });
+      }
       if (body.action === 'models') {
         return jsonResponse(200, { ok: true, catalog: await this.host.modelCatalog() });
       }
@@ -350,6 +361,7 @@ attachRuntimeMethods(GitlabTodoRuntime, [
   closuresMethods,
   followupsMethods,
   dispatchMethods,
+  sessionEntryMethods,
 ]);
 
 export const inject = ['connection', 'typertGateway', 'workspaceRegistry'];

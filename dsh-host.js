@@ -189,6 +189,11 @@ export class DshHostClient {
     return this.invoke('modelCatalog');
   }
 
+  /** Passive authoritative existence query; unlike session/list this cannot truncate an ID lookup. */
+  sessionState(sessionId) {
+    return this.invoke('state', { sessionId });
+  }
+
   /**
    * 完整会话名册：跟随 cursor 分页读取全部已存储会话（session/list 默认每页 100）。
    * 只取一页会漏掉更早的会话；工作区总览依赖它枚举非插件会话。
