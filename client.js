@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: '@lifeipkg/dsh-gitlab-todo-agent',
+  id: '@lifeipkg/dsh-gitlab-workstation',
   factory(require) {
     const React = require('react');
     const h = React.createElement;

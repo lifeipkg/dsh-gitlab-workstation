@@ -1,5 +1,5 @@
 {
-  "name": "@lifeipkg/dsh-gitlab-todo-agent",
+  "name": "@lifeipkg/dsh-gitlab-workstation",
   "version": "2.33.1",
   "description": "GitLab Workstation for DSH: automate Todo mentions, manually process assigned issues, track sessions and closure, and surface human follow-up in a compact workbench.",
   "type": "module",

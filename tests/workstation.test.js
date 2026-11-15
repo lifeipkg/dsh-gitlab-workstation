@@ -24,7 +24,7 @@ test('Workstation branding names the same successor repository and both task typ
   assert.ok(client.includes(en.meta.title));
 });
 
-test('rebranding preserves installed loader, client, bridge, storage and task protocol identities', async () => {
+test('Workstation package identity aligns while legacy runtime and task protocols remain stable', async () => {
   const manifest = await json('package.json');
   const patch = await read('cordis.patch.yml');
   const client = await read('client.js');
@@ -33,7 +33,7 @@ test('rebranding preserves installed loader, client, bridge, storage and task pr
   const constants = await read('host/constants.js');
   const dispatch = await read('host/dispatch.js');
   const host = await read('dsh-host.js');
-  assert.equal(manifest.name, '@lifeipkg/dsh-gitlab-todo-agent');
+  assert.equal(manifest.name, '@lifeipkg/dsh-gitlab-workstation');
   assert.match(patch, /id: gitlab-todo-agent/);
   assert.ok(patch.includes(`name: '${manifest.name}'`));
   assert.ok(client.includes(`id: '${manifest.name}'`));
@@ -45,6 +45,16 @@ test('rebranding preserves installed loader, client, bridge, storage and task pr
   assert.ok(core.includes("CLOSURE_MARKER = '[TODO-CLOSURE]'"));
   assert.ok(dispatch.includes('`gitlab-todo-${randomUUID()}`'));
   assert.ok(host.includes("startsWith('gitlab-todo-')"));
+});
+
+test('package rename documents explicit consumer switching without deleting state or claiming publication', async () => {
+  const docs = await read('README.md');
+  assert.match(docs, /新包发布后使用 `@lifeipkg\/dsh-gitlab-workstation`/);
+  assert.match(docs, /不会自动替换旧 bundle/);
+  assert.match(docs, /不要删除整个 `~\/\.dsh-plugins\/gitlabtodo\/` 数据目录/);
+  assert.match(docs, /storageDirectory/);
+  assert.match(docs, /legacyStateFile/);
+  assert.match(docs, /确认只启用一份消费者/);
 });
 
 test('safe entry declares the verified runtime baseline and its actual client services', async () => {
