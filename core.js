@@ -638,7 +638,7 @@ const TARGET_PATH_PATTERNS = [
 
 /**
  * Issue 面板会话标题固定为“仓库名 #Issue 编号”，不带轮次。
- * Todo 仍使用 [协助]-<类型短名>-<目标ID>[-note-<noteID>][-续N]。
+ * Todo 仍使用 TODO-<类型短名>-<目标ID>[-note-<noteID>][-续N]。
  */
 export function buildSessionTitle(todo, round = 1) {
   const url = String(todo?.url ?? '');
@@ -653,17 +653,17 @@ export function buildSessionTitle(todo, round = 1) {
   for (const [pattern, label] of TARGET_PATH_PATTERNS) {
     const match = url.match(pattern);
     if (match) {
-      return `[协助]-${label}-${match[1]}${noteId ? `-note-${noteId}` : ''}${suffix}`;
+      return `TODO-${label}-${match[1]}${noteId ? `-note-${noteId}` : ''}${suffix}`;
     }
   }
   if (url) {
     try {
       const segments = new URL(url).pathname.split('/').filter(Boolean);
       const tail = segments.slice(-2).join('-');
-      if (tail) return `[协助]-${tail}${noteId ? `-note-${noteId}` : ''}${suffix}`;
+      if (tail) return `TODO-${tail}${noteId ? `-note-${noteId}` : ''}${suffix}`;
     } catch {}
   }
-  return `[协助]-todo-${todo?.id ?? 'unknown'}${suffix}`;
+  return `TODO-todo-${todo?.id ?? 'unknown'}${suffix}`;
 }
 
 /** 目标对象键：去掉 #note 锚点的 URL，用来识别“同一个 Issue/MR 上的其他 Todo”。 */
