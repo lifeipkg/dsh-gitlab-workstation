@@ -851,9 +851,9 @@ export function parseClosureReport(source, originUrl = '') {
 }
 
 /**
- * 闭环裁决（纯函数）。事实优先于自述：
- * - Todo 已不在待办列表、且讨论串里没有确认“缺回复” → closed。
- * - 会话自述 needs-human（且已回复）→ needs-human，不自动续办，等人接手。
+ * 闭环裁决（纯函数）。Todo 的 needs-human 自述优先于待办消失事实，防止仍需人接手却被归档：
+ * - Todo 会话自述 needs-human（且没有确认缺回复）→ needs-human，不自动续办，等明确人工确认。
+ * - 其他 Todo 已不在待办列表、且讨论串里没有确认“缺回复” → closed；Issue 仍只认实际关闭。
  * - 其余未闭环（等待 CI、回合失败、漏回复、漏标记）→ follow-up，按退避时间新开续办会话；
  *   不允许续办时（手动派发、开关关闭、轮数用尽、超时限）降级为 needs-human。
  */
@@ -873,6 +873,9 @@ export function assessClosure(input) {
   const summary = text(report?.summary);
   const closedFact = unit === 'issue' ? 'Issue 已关闭' : 'Todo 已标记完成';
   const stillOpenFact = unit === 'issue' ? 'Issue 仍未关闭' : 'Todo 未被标记完成';
+  if (report?.status === 'needs-human' && replied !== false && (unit !== 'issue' || todoPending)) {
+    return { closure: 'needs-human', note: summary || '会话判定需要人工接手', delayMinutes: null };
+  }
   if (!todoPending && replied !== false) {
     return {
       closure: 'closed',
@@ -880,9 +883,6 @@ export function assessClosure(input) {
       note: `${summary || (turnOk ? closedFact : `回合异常结束，但${closedFact}`)}${unit !== 'issue' && replied === null ? '（讨论串回复未核对）' : ''}`.slice(0, 500),
       delayMinutes: null,
     };
-  }
-  if (todoPending && report?.status === 'needs-human' && replied !== false) {
-    return { closure: 'needs-human', note: summary || '会话判定需要人工接手', delayMinutes: null };
   }
   const issues = [];
   if (!turnOk) issues.push(`回合未正常结束${turnError ? `（${turnError}）` : ''}`);
@@ -2015,6 +2015,8 @@ export function buildInbox(state, limit = 100) {
       sessionId: record.sessionId,
       sessionTitle: record.sessionTitle,
       routed: record.routed === true,
+      archived: record.archived === true,
+      archiveError: record.archiveError ?? '',
       round: record.round ?? 1,
       closureNote: record.closureNote ?? '',
       pendingUnconfirmed: record.pendingUnconfirmed === true,
