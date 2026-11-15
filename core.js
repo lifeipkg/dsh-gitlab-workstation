@@ -1384,6 +1384,22 @@ function normalizeWatch(value, originUrl = '') {
   return { mrs, lastStates };
 }
 
+function normalizeManualHandoffs(value) {
+  return (Array.isArray(value) ? value : []).filter((entry) => isRecord(entry)
+    && typeof entry.requestId === 'string' && entry.requestId.length > 0 && entry.requestId.length <= 200
+    && typeof entry.sourceSessionId === 'string' && entry.sourceSessionId.length > 0 && entry.sourceSessionId.length <= 200)
+    .map((entry) => ({
+      requestId: entry.requestId,
+      ...(typeof entry.taskId === 'string' ? { taskId: entry.taskId } : {}),
+      sourceSessionId: entry.sourceSessionId,
+      sessionId: typeof entry.sessionId === 'string' && entry.sessionId.length <= 200 ? entry.sessionId : '',
+      createdAt: timestamp(entry.createdAt),
+      status: ['prepared', 'creating', 'creation-unknown', 'created', 'ready'].includes(entry.status) ? entry.status : 'creation-unknown',
+      handoffText: text(entry.handoffText).slice(0, 5000),
+      error: text(entry.error).slice(0, 1000),
+    }));
+}
+
 export function normalizeState(value) {
   if (!isRecord(value)) {
     throw new Error(`插件状态必须是 JSON 对象，期望 version=${STATE_VERSION}。`);
@@ -1473,6 +1489,7 @@ export function normalizeState(value) {
         watch: normalizeWatch(record.watch, url),
         // 需人工记录的人工确认时间：收件箱据此移出待办。
         acknowledgedAt: timestamp(record.acknowledgedAt),
+        manualHandoffs: normalizeManualHandoffs(record.manualHandoffs),
         history: (Array.isArray(record.history) ? record.history : [])
           .filter((entry) => isRecord(entry) && typeof entry.sessionId === 'string' && entry.sessionId)
           .slice(-10)
@@ -1516,6 +1533,7 @@ export function normalizeState(value) {
         pending[id] = {
         sessionId: record.sessionId,
         createdAt,
+        manualHandoffs: normalizeManualHandoffs(record.manualHandoffs),
         automatic: record.automatic !== false,
         followUp: record.followUp === true,
         routed: record.routed === true,
@@ -1586,6 +1604,7 @@ export function normalizeState(value) {
       : [],
     handled,
     pending,
+    manualHandoffs: normalizeManualHandoffs(value.manualHandoffs),
     recent,
     lastRunAt: timestamp(value.lastRunAt),
     lastSuccessAt: timestamp(value.lastSuccessAt),

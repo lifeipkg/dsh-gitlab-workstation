@@ -47,6 +47,16 @@ test('rebranding preserves installed loader, client, bridge, storage and task pr
   assert.ok(host.includes("startsWith('gitlab-todo-')"));
 });
 
+test('safe entry declares the verified runtime baseline and its actual client services', async () => {
+  const manifest = await json('package.json');
+  assert.equal(manifest.engines.dsh, '>=0.2.2-rc.3 <0.3.0-0');
+  const client = await read('client.js');
+  const declaration = client.match(/inject:\s*\[([^\]]+)\]/)?.[1] ?? '';
+  const services = [...declaration.matchAll(/'([^']+)'/g)].map((match) => match[1]);
+  assert.deepEqual(services.sort(), ['locale', 'sessions', 'slots', 'uiWorkspace', 'workspaces'].sort());
+  assert.match(await read('README.md'), /最低 DSH 版本为 `0\.2\.2-rc\.3`/);
+});
+
 test('packaged entrypoints exist and the syntax check covers every runtime module', async () => {
   const manifest = await json('package.json');
   const rootModules = ['index.js', 'core.js', 'client.js', 'dsh-host.js'];

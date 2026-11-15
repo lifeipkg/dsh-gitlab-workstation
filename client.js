@@ -33,6 +33,22 @@ window.__ModuleLoader__.load({
       ruleSkipped: 'Skipped (rule)',
       sessionArchived: 'Archived',
       openSession: 'Open session',
+      sessionEntryTitle: 'Session access', sessionChecking: 'Checking session…', sessionRestoreOpen: 'Restore and open',
+      sessionArchivedNotice: 'This session is archived. Restore it explicitly before opening.',
+      sessionMissingNotice: 'The linked session does not exist (possibly deleted). Task records and replies are retained; nothing is marked done.',
+      sessionUnknownNotice: 'Session status could not be verified. Stay here and retry.', sessionRetry: 'Check again',
+      sessionInvalidResponse: 'Invalid inspection response.', sessionCapabilityMissing: 'This Host does not expose the required safe session APIs.',
+      sessionCatalogNotReady: 'Workspace archive status is unavailable. Retry after the Host is ready.',
+      sessionClientArchived: 'The current Client catalog still marks this session archived.', sessionLoadFailed: 'Session loading could not be verified.',
+      sessionHandoff: 'Create handoff session', sessionConfirmHandoff: 'Confirm create blank session',
+      sessionHandoffHint: 'Creates a blank session only. No task is dispatched or marked done. Review and send the handoff text yourself.',
+      sessionHandoffReady: 'Blank handoff session created. Copy the context below before opening; sending it is your decision.',
+      sessionHandoffContext: 'Handoff context', sessionCopyContext: 'Copy context', sessionCopied: 'Copied',
+      sessionHandoffFailed: 'Could not confirm handoff creation. Retry uses the same request, not a new dispatch.',
+      sessionHandoffPartial: 'A session ID is known, but setup or saving is incomplete. Retrying reuses it; no task has been started.',
+      sessionCloseHint: 'Closing cancels navigation, not recovery or creation already sent to the Host.',
+      sessionHandoffUncertain: 'A handoff record already exists, but creation or saving is not confirmed. Check the Host; do not create another.',
+      sessionRetryHandoff: 'Retry handoff setup', sessionConfirmHandoffSetup: 'Confirm retry on the same session',
       interval: 'Poll interval (seconds)', limit: 'Maximum new sessions per poll', concurrency: 'Automatic dispatch concurrency',
       cwd: 'GitLab working directory', cwdHint: 'Leave empty to use the Host process directory.',
       sessionCwd: 'Todo session workspace', sessionCwdHint: 'Pick the DSH workspace for new Todo sessions. "Auto" follows the most recently used workspace.',
@@ -137,6 +153,22 @@ window.__ModuleLoader__.load({
       ruleSkipped: '已跳过（规则）',
       sessionArchived: '已归档',
       openSession: '打开会话',
+      sessionEntryTitle: '会话入口', sessionChecking: '正在核验会话…', sessionRestoreOpen: '恢复并打开',
+      sessionArchivedNotice: '此会话已归档，请明确恢复后再打开。',
+      sessionMissingNotice: '关联会话不存在（可能已删除）。任务记录和回复仍保留，不会标记完成。',
+      sessionUnknownNotice: '暂时无法核实会话状态，请留在这里重试。', sessionRetry: '重新核验',
+      sessionInvalidResponse: '会话核验响应无效。', sessionCapabilityMissing: '当前 Host 未提供安全打开所需的会话接口。',
+      sessionCatalogNotReady: '工作区归档状态尚不可用，请在 Host 就绪后重试。',
+      sessionClientArchived: '当前客户端目录仍显示此会话已归档。', sessionLoadFailed: '无法确认会话加载成功。',
+      sessionHandoff: '新建接手会话', sessionConfirmHandoff: '确认新建空白会话',
+      sessionHandoffHint: '只创建空白人工会话，不分派任务、不标记完成；请自行审阅并发送交接摘要。',
+      sessionHandoffReady: '空白接手会话已建立，请先复制下方摘要再打开；是否发送由你决定。',
+      sessionHandoffContext: '交接摘要', sessionCopyContext: '复制摘要', sessionCopied: '已复制',
+      sessionHandoffFailed: '未能确认接手会话创建结果。重试使用同一请求，不重新分派。',
+      sessionHandoffPartial: '已确认会话 ID，但设置或保存尚未完成。重试复用此会话，未启动任务处理。',
+      sessionCloseHint: '关闭会取消导航，但不会撤销已发送给 Host 的恢复或创建操作。',
+      sessionHandoffUncertain: '已有接手记录，但创建或保存结果尚不确定；请核查 Host，避免另建会话。',
+      sessionRetryHandoff: '重试补齐接手设置', sessionConfirmHandoffSetup: '确认复用原会话重试',
       interval: '轮询间隔（秒）', limit: '每轮最多创建 Session 数', concurrency: '自动处理并发数',
       cwd: 'GitLab 工作目录', cwdHint: '留空使用 Host 进程目录。',
       sessionCwd: 'Todo 新开会话的工作区', sessionCwdHint: '选择 Todo 新会话归属的 DSH 工作区；“自动”跟随最近使用的工作区。',
@@ -230,7 +262,7 @@ window.__ModuleLoader__.load({
           headers,
           body: method === 'POST' ? JSON.stringify({ action, ...(options.payload ?? {}) }) : undefined,
           // 与 cordis.patch.yml 的 requestTimeoutMs 对齐：poll 等长操作与其他操作统一 90 秒超时。
-          signal: AbortSignal.timeout(90000),
+          signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(90000)]) : AbortSignal.timeout(90000),
         });
       } catch (cause) {
         if (cause && (cause.name === 'TimeoutError' || cause.name === 'AbortError')) throw new Error(bridgeText('bridgeTimeout'));
@@ -243,7 +275,130 @@ window.__ModuleLoader__.load({
 
     const getState = async () => (await bridge('state')).state;
     // 写操作必须显式覆盖 issues/logs 等只读 action 的默认 GET，否则刷新和清空只会读取缓存。
-    const post = (action, payload) => bridge(action, { method: 'POST', payload });
+    const post = (action, payload, signal) => bridge(action, { method: 'POST', payload, signal });
+
+    // Existence is established only by the Host's typed inspection, never catalog absence.
+    async function inspectSessionEntry(request, sessionId, signal) {
+      const data = await request('inspectSession', { sessionId }, signal);
+      const result = data?.result;
+      if (data?.ok !== true || result?.sessionId !== sessionId
+        || !['active', 'archived', 'missing', 'unknown'].includes(result?.status)) {
+        return { sessionId, status: 'unknown', reasonKey: 'sessionInvalidResponse' };
+      }
+      return result;
+    }
+
+    function clientSessionArchive(ctx, sessionId) {
+      const value = ctx.workspaces?.list?.getSnapshot?.();
+      if (value?.phase !== 'ready' || value.state === 'error' || (!Array.isArray(value.archivedSessionIds) || !value.archivedSessionIds.every((id) => typeof id === 'string'))) return null;
+      return value.archivedSessionIds.includes(sessionId);
+    }
+
+    /** Keep a reference until synchronous main-view acquisition; ready alone may settle in error. */
+    async function navigateSessionSafely({ ctx, request, sessionId, restore = false, signal, isCurrent = () => true }) {
+      let reference;
+      const current = () => !signal?.aborted && isCurrent();
+      const cancelled = { sessionId, status: 'cancelled' };
+      try {
+        let result = await inspectSessionEntry(request, sessionId, signal);
+        if (!current()) return cancelled;
+        if (!['active', 'archived'].includes(result.status)) return result;
+        if (result.status === 'archived' && !restore) return result;
+        if (!ctx.sessions?.refresh || !ctx.sessions?.retain || !ctx.uiWorkspace?.openSession) {
+          return { sessionId, status: 'unknown', reasonKey: 'sessionCapabilityMissing' };
+        }
+        const archive = clientSessionArchive(ctx, sessionId);
+        if (archive === null) return { sessionId, status: 'unknown', reasonKey: 'sessionCatalogNotReady' };
+        if (archive && !restore) return { sessionId, status: 'archived', reasonKey: 'sessionClientArchived' };
+        if (restore) {
+          if (!ctx.uiWorkspace.unarchiveSession) return { sessionId, status: 'unknown', reasonKey: 'sessionCapabilityMissing' };
+          await ctx.uiWorkspace.unarchiveSession(sessionId);
+          if (!current()) return cancelled;
+          result = await inspectSessionEntry(request, sessionId, signal);
+          if (!current()) return cancelled;
+          if (result.status !== 'active') return result;
+        }
+        await ctx.sessions.refresh();
+        if (!current()) return cancelled;
+        reference = ctx.sessions.retain(sessionId, { source: 'controllerOperation', signal });
+        const binding = await reference.ready;
+        if (!current()) return cancelled;
+        // A recovery acknowledgement is not proof of existence; loading may have raced deletion.
+        result = await inspectSessionEntry(request, sessionId, signal);
+        if (!current()) return cancelled;
+        if (result.status !== 'active') return result;
+        const loaded = binding.session.getSnapshot();
+        if (loaded.openState !== 'open' || loaded.removed !== false) {
+          return { sessionId, status: 'unknown', reasonKey: 'sessionLoadFailed', reason: loaded.openError?.message };
+        }
+        const latestArchive = clientSessionArchive(ctx, sessionId);
+        if (latestArchive === null) return { sessionId, status: 'unknown', reasonKey: 'sessionCatalogNotReady' };
+        if (latestArchive) return { sessionId, status: 'archived', reasonKey: 'sessionClientArchived' };
+        if (!current()) return cancelled;
+        ctx.uiWorkspace.openSession(sessionId);
+        return { sessionId, status: 'opened' };
+      } catch (cause) {
+        return current() ? { sessionId, status: 'unknown', reason: cause?.message, reasonKey: 'sessionLoadFailed' } : cancelled;
+      } finally {
+        reference?.release();
+      }
+    }
+
+    function readHandoffResult(data, t) {
+      const result = data?.result;
+      const knownId = typeof result?.sessionId === 'string' && result.sessionId.length > 0
+        && result.sessionId.trim() === result.sessionId && !/[\u0000-\u001f]/u.test(result.sessionId);
+      const handoff = knownId ? { ...result, handoffText: typeof result.handoffText === 'string' ? result.handoffText : '' } : null;
+      const valid = data?.ok === true && result?.ok === true && knownId && typeof result.handoffText === 'string';
+      return { handoff, state: data?.state, error: valid ? null : result?.error || t('sessionHandoffFailed') };
+    }
+
+    function handoffsForTask(result, taskId) {
+      return taskId == null || !Array.isArray(result?.manualHandoffs) ? []
+        : result.manualHandoffs.filter((entry) => entry && String(entry.taskId) === String(taskId));
+    }
+
+    function refreshedSessionHandoff(selected, handoffs) {
+      if (selected) {
+        const fresh = selected.requestId ? handoffs.find((entry) => entry.requestId === selected.requestId)
+          : selected.sessionId ? handoffs.find((entry) => entry.sessionId === selected.sessionId) : null;
+        if (fresh) return { ...fresh, sessionId: fresh.sessionId || selected.sessionId,
+          handoffText: fresh.handoffText || selected.handoffText };
+      }
+      return selected || handoffs[handoffs.length - 1];
+    }
+
+    function canCreateSessionHandoff(entry) {
+      if (!entry || entry.taskId == null || entry.busy || entry.result?.status !== 'missing'
+        || entry.result.sessionId !== entry.sessionId) return false;
+      if (entry.manualHandoffs?.some((item) => !item.sessionId && ['creating', 'creation-unknown'].includes(item.status))) return false;
+      return !entry.handoff || Boolean(entry.error || entry.handoff.error) || ['prepared', 'created'].includes(entry.handoff.status);
+    }
+
+    // One operation per current entry. Closing/reopening invalidates callbacks and navigation.
+    function createSessionEntryGuard() {
+      let generation = 0;
+      let controller = null;
+      let busy = false;
+      return {
+        reset() { controller?.abort(); controller = null; busy = false; generation += 1; },
+        async run(operation, complete) {
+          if (busy) return false;
+          busy = true;
+          const captured = generation;
+          controller = new AbortController();
+          const signal = controller.signal;
+          const isCurrent = () => captured === generation && !signal.aborted;
+          try {
+            const result = await operation({ signal, isCurrent });
+            if (isCurrent()) complete(result);
+            return isCurrent();
+          } finally {
+            if (captured === generation) { busy = false; controller = null; }
+          }
+        },
+      };
+    }
 
     function formatTime(value, fallback) {
       return value ? new Date(value).toLocaleString() : fallback;
@@ -558,6 +713,34 @@ window.__ModuleLoader__.load({
       const routeGeneration = React.useRef(0);
       const routeDialogRef = React.useRef(null);
       const routeTriggerRef = React.useRef(null);
+      const [sessionEntry, setSessionEntry] = React.useState(null);
+      const sessionEntryRef = React.useRef(null);
+      const sessionDialogRef = React.useRef(null);
+      const sessionTriggerRef = React.useRef(null);
+      const sessionGuard = React.useRef(null);
+      if (!sessionGuard.current) sessionGuard.current = createSessionEntryGuard();
+      const handoffRequests = React.useRef(new Map());
+      const updateSessionEntry = (value) => { sessionEntryRef.current = value; setSessionEntry(value); };
+      const closeSessionEntry = () => { sessionGuard.current.reset(); updateSessionEntry(null); };
+      React.useEffect(() => () => { sessionGuard.current.reset(); }, []);
+      React.useEffect(() => {
+        if (!sessionEntry) return undefined;
+        const trigger = sessionTriggerRef.current;
+        const dialog = sessionDialogRef.current;
+        dialog?.querySelector('button:not(:disabled)')?.focus();
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape') { event.preventDefault(); closeSessionEntry(); return; }
+          if (event.key !== 'Tab' || !dialog) return;
+          const controls = Array.from(dialog.querySelectorAll('button:not(:disabled), a[href], textarea:not(:disabled)'));
+          const first = controls[0]; const last = controls[controls.length - 1];
+          const focused = dialog.ownerDocument.activeElement;
+          if (!first) { event.preventDefault(); dialog.focus(); }
+          else if (event.shiftKey && (focused === first || !dialog.contains(focused))) { event.preventDefault(); last.focus(); }
+          else if (!event.shiftKey && (focused === last || !dialog.contains(focused))) { event.preventDefault(); first.focus(); }
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => { window.removeEventListener('keydown', onKeyDown); if (trigger?.isConnected) trigger.focus(); };
+      }, [Boolean(sessionEntry)]);
 
       React.useEffect(() => {
         let disposed = false;
@@ -914,7 +1097,54 @@ window.__ModuleLoader__.load({
         const generation = draftGeneration.current;
         return finishCurrentViewOperation(saveGeneralSettings(), generation, draftGeneration, closeGeneralSettings);
       };
-      const openSession = (sessionId) => ctx.uiWorkspace.openSession(sessionId);
+      const runSessionAccess = (restore = false, sessionId = sessionEntryRef.current?.sessionId) => {
+        const entry = sessionEntryRef.current;
+        if (!entry || entry.busy) return;
+        updateSessionEntry({ ...entry, busy: true, error: null, confirmCreate: false });
+        void sessionGuard.current.run(({ signal, isCurrent }) => navigateSessionSafely({
+          ctx, request: post, sessionId, restore, signal, isCurrent,
+        }), (result) => {
+          if (result.status === 'opened') { closeSessionEntry(); return; }
+          const latest = sessionEntryRef.current;
+          const handoffs = handoffsForTask(result, latest.taskId);
+          updateSessionEntry({ ...latest, busy: false, result, manualHandoffs: handoffs.length ? handoffs : latest.manualHandoffs,
+            handoff: refreshedSessionHandoff(latest.handoff, handoffs) });
+        });
+      };
+      const openSession = (entry, trigger) => {
+        if (sessionEntryRef.current?.busy && sessionEntryRef.current.sessionId === entry.sessionId) return;
+        sessionGuard.current.reset();
+        sessionTriggerRef.current = trigger ?? null;
+        updateSessionEntry({ ...entry, busy: false, result: null, error: null, confirmCreate: false, copied: false });
+        runSessionAccess();
+      };
+      const createHandoff = () => {
+        const entry = sessionEntryRef.current;
+        if (!canCreateSessionHandoff(entry)) return;
+        if (!entry.confirmCreate) { updateSessionEntry({ ...entry, confirmCreate: true }); return; }
+        const key = JSON.stringify([entry.taskId, entry.sessionId]);
+        let requestId = entry.handoff?.requestId || handoffRequests.current.get(key);
+        if (!requestId) { requestId = globalThis.crypto.randomUUID(); handoffRequests.current.set(key, requestId); }
+        updateSessionEntry({ ...entry, busy: true, error: null, confirmCreate: false });
+        void sessionGuard.current.run(async ({ signal }) => {
+          try {
+            const data = await post('createHandoff', { taskId: String(entry.taskId), sessionId: entry.sessionId, requestId }, signal);
+            return readHandoffResult(data, t);
+          } catch (cause) { return { error: cause?.message || t('sessionHandoffFailed') }; }
+        }, (result) => {
+          if (result.state) setSnapshot(result.state);
+          updateSessionEntry({ ...sessionEntryRef.current, busy: false, error: result.error, handoff: result.handoff || sessionEntryRef.current.handoff });
+        });
+      };
+      const copyHandoff = async () => {
+        const entry = sessionEntryRef.current;
+        try {
+          await navigator.clipboard.writeText(entry.handoff.handoffText);
+          if (sessionEntryRef.current === entry) updateSessionEntry({ ...entry, copied: true, error: null });
+        } catch (cause) {
+          if (sessionEntryRef.current === entry) updateSessionEntry({ ...entry, error: cause.message });
+        }
+      };
       // 收件箱“我已处理”：成功后连同收件箱一起刷新（snapshot 已由 perform 更新）。
       const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post('acknowledge', { todoId: item.todoId }))
         .then((done) => { if (done) void fetchInbox(); });
@@ -1298,7 +1528,7 @@ window.__ModuleLoader__.load({
                 h(ReplyPreview, { reply: item.lastReply, t }),
               ),
               h('div', { className: 'gta-todo-actions' },
-                item.sessionId && h(Button, { onClick: () => openSession(item.sessionId) }, t('inboxTakeover')),
+                item.sessionId && h(Button, { onClick: (event) => openSession({ sessionId: item.sessionId, taskId: item.todoId, title: item.title, url: item.url, manualHandoffs: item.manualHandoffs }, event.currentTarget) }, t('inboxTakeover')),
                 h(Button, {
                   primary: true,
                   disabled: busySet.has(`ack:${item.todoId}`),
@@ -1346,7 +1576,7 @@ window.__ModuleLoader__.load({
                     h(ReplyPreview, { reply: todo.lastReply, t }),
                   ),
                   h('div', { className: 'gta-todo-actions' },
-                    todo.sessionId && h(Button, { onClick: () => openSession(todo.sessionId) }, t('openSession')),
+                    todo.sessionId && h(Button, { onClick: (event) => openSession({ sessionId: todo.sessionId, taskId: todo.id, title: todo.title, url: todo.url, manualHandoffs: todo.manualHandoffs }, event.currentTarget) }, t('openSession')),
                     // 主按钮只负责开会话：未处理开新会话；已处理为“重新处理”（不可逆，需二次确认）。
                     canProcessTodo(todo) && h(Button, {
                       primary: !todo.handled,
@@ -1447,7 +1677,7 @@ window.__ModuleLoader__.load({
                   ].filter(Boolean).join(' · ')),
                 ),
                 h('div', { className: 'gta-todo-actions' },
-                  issue.sessionId && h(Button, { onClick: () => openSession(issue.sessionId) }, t('openSession')),
+                  issue.sessionId && h(Button, { onClick: (event) => openSession({ sessionId: issue.sessionId, taskId: issue.id, title: issue.title, url: issue.url, manualHandoffs: issue.manualHandoffs }, event.currentTarget) }, t('openSession')),
                   h(Button, {
                     primary: !issue.handled,
                     disabled: busySet.has('settings') || busySet.has(`dispatch:${issue.id}`) || issue.executionStatus === 'running' || issue.executionStatus === 'starting',
@@ -1479,7 +1709,7 @@ window.__ModuleLoader__.load({
                   ].filter(Boolean).join(' · ')),
                 ),
                 h('div', { className: 'gta-todo-actions' },
-                  issue.sessionId && h(Button, { onClick: () => openSession(issue.sessionId) }, t('openSession')),
+                  issue.sessionId && h(Button, { onClick: (event) => openSession({ sessionId: issue.sessionId, taskId: issue.id, title: issue.title, url: issue.url, manualHandoffs: issue.manualHandoffs }, event.currentTarget) }, t('openSession')),
                 ),
               ))),
         ),
@@ -1524,7 +1754,7 @@ window.__ModuleLoader__.load({
                   h('div', { className: 'gta-todo-actions' },
                     // 有会话的记录：会话入口 + 归档切换（原「最近会话」Tab 的动作并入这里）；
                     // 无会话的记录（规则/预检跳过）：判定原因已在上面的 skipReason 行展示。
-                    item.sessionId && !item.archived && h(Button, { onClick: () => openSession(item.sessionId) }, t('openSession')),
+                    item.sessionId && h(Button, { onClick: (event) => openSession({ sessionId: item.sessionId, taskId: item.todoId, title: item.title, url: item.url, manualHandoffs: item.manualHandoffs }, event.currentTarget) }, t('openSession')),
                     item.sessionId && item.executionStatus !== 'starting' && item.routed !== true && h(Button, {
                       disabled: busySet.has(`archive:${item.sessionId}`) || (item.archived !== true && item.executionStatus === 'running'),
                       onClick: () => toggleSessionArchive(item),
@@ -1555,12 +1785,10 @@ window.__ModuleLoader__.load({
                       ? h('div', { className: 'gta-muted' }, t('noSessions'))
                       : workspace.sessions.map((session) =>
                           h('div', { className: 'gta-workspace-session', key: session.sessionId },
-                            session.archived
-                              ? h('span', { className: 'gta-session-name', title: session.sessionId }, sessionDisplayName(session, t('sessionUnknown'), workspace.path))
-                              : h('button', {
-                                  type: 'button', className: 'gta-session-link', title: session.sessionId,
-                                  onClick: () => openSession(session.sessionId),
-                                }, sessionDisplayName(session, t('sessionUnknown'), workspace.path)),
+                            h('button', {
+                              type: 'button', className: 'gta-session-link', title: session.sessionId,
+                              onClick: (event) => openSession({ sessionId: session.sessionId, title: sessionDisplayName(session, t('sessionUnknown'), workspace.path) }, event.currentTarget),
+                            }, sessionDisplayName(session, t('sessionUnknown'), workspace.path)),
                             h('span', { className: `gta-tag ${session.running ? '' : 'gta-tag-success'}` },
                               session.running ? t('executionRunning') : t('idle')),
                             session.plugin && h('span', { className: 'gta-tag gta-tag-mention' }, t('pluginSessionTag')),
@@ -1608,6 +1836,50 @@ window.__ModuleLoader__.load({
                 ),
               ))),
         ),
+        sessionEntry && h('div', {
+          className: 'gta-route-backdrop',
+          onClick: (event) => { if (event.target === event.currentTarget) closeSessionEntry(); },
+        }, h('div', {
+          className: 'gta-route-dialog gta-session-dialog', role: 'dialog', 'aria-modal': true,
+          'aria-labelledby': `${PANEL_ID}-session-heading`, ref: sessionDialogRef, tabIndex: -1,
+        },
+          h('div', { className: 'gta-route-header' },
+            h('h2', { id: `${PANEL_ID}-session-heading`, className: 'gta-route-heading' }, t('sessionEntryTitle')),
+            h(Button, { onClick: closeSessionEntry }, t('close'))),
+          h('div', { className: 'gta-muted gta-meta' }, sessionEntry.title, ' · ', sessionEntry.sessionId),
+          sessionEntry.url && h('a', { href: sessionEntry.url, target: '_blank', rel: 'noreferrer', className: 'gta-reply-link' }, sessionEntry.url),
+          h('div', { className: 'gta-banner gta-warn', role: 'status', 'aria-live': 'polite' },
+            sessionEntry.busy ? t('sessionChecking')
+              : t(sessionEntry.result?.status === 'missing' ? 'sessionMissingNotice'
+                : sessionEntry.result?.status === 'archived' ? 'sessionArchivedNotice' : 'sessionUnknownNotice'),
+            sessionEntry.result?.reasonKey && ` ${t(sessionEntry.result.reasonKey)}`,
+            sessionEntry.result?.reason && ` ${sessionEntry.result.reason}`),
+          sessionEntry.error && h('div', { className: 'gta-banner gta-warn', role: 'alert' }, sessionEntry.error),
+          Array.isArray(sessionEntry.manualHandoffs) && sessionEntry.manualHandoffs.length > 1 && h('div', { className: 'gta-todo-actions' },
+            sessionEntry.manualHandoffs.map((handoff) => h(Button, { key: handoff.requestId || handoff.sessionId, disabled: sessionEntry.busy,
+              onClick: () => updateSessionEntry({ ...sessionEntryRef.current, handoff, copied: false }),
+            }, handoff.sessionId || t('sessionHandoffUncertain')))),
+          sessionEntry.handoff && h('div', { className: 'gta-handoff-context' },
+            h('p', { className: 'gta-muted' }, t(!sessionEntry.handoff.sessionId || ['creating', 'creation-unknown'].includes(sessionEntry.handoff.status) ? 'sessionHandoffUncertain'
+              : sessionEntry.error || sessionEntry.handoff.error || sessionEntry.handoff.status === 'created' ? 'sessionHandoffPartial' : 'sessionHandoffReady')),
+            sessionEntry.handoff.error && h('div', { className: 'gta-banner gta-warn', role: 'status' }, sessionEntry.handoff.error),
+            h('div', { className: 'gta-muted gta-meta' }, sessionEntry.handoff.sessionId),
+            h('textarea', { readOnly: true, rows: 7, value: sessionEntry.handoff.handoffText || '', 'aria-label': t('sessionHandoffContext') }),
+            h('div', { className: 'gta-todo-actions' },
+              h(Button, { disabled: !sessionEntry.handoff.handoffText, onClick: () => { void copyHandoff(); } }, sessionEntry.copied ? t('sessionCopied') : t('sessionCopyContext')),
+              sessionEntry.handoff.sessionId && h(Button, { disabled: sessionEntry.busy, onClick: () => runSessionAccess(false, sessionEntry.handoff.sessionId) }, t('openSession')))),
+          !sessionEntry.handoff && sessionEntry.taskId != null && sessionEntry.result?.status === 'missing'
+            && h('p', { className: 'gta-muted' }, t('sessionHandoffHint')),
+          h('div', { className: 'gta-route-footer' },
+            h(Button, { disabled: sessionEntry.busy, onClick: () => runSessionAccess(false, sessionEntry.result?.sessionId || sessionEntry.sessionId) }, t('sessionRetry')),
+            sessionEntry.result?.status === 'archived' && h(Button, { primary: true, disabled: sessionEntry.busy,
+              onClick: () => runSessionAccess(true, sessionEntry.result.sessionId) }, t('sessionRestoreOpen')),
+            canCreateSessionHandoff(sessionEntry) && h(Button, { disabled: sessionEntry.busy, onClick: createHandoff },
+              sessionEntry.handoff?.sessionId
+                ? t(sessionEntry.confirmCreate ? 'sessionConfirmHandoffSetup' : 'sessionRetryHandoff')
+                : t(sessionEntry.confirmCreate ? 'sessionConfirmHandoff' : 'sessionHandoff'))),
+          h('p', { className: 'gta-muted' }, t('sessionCloseHint')),
+        )),
         routeTodo && h('div', {
           className: 'gta-route-backdrop',
           onMouseDown: (event) => { if (event.target === event.currentTarget) closeRouteTargets(); },
@@ -1814,6 +2086,10 @@ window.__ModuleLoader__.load({
       .gta-root .gta-route-target-meta{display:block;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .gta-root .gta-route-load{flex:none;margin-left:auto;color:var(--dsw-alias-label-secondary);font-size:11.5px;white-space:nowrap}
       .gta-root .gta-route-footer{display:flex;justify-content:flex-end;gap:6px;flex:none;padding-top:10px}
+      .gta-root .gta-session-dialog{overflow-y:auto;overscroll-behavior:contain;overflow-wrap:anywhere}
+      .gta-session-dialog .gta-route-footer{flex-wrap:wrap}
+      .gta-handoff-context{min-width:0}
+      .gta-handoff-context textarea{box-sizing:border-box;display:block;width:100%;resize:vertical;min-height:100px;padding:7px;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;white-space:pre-wrap}
       .gta-reply{margin-top:2px}
       .gta-reply-toggle{appearance:none;min-height:28px;border:0;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:12px;padding:0;cursor:pointer}
       .gta-reply-toggle:hover{text-decoration:underline}
@@ -1847,7 +2123,7 @@ window.__ModuleLoader__.load({
     `;
 
     return {
-      inject: ['slots', 'locale', 'uiWorkspace'],
+      inject: ['slots', 'locale', 'uiWorkspace', 'sessions', 'workspaces'],
       apply(ctx) {
         ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'gitlab-todo-agent: locale');
         const t = ctx.locale.bind(NS);
