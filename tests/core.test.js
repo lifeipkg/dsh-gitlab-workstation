@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
@@ -49,8 +50,9 @@ import {
   validateSettings,
   verdictFromJevAnswers,
   verdictFromJevMatch,
+  initialLeaderState,
 } from '../core.js';
-import { GitlabTodoRuntime } from '../index.js';
+import { defaultStorageDirectory, GitlabTodoRuntime, resolveDshHome } from '../index.js';
 
 const gitlabTodo = {
   id: 12345,
@@ -1976,6 +1978,114 @@ test('startup upgrades script-era state without creating script files', async ()
     await runtime.stop();
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('default storage follows DSH_HOME/storages like other DSH plugins', () => {
+  assert.equal(defaultStorageDirectory({}), join(homedir(), '.dsh', 'storages', 'gitlab-workstation'));
+  assert.equal(defaultStorageDirectory({ DSH_HOME: '   ' }), join(homedir(), '.dsh', 'storages', 'gitlab-workstation'));
+  assert.equal(defaultStorageDirectory({ DSH_HOME: '~/custom-dsh' }), join(homedir(), 'custom-dsh', 'storages', 'gitlab-workstation'));
+  const absolute = join(tmpdir(), 'dsh-home');
+  assert.equal(defaultStorageDirectory({ DSH_HOME: ` ${absolute} ` }), join(absolute, 'storages', 'gitlab-workstation'));
+  assert.equal(resolveDshHome({ DSH_HOME: absolute }), absolute);
+});
+
+function migrationRuntime(target, legacy, config = {}) {
+  const logs = [];
+  const runtime = new GitlabTodoRuntime({ logger: { info: (message) => logs.push(message), warn() {} } }, config);
+  runtime.defaultStorage = target;
+  runtime.legacyStorageDirectory = () => legacy;
+  return { runtime, logs };
+}
+
+test('first start copies legacy data into the new directory and keeps the legacy files', async () => {
+  const root = await mkdtemp(join(process.cwd(), '.test-migrate-'));
+  const legacy = join(root, 'legacy'); const target = join(root, 'dsh', 'storages', 'gitlab-workstation');
+  try {
+    await mkdir(legacy, { recursive: true });
+    await writeFile(join(legacy, 'state.json'), '{"old":"state"}', 'utf8');
+    await writeFile(join(legacy, 'leader.json'), '{"old":"leader"}', 'utf8');
+    const { runtime, logs } = migrationRuntime(target, legacy);
+    await runtime.ensureStorage();
+    assert.equal(await readFile(join(target, 'state.json'), 'utf8'), '{"old":"state"}');
+    assert.equal(await readFile(join(target, 'leader.json'), 'utf8'), '{"old":"leader"}');
+    assert.equal(await readFile(join(legacy, 'state.json'), 'utf8'), '{"old":"state"}');
+    assert.equal(await readFile(join(legacy, 'leader.json'), 'utf8'), '{"old":"leader"}');
+    assert.equal(logs.length, 1); assert.match(logs[0], /state\.json、leader\.json/); assert.match(logs[0], /旧目录保留/);
+    assert.deepEqual((await readdir(target)).sort(), ['leader.json', 'state.json']);
+    // Memoized: a second call does no more work.
+    await runtime.ensureStorage(); assert.equal(logs.length, 1);
+    // A later runtime never overwrites data already in the new directory.
+    await writeFile(join(target, 'state.json'), '{"new":"state"}', 'utf8');
+    await writeFile(join(legacy, 'state.json'), '{"stale":"state"}', 'utf8');
+    const later = migrationRuntime(target, legacy);
+    await later.runtime.ensureStorage();
+    assert.equal(await readFile(join(target, 'state.json'), 'utf8'), '{"new":"state"}');
+    assert.equal(later.logs.length, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('migration copies only missing files and skips absent legacy data', async () => {
+  const root = await mkdtemp(join(process.cwd(), '.test-migrate-'));
+  const legacy = join(root, 'legacy'); const target = join(root, 'target');
+  try {
+    await mkdir(legacy, { recursive: true }); await mkdir(target, { recursive: true });
+    await writeFile(join(legacy, 'state.json'), '{"old":"state"}', 'utf8');
+    await writeFile(join(target, 'leader.json'), '{"current":"leader"}', 'utf8');
+    const { runtime, logs } = migrationRuntime(target, legacy);
+    await runtime.ensureStorage();
+    assert.equal(await readFile(join(target, 'state.json'), 'utf8'), '{"old":"state"}');
+    assert.equal(await readFile(join(target, 'leader.json'), 'utf8'), '{"current":"leader"}');
+    assert.equal(logs.length, 1); assert.doesNotMatch(logs[0], /leader\.json/);
+    const fresh = migrationRuntime(join(root, 'fresh'), join(root, 'missing-legacy'));
+    await fresh.runtime.ensureStorage();
+    assert.deepEqual(await readdir(join(root, 'fresh')), []);
+    assert.equal(fresh.logs.length, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('an explicit storageDirectory is used as-is and never receives legacy data', async () => {
+  const root = await mkdtemp(join(process.cwd(), '.test-migrate-'));
+  const legacy = join(root, 'legacy'); const configured = join(root, 'configured');
+  try {
+    await mkdir(legacy, { recursive: true });
+    await writeFile(join(legacy, 'state.json'), '{"old":"state"}', 'utf8');
+    const { runtime, logs } = migrationRuntime(join(root, 'unused'), legacy, { storageDirectory: configured });
+    assert.equal(runtime.storageDirectory(), configured);
+    await runtime.ensureStorage();
+    assert.deepEqual(await readdir(configured), []);
+    assert.equal(logs.length, 0);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('a failed migration leaves legacy data untouched and retries on the next call', async () => {
+  const root = await mkdtemp(join(process.cwd(), '.test-migrate-'));
+  const legacy = join(root, 'legacy'); const target = join(root, 'target');
+  try {
+    // A directory named state.json makes copyFile fail with a non-ENOENT error.
+    await mkdir(join(legacy, 'state.json'), { recursive: true });
+    const { runtime } = migrationRuntime(target, legacy);
+    await assert.rejects(runtime.ensureStorage(), /迁移插件数据 state\.json 失败（旧文件未改动）/);
+    assert.deepEqual(await readdir(target), []);
+    await rm(join(legacy, 'state.json'), { recursive: true, force: true });
+    await writeFile(join(legacy, 'state.json'), '{"old":"state"}', 'utf8');
+    await runtime.ensureStorage();
+    assert.equal(await readFile(join(target, 'state.json'), 'utf8'), '{"old":"state"}');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('Leader journal load migrates storage first even before runtime start', async () => {
+  const root = await mkdtemp(join(process.cwd(), '.test-migrate-'));
+  const legacy = join(root, 'legacy'); const target = join(root, 'target');
+  try {
+    await mkdir(legacy, { recursive: true });
+    const journal = initialLeaderState(); journal.sessionId = 'session-leader'; journal.phase = 'paused';
+    await writeFile(join(legacy, 'leader.json'), JSON.stringify(journal), 'utf8');
+    const { runtime } = migrationRuntime(target, legacy);
+    runtime.workspaceRegistry = { archivedSessionIds: [] };
+    await runtime.loadLeader();
+    assert.equal(runtime.leaderState.sessionId, 'session-leader');
+    assert.equal(JSON.parse(await readFile(join(legacy, 'leader.json'), 'utf8')).sessionId, 'session-leader');
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test('route settings default safely and validate scope, busy mode and queue cap', () => {

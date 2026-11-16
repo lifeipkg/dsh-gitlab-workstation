@@ -10,7 +10,7 @@
 - **上下文操作**：Todo 自动处理开关、模型选择与检查操作明确属于 Todo；Issue 保持手动处理，独立设置工作区、模型与思考强度。
 - **信息密度优先**：紧凑状态条与列表行，任务状态、错误和人工接手入口优先；设置、回复预览及高级选项按需展开。
 - **交互护栏**：不可逆操作保留两步确认；设置与路由弹层关闭后，旧请求不会关闭新开的草稿或弹层。关闭界面不撤销已经发送的保存/路由请求；被搜索隐藏的路由目标不能提交。
-- **包身份同步**：npm 包名、加载包名及客户端模块 ID 已统一为 `@lifeipkg/dsh-gitlab-workstation`。旧 Loader 条目 ID、Bridge 路径和 `~/.dsh-plugins/gitlabtodo/state.json` 继续保留，以复用原任务与会话历史；这不是旧 npm 包的透明升级，须按下面说明显式切换，不可同时加载新旧消费者。
+- **包身份同步**：npm 包名、加载包名及客户端模块 ID 已统一为 `@lifeipkg/dsh-gitlab-workstation`。旧 Loader 条目 ID、Bridge 路径和原有 `state.json` 继续保留（v2.37 起默认位于 `~/.dsh/storages/gitlab-workstation/`，首次启动自动从旧目录复制），以复用原任务与会话历史；这不是旧 npm 包的透明升级，须按下面说明显式切换，不可同时加载新旧消费者。
 
 ## 安装（分享给其他人）
 
@@ -29,11 +29,11 @@
 安装方式二选一：
 
 - **npm 安装**（新包发布后使用 `@lifeipkg/dsh-gitlab-workstation`，scope 需 `access: public` 已在 `publishConfig` 配好）：通过 DSH 插件管理安装本包后重启 DSH。源代码改名并不等于已发布到 npm；未发布时使用下面的源码方式。
-- **从源码安装**：克隆本仓库，把 `package.json` 所在目录作为 bundle 放入 DSH 插件目录（形如 `~/.dsh-plugins/gitlabtodo/bundle/`），重启 DSH。
+- **从源码安装**：克隆本仓库，把 `package.json` 所在目录作为 bundle 放入 DSH 插件目录（或通过插件管理以 `link:<仓库目录>` 安装），重启 DSH。
 
 **从旧包显式切换**：`package.json` 的 `name`、`cordis.patch.yml` 的 `name`、`client.js` 的模块 `id` 三处必须完全一致，本版本均为 `@lifeipkg/dsh-gitlab-workstation`。它与旧包 `@lifeipkg/dsh-gitlab-todo-agent` 是不同安装身份，不会自动替换旧 bundle。先暂停旧插件的自动轮询，妥善结束在途处理并确认无活动派发/写入，再备份原配置与状态（备份可能含敏感设置，不要提交仓库）。停用旧 bundle，并检查手工 insert 条目，重启卸载旧客户端模块代；不要只依靠相同 Loader row ID 判断可以并装。
 
-**保留数据，不保留并行消费者**：不要删除整个 `~/.dsh-plugins/gitlabtodo/` 数据目录；保留其中的 `state.json`。新包沿用原 `storageDirectory` 配置；若状态仍在旧包目录内的 `.runtime/state.json`，移除旧代码前先备份并显式核对 `legacyStateFile` 来源。本次改名不执行数据迁移。装好后确认只启用一份消费者，核对工作区、模型和轮询设置再启用；读入旧状态会保留原启用状态，不能假定新安装一定默认暂停。
+**保留数据，不保留并行消费者**：不要删除整个 `~/.dsh/storages/gitlab-workstation/` 数据目录（v2.37 之前为 `~/.dsh-plugins/gitlabtodo/`）；保留其中的 `state.json`。新包沿用原 `storageDirectory` 配置；若状态仍在旧包目录内的 `.runtime/state.json`，移除旧代码前先备份并显式核对 `legacyStateFile` 来源。本次改名不执行数据迁移。装好后确认只启用一份消费者，核对工作区、模型和轮询设置再启用；读入旧状态会保留原启用状态，不能假定新安装一定默认暂停。
 
 历史说明：≤2.12.x 的 `@local/dsh-gitlab-todo-agent` 曾导致 `Cannot find package '@local/dsh-gitlab-todo-agent'`；同样须保留数据后显式移除旧加载条目并切换，不能删除父级状态目录来解决包名问题。
 
@@ -255,7 +255,15 @@ Host 每次轮询先通过 `glab api user` 获取并缓存当前用户 ID，再�
 
 ## 存储与升级
 
-设置、Todo 去重和 Session 链接保存在 `~/.dsh-plugins/gitlabtodo/state.json`（每台机器、每个用户独立），采用原子写入，重启后恢复。插件不保存 GitLab 令牌，也不创建临时脚本。
+设置、Todo 去重和 Session 链接保存在 `<DSH_HOME>/storages/gitlab-workstation/state.json`，Issue Leader journal 保存在同目录的 `leader.json`（`DSH_HOME` 未设置时为 `~/.dsh`；每台机器、每个用户独立），采用原子写入，重启后恢复。这与其它 DSH 插件（如 dsh-context、dshmarket 的 `~/.dsh/storages/<插件>/`）一致。配置项 `storageDirectory` 可显式指定其它目录。插件不保存 GitLab 令牌，也不创建临时脚本。
+
+数据目录迁移（v2.37）：
+
+- 旧版默认目录是 `~/.dsh-plugins/gitlabtodo/`。未配置 `storageDirectory` 时，首次启动（或 Leader journal 首次读取）会把旧目录中的 `state.json`、`leader.json` **复制**到新目录：只复制新目录里还不存在的文件，先写临时文件再原子改名，已有数据从不覆盖。
+- 旧目录与旧文件原样保留，不会删除；Host 日志会记录“插件数据已迁移…旧目录保留未删除”。确认新目录数据和界面状态无误后，可手动删除 `~/.dsh-plugins/gitlabtodo/`。
+- 复制失败时插件拒绝启动并报告 `迁移插件数据 … 失败（旧文件未改动）`，不会用空状态覆盖历史；修复原因后重启即可重试。
+- 显式配置了 `storageDirectory` 时不做任何迁移，直接使用该目录。
+- 迁移后不要再装回 v2.36 及更早版本：旧版本仍读写旧目录，两份数据会分叉。
 
 状态版本迁移：
 
@@ -313,3 +321,4 @@ MIT License。发布到 npm（`npm publish`，scoped 包需公开访问，`publi
 - v2.33.2（状态版本不变）：新建 Todo 会话前缀由 `[协助]-` 改为 `TODO-`，保留目标类型、编号、note 与续办后缀；Issue 标题、既有路由/复用会话及历史记录不改名。归档永久删除与定时清理因当前宿主缺少安全删除能力而延期，未在本版本实现。
 - v2.35.0（Todo 状态版本与 Leader journal 版本不变，旧 `leader.json` 直接兼容）：Leader 加固。已结束投递压缩、过期创建凭证清理，长期运行不再卡在 500 条上限；只在回合结束和状态转折时唤醒 Leader，并持久保存唤醒原因；启动简报失败自动回退为暂停；显式启动、恢复或受控推进可激活冷 worker；新 Leader 默认使用无通用工具的 `gitlab-issue-leader` preset；重新托管保留已用预算，新增显式重置；未确认投递与不确定创建可人工核对；投影新增运行状态、预算和未确认投递，Issue 新增「待命」「未加载」状态；Leader 作为人类主窗口逐 Issue 汇报，`snapshot` 提供全部 Issue 会话只读概览；面板提示“已创建 · 未启动”。
 - v2.36.0（Todo 状态版本与 Leader journal 版本不变，旧 `leader.json` 直接兼容）：统一 Leader 能力为 9 个受限工具。新增 Issue worker 会话管理（为待办 Issue 创建/接管、重命名、归档、更换模型，均留审计）；`read_issue` 合并 worker 日志、待回答问题原文与 GitLab Issue/MR/流水线只读信息，续办改用 `evidenceToken`；新增 `relay_reply` 原样转达人类在 Leader 会话中的回复；`update_issue` 结构化笔记取代原进度/阻塞上报。worker 运行中 20 分钟无新日志时提醒 Leader 一次；唤醒通知改为每个 Issue 一行；托管到期时在 Leader 会话留言。面板显示 Leader 笔记、纳管来源和会话操作记录。移除旧工具 readManaged/advanceManaged/reportBlocker/reportProgress。既有 Leader 保留旧 persona 文本，新工具说明随启动简报下发。
+- v2.37.0（Todo 状态版本与 Leader journal 版本不变）：默认数据目录从 `~/.dsh-plugins/gitlabtodo/` 改为与其它 DSH 插件一致的 `<DSH_HOME>/storages/gitlab-workstation/`（默认 `~/.dsh/storages/gitlab-workstation/`）。未配置 `storageDirectory` 时首次启动把旧 `state.json`、`leader.json` 复制到新目录，只补缺失文件、从不覆盖，旧目录保留供人工确认后删除；显式配置的目录不受影响。

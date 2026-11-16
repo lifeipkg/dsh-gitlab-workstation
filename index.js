@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { access, copyFile, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DshHostClient } from './dsh-host.js';
 import {
@@ -36,8 +36,34 @@ import { leaderMethods, createLeaderUiCaller } from './host/leader.js';
 import { createLeaderAgentAdapter } from './host/leader-agent.js';
 
 const PACKAGE_DIR = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_STORAGE_DIRECTORY = join(homedir(), '.dsh-plugins', 'gitlabtodo');
+// 与其它 DSH 插件一致：数据放在 Harness home（DSH_HOME，默认 ~/.dsh）下的 storages/<插件>/。
+const STORAGE_NAME = 'gitlab-workstation';
+// 2.37.0 之前的默认目录；仅在未显式配置 storageDirectory 时作为一次性复制迁移来源。
+const LEGACY_STORAGE_DIRECTORY = join(homedir(), '.dsh-plugins', 'gitlabtodo');
+const MIGRATED_FILES = ['state.json', 'leader.json'];
 const LEGACY_STATE_FILE = join(PACKAGE_DIR, '.runtime', 'state.json');
+
+export function resolveDshHome(env = process.env) {
+  const custom = typeof env.DSH_HOME === 'string' ? env.DSH_HOME.trim() : '';
+  if (!custom) return join(homedir(), '.dsh');
+  if (custom === '~') return homedir();
+  if (custom.startsWith('~/') || custom.startsWith('~\\')) return resolve(join(homedir(), custom.slice(2)));
+  return resolve(custom);
+}
+
+export function defaultStorageDirectory(env = process.env) {
+  return join(resolveDshHome(env), 'storages', STORAGE_NAME);
+}
+
+async function pathExists(path) {
+  try {
+    await access(path);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+}
 const LEADER_RPC_CHANNEL = '/gitlab-workstation-leader';
 const LEADER_UI_OPERATIONS = new Set(['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue',
   'resetIssueBudget', 'resolveDelivery', 'resolveCreation']);
@@ -107,7 +133,45 @@ export class GitlabTodoRuntime {
   }
 
   storageDirectory() {
-    return this.config.storageDirectory ?? DEFAULT_STORAGE_DIRECTORY;
+    return this.config.storageDirectory ?? (this.defaultStorage ??= defaultStorageDirectory());
+  }
+
+  legacyStorageDirectory() {
+    return LEGACY_STORAGE_DIRECTORY;
+  }
+
+  /** 创建数据目录；未显式配置目录时，把旧目录的数据一次性复制过来（只复制缺失文件，旧目录保留）。 */
+  prepareStorage() {
+    return (this.storagePromise ??= this.migrateStorage().catch((error) => {
+      this.storagePromise = null;
+      throw error;
+    }));
+  }
+
+  async migrateStorage() {
+    const target = this.storageDirectory();
+    await mkdir(target, { recursive: true });
+    if (this.config.storageDirectory !== undefined) return;
+    const source = this.legacyStorageDirectory();
+    if (resolve(source) === resolve(target)) return;
+    const copied = [];
+    for (const name of MIGRATED_FILES) {
+      const to = join(target, name);
+      if (await pathExists(to)) continue;
+      const temporary = join(target, `migrate-${process.pid}-${randomUUID()}.tmp`);
+      try {
+        await copyFile(join(source, name), temporary);
+        await rename(temporary, to);
+        copied.push(name);
+      } catch (error) {
+        await unlink(temporary).catch(() => {});
+        if (error?.code === 'ENOENT' && !await pathExists(join(source, name))) continue;
+        throw new Error(`迁移插件数据 ${name} 失败（旧文件未改动）：${errorMessage(error)}`);
+      }
+    }
+    if (copied.length) {
+      this.logger.info(`插件数据已迁移：${copied.join('、')} 从 ${source} 复制到 ${target}；旧目录保留未删除，确认无误后可手动删除。`);
+    }
   }
 
   stateFile() {
@@ -119,7 +183,7 @@ export class GitlabTodoRuntime {
   }
 
   async ensureStorage() {
-    await mkdir(this.storageDirectory(), { recursive: true });
+    await this.prepareStorage();
   }
 
   async start() {

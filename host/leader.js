@@ -55,6 +55,8 @@ export const leaderMethods = {
   leaderFile() { return join(this.storageDirectory(), 'leader.json'); },
 
   async loadLeader() {
+    // The journal may be loaded by agent/created before runtime.start(); migrate first either way.
+    await this.prepareStorage?.();
     this.stopLeader();
     this.leaderJournalUnreadable = false;
     try { this.leaderState = normalizeLeaderState(JSON.parse(await readFile(this.leaderFile(), 'utf8'))); }
