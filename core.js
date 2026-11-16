@@ -2164,46 +2164,6 @@ export function closureCounts(state) {
 }
 
 /**
- * 晨报摘要：最近 windowMs 内有会话结算过的记录，按结算时间倒序给一行结论；
- * open 统计当前全局仍待人工/待续办的记录数（待人工不含已确认）。
- */
-export function buildDigest(state, now = Date.now(), windowMs = 24 * 60 * 60 * 1000) {
-  const since = now - windowMs;
-  // 只统计“已结算”的记录：completedAt 缺失（仍在跑/刚派发）的不进晨报，
-  // 避免“过去 24 小时（N）”里混着执行中的会话。
-  const settled = Object.values(state?.handled ?? {})
-    .filter((record) => record?.sessionId && Number.isFinite(record.completedAt))
-    .map((record) => ({ record, at: record.completedAt }))
-    .filter(({ at }) => at >= since)
-    .sort((a, b) => b.at - a.at);
-  const counts = { total: settled.length, closed: 0, followUp: 0, needsHuman: 0, other: 0 };
-  for (const { record } of settled) {
-    if (record.closure === 'closed') counts.closed += 1;
-    else if (record.closure === 'follow-up') counts.followUp += 1;
-    else if (record.closure === 'needs-human') counts.needsHuman += 1;
-    else counts.other += 1;
-  }
-  const items = settled.slice(0, 20).map(({ record }) => ({
-    todoId: record.id,
-    title: record.title,
-    url: record.url,
-    closure: record.closure ?? '',
-    closureNote: record.closureNote ?? '',
-    round: record.round ?? 1,
-    replyExcerpt: record.lastReply?.body
-      ? String(record.lastReply.body).replace(/\s+/g, ' ').trim().slice(0, 160)
-      : '',
-    replyUrl: record.lastReply?.url ?? '',
-  }));
-  const open = { needsHuman: 0, followUp: 0 };
-  for (const record of Object.values(state?.handled ?? {})) {
-    if (record.closure === 'needs-human' && !record.acknowledgedAt) open.needsHuman += 1;
-    else if (record.closure === 'follow-up') open.followUp += 1;
-  }
-  return { windowHours: Math.round(windowMs / 3600000), counts, items, open };
-}
-
-/**
  * 运行时内存日志（Log Tab 用）：只进内存、不落文件的环形缓冲区。
  * 内存封顶是硬性要求，采用三条独立防线（见 host/constants.js 注释）：
  *   ① LOG_MAX_ENTRIES 条数上限 → 淘汰最旧（FIFO）；
@@ -2312,7 +2272,6 @@ export function publicState(state, running = false, currentUserId = null) {
     // Issue Tab 计数（open 议题列表缓存长度；列表经 issues 动作下发）。
     issueCount: Array.isArray(state.issues) ? state.issues.length : 0,
     closure: closureCounts(state),
-    digest: buildDigest(state),
     // recent 只给前端做摘要，不带 Todo 原文与历史链路。
     recent: state.recent.map(({ item, history, ...record }) => ({ ...record })),
     handledCount: Object.keys(state.handled).length,

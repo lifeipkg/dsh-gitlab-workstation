@@ -109,7 +109,6 @@ window.__ModuleLoader__.load({
       defaultPaused: 'Polling starts paused so installation never dispatches your real todos automatically.',
       inboxTitle: 'Inbox', inboxEmpty: 'Nothing is waiting for you.', inboxTakeover: 'Open session to take over',
       inboxAcknowledge: 'Mark handled', inboxPendingUnconfirmed: 'Legacy message unconfirmed', inboxError: 'Could not load the inbox',
-      digestTitle: 'Last 24 hours', digestShow: 'Details', digestHide: 'Hide', digestEmpty: 'No settled records in the last 24 hours.',
       handledTitle: 'Handled', handledEmpty: 'No handled records.',
       mergedIntoLabel: 'Merged into', pendingStarting: 'Dispatching', acceptedLabel: 'Accepted', outcomeSessionAccepted: 'Session accepted',
       replyPreview: 'Our reply',
@@ -267,7 +266,6 @@ window.__ModuleLoader__.load({
       defaultPaused: '插件默认停用，避免安装后立即处理真实 Todo。',
       inboxTitle: '收件箱', inboxEmpty: '没有等待你处理的 Todo。', inboxTakeover: '打开会话接手',
       inboxAcknowledge: '我已处理', inboxPendingUnconfirmed: '旧消息未确认', inboxError: '无法加载收件箱',
-      digestTitle: '过去 24 小时', digestShow: '查看明细', digestHide: '收起明细', digestEmpty: '过去 24 小时没有结算记录。',
       handledTitle: '已处理', handledEmpty: '暂无处理记录。',
       mergedIntoLabel: '合并进', pendingStarting: '投递中', acceptedLabel: '接受于', outcomeSessionAccepted: '会话处理',
       replyPreview: '我方回复',
@@ -1201,7 +1199,6 @@ window.__ModuleLoader__.load({
         // eslint-disable-next-line react-hooks/exhaustive-deps
       }, [activeTab]);
 
-      const [digestOpen, setDigestOpen] = React.useState(false);
 
       const needWorkspacePolling = activeTab === 'workspaces' || activeTab === 'issues' || Boolean(draft);
       React.useEffect(() => {
@@ -1636,29 +1633,6 @@ window.__ModuleLoader__.load({
         snapshot?.lastDispatchError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, snapshot.lastDispatchError),
         snapshot?.lastPrecheckError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, snapshot.lastPrecheckError),
         modelCatalogError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, `${t('modelCatalogError')}${colon()}${modelCatalogError}`),
-        snapshot?.digest && h('section', { className: 'gta-card gta-digest' },
-          h('div', { className: 'gta-digest-head' },
-            h('h2', null, `${t('digestTitle')} (${snapshot.digest.counts.total})`),
-            h('span', { className: 'gta-muted' },
-              `${t('closureClosed')} ${snapshot.digest.counts.closed} · ${t('closureFollowUp')} ${snapshot.digest.counts.followUp} · ${t('closureNeedsHuman')} ${snapshot.digest.counts.needsHuman}`),
-            h(Button, { onClick: () => setDigestOpen(!digestOpen) }, digestOpen ? t('digestHide') : t('digestShow')),
-          ),
-          digestOpen && (snapshot.digest.items.length === 0
-            ? h('div', { className: 'gta-muted' }, t('digestEmpty'))
-            : h('ul', { className: 'gta-digest-list' }, snapshot.digest.items.map((item) => h('li', { key: item.todoId },
-              item.url
-                ? h('a', { href: item.url, target: '_blank', rel: 'noreferrer' }, item.title || `Todo ${item.todoId}`)
-                : h('span', null, item.title || `Todo ${item.todoId}`),
-              h('span', { className: `gta-tag ${recordStatusClass({ closure: item.closure })}` }, closureLabel(item.closure, t) || item.closure || '—'),
-              item.round > 1 && h('span', { className: 'gta-muted' }, `${t('roundLabel')} ${item.round}`),
-              item.closureNote && h('span', { className: 'gta-muted gta-digest-note' }, item.closureNote),
-              item.replyExcerpt && h('span', { className: 'gta-muted gta-digest-reply' },
-                `${t('replyPreview')}${colon()}`,
-                item.replyUrl
-                  ? h('a', { href: item.replyUrl, target: '_blank', rel: 'noreferrer' }, item.replyExcerpt)
-                  : item.replyExcerpt),
-            )))),
-        ),
         draft && h('section', { className: 'gta-card gta-settings', id: `${PANEL_ID}-settings` },
           h('h2', null, t('todoSettings')),
           h('div', { className: 'gta-form-grid' },
@@ -2600,13 +2574,6 @@ window.__ModuleLoader__.load({
       .gta-reply-toggle:hover{text-decoration:underline}
       .gta-reply-body{margin-top:5px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-base);max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12px}
       .gta-reply-link{color:var(--dsw-alias-brand-primary);text-decoration:none;margin-right:6px}
-      .gta-digest-head{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-      .gta-digest-head h2{margin:0}
-      .gta-digest-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}
-      .gta-digest-list li{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;padding:6px 8px}
-      .gta-digest-list a{color:var(--dsw-alias-label-primary);text-decoration:none}
-      .gta-digest-list a:hover{color:var(--dsw-alias-brand-primary)}
-      .gta-digest-note,.gta-digest-reply{flex-basis:100%}
       @media(max-width:720px){.gta-root{padding:12px 12px 20px}
       .gta-header{align-items:flex-start;flex-direction:column}
       .gta-tab-group-environment{margin-left:0}
