@@ -7,6 +7,7 @@ export const LEADER_LIMITS = Object.freeze({
   maxActions: 20, maxWakeups: 100, leaseMs: 24 * 60 * 60 * 1000, issueLeaseMs: 72 * 60 * 60 * 1000,
   maxEvents: 100, maxOutbox: 500, maxOpenOutbox: 100, keepTerminalOutbox: 200, keepTerminalBodies: 20,
   maxItems: 200, maxCreatedEnrollments: 1000, maxBudgetLedger: 200, maxAbandonedCreations: 20,
+  maxRelays: 200, stallMs: 20 * 60 * 1000,
 });
 export const DEFAULT_LEADER_AGENT_PRESET = 'gitlab-issue-leader';
 const TERMINAL_OUTBOX = new Set(['sent', 'rejected', 'cancelled']);
@@ -15,7 +16,37 @@ export function initialLeaderState() {
   return { version: LEADER_STATE_VERSION, enabled: false, sessionId: null, phase: 'not-created',
     settings: { model: null, autoEnrollNew: false }, items: [], events: [], outbox: [], creation: null, createdEnrollments: [],
     epoch: 0, creationPolicyEpoch: 0, expiresAt: null, wakeups: 0, configuredModel: null, error: '',
-    lastStartedAt: null, budgetLedger: [], abandonedCreations: [] };
+    lastStartedAt: null, budgetLedger: [], abandonedCreations: [], relays: [], audit: [] };
+}
+
+/**
+ * Structured per-Issue notes the Leader keeps for the human (stage / next / waitingOn /
+ * decisions / deliverables). strict rejects unknown keys and oversize text; lenient clips.
+ */
+export function normalizeLeaderNotes(input, { strict = true } = {}) {
+  if (input === null || input === undefined) return null;
+  if (!isRecord(input)) { if (strict) throw new Error('notes 必须是对象。'); return null; }
+  const keys = ['stage', 'next', 'waitingOn', 'decisions', 'deliverables', 'updatedAt'];
+  if (strict && Object.keys(input).some((key) => !keys.includes(key))) throw new Error('notes 只允许 stage/next/waitingOn/decisions/deliverables。');
+  const line = (value, limit, name) => {
+    if (value === undefined || value === null) return '';
+    if (typeof value !== 'string' || value.length > limit) {
+      if (strict) throw new Error(`${name} 必须是至多 ${limit} 字符的文本。`);
+      return text(value).slice(0, limit).trim();
+    }
+    return value.trim();
+  };
+  const list = (value, name) => {
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value) || value.length > 10 || value.some((entry) => typeof entry !== 'string' || entry.length > 300)) {
+      if (strict) throw new Error(`${name} 必须是至多 10 条、每条至多 300 字符的文本数组。`);
+      return (Array.isArray(value) ? value : []).filter((entry) => typeof entry === 'string').slice(0, 10).map((entry) => entry.slice(0, 300).trim()).filter(Boolean);
+    }
+    return value.map((entry) => entry.trim()).filter(Boolean);
+  };
+  return { stage: line(input.stage, 200, 'stage'), next: line(input.next, 500, 'next'), waitingOn: line(input.waitingOn, 300, 'waitingOn'),
+    decisions: list(input.decisions, 'decisions'), deliverables: list(input.deliverables, 'deliverables'),
+    updatedAt: timestamp(input.updatedAt) };
 }
 
 /**
@@ -87,7 +118,7 @@ export function normalizeLeaderState(value) {
   for (const item of result.items) {
     if (!isRecord(item) || !id(item.taskId) || !id(item.sessionId) || item.sessionId === result.sessionId
       || taskIds.has(item.taskId) || sessionIds.has(item.sessionId) || !Array.isArray(item.alerts) || item.alerts.length > 50
-      || !isRecord(item.provenance) || !['ui', 'created'].includes(item.provenance.kind)
+      || !isRecord(item.provenance) || !['ui', 'created', 'leader'].includes(item.provenance.kind)
       || !Number.isSafeInteger(item.actions) || item.actions < 0 || timestamp(item.expiresAt) === null
       || (item.cursor !== null && timestamp(item.cursor) === null)) throw new Error('Leader journal 显式映射/预算/来源无效。');
     taskIds.add(item.taskId); sessionIds.add(item.sessionId);
@@ -102,6 +133,8 @@ export function normalizeLeaderState(value) {
       ? item.pendingWake.filter((reason) => typeof reason === 'string' && reason.length <= 100).slice(-10) : [];
     // Restart always pauses the Leader, so nothing is being watched until an explicit start.
     item.status = item.paused ? (Array.isArray(item.alerts) && item.alerts.some((alert) => alert?.status === 'pending') ? 'needs-human' : 'paused') : 'standby';
+    item.notes = normalizeLeaderNotes(item.notes, { strict: false });
+    item.lastActivityAt = timestamp(item.lastActivityAt); item.stallNotifiedAt = timestamp(item.stallNotifiedAt);
     item.title = text(item.title).slice(0, 1000); item.url = safeUrl(item.url); item.summary = text(item.summary).slice(0, 2000); item.error = text(item.error).slice(0, 1000);
     for (const alert of item.alerts) {
       if (!id(alert.id) || typeof alert.question !== 'string' || alert.question.length > 2000 || !['pending', 'acknowledged'].includes(alert.status)) throw new Error('Leader journal alert binding 无效。');
@@ -110,7 +143,7 @@ export function normalizeLeaderState(value) {
   const requests = new Set();
   for (const entry of result.outbox) {
     if (!isRecord(entry) || !id(entry.requestId) || !id(entry.sessionId) || requests.has(entry.requestId)
-      || typeof entry.body !== 'string' || typeof entry.fingerprint !== 'string' || !['advance', 'notify'].includes(entry.kind)) throw new Error('Leader journal outbox 无效，禁止自动重发。');
+      || typeof entry.body !== 'string' || typeof entry.fingerprint !== 'string' || !['advance', 'notify', 'relay'].includes(entry.kind)) throw new Error('Leader journal outbox 无效，禁止自动重发。');
     requests.add(entry.requestId);
     if (!['prepared', 'sent', 'rejected', 'cancelled'].includes(entry.status)) { entry.status = 'uncertain'; entry.error ||= '重启时投递结果不确定，禁止自动重发。'; }
     // An old prepared admission belonged to the previous epoch, not this process.
@@ -128,6 +161,13 @@ export function normalizeLeaderState(value) {
       && entry.actions >= 0 && timestamp(entry.expiresAt) !== null).slice(-LEADER_LIMITS.maxBudgetLedger);
   result.abandonedCreations = (Array.isArray(value.abandonedCreations) ? value.abandonedCreations : [])
     .filter((entry) => isRecord(entry) && id(entry.requestId)).slice(-LEADER_LIMITS.maxAbandonedCreations);
+  result.relays = (Array.isArray(value.relays) ? value.relays : [])
+    .filter((entry) => isRecord(entry) && typeof entry.key === 'string' && entry.key.length <= 100).slice(-LEADER_LIMITS.maxRelays);
+  // Leader session-management audit trail (create/rename/archive/model/relay); bounded, display-only.
+  result.audit = (Array.isArray(value.audit) ? value.audit : [])
+    .filter((entry) => isRecord(entry) && typeof entry.action === 'string' && timestamp(entry.at) !== null)
+    .map((entry) => ({ action: entry.action.slice(0, 50), taskId: id(entry.taskId) ? entry.taskId : null, sessionId: id(entry.sessionId) ? entry.sessionId : null,
+      at: timestamp(entry.at), detail: text(entry.detail).slice(0, 1000) })).slice(-200);
   result.epoch = Number.isSafeInteger(value.epoch) && value.epoch >= 0 ? value.epoch + 1 : 1;
   // Policy provenance survives mapping/run changes, but never a process restart.
   // Legacy global-epoch proof fields are never promoted into the new policy domain.
@@ -156,12 +196,14 @@ export function buildLeaderProjection(state = initialLeaderState()) {
     items: state.items.map((item) => ({ taskId: item.taskId, sessionId: item.sessionId, title: item.title, url: item.url,
       status: item.status, summary: item.summary || '', error: item.error || '', alerts: item.alerts.map((alert) => ({ ...alert })),
       paused: item.paused === true, actions: Number.isSafeInteger(item.actions) ? item.actions : 0, maxActions: LEADER_LIMITS.maxActions,
-      expiresAt: timestamp(item.expiresAt), enrolledAt: timestamp(item.enrolledAt), provenance: item.provenance?.kind === 'created' ? 'created' : 'ui',
+      expiresAt: timestamp(item.expiresAt), enrolledAt: timestamp(item.enrolledAt), provenance: ['created', 'leader'].includes(item.provenance?.kind) ? item.provenance.kind : 'ui',
+      notes: normalizeLeaderNotes(item.notes, { strict: false }), lastActivityAt: timestamp(item.lastActivityAt),
       pendingWake: Array.isArray(item.pendingWake) ? [...item.pendingWake] : [] })),
     // Open deliveries are the only records a human must resolve; terminal ones stay internal audit.
     deliveries: (state.outbox ?? []).filter((entry) => OPEN_DELIVERY.has(entry.status)).map((entry) => ({ requestId: entry.requestId,
       kind: entry.kind, taskId: entry.taskId ?? null, sessionId: entry.sessionId, status: entry.status, error: entry.error || '',
       createdAt: timestamp(entry.createdAt) })),
+    audit: (Array.isArray(state.audit) ? state.audit : []).slice(-30).map((entry) => ({ ...entry })),
     events: state.events.map((event) => ({ ...event })), error: state.error || '' };
 }
 
