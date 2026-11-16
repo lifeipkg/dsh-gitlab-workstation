@@ -73,13 +73,13 @@
 
 **Log Tab（v2.32）**：显示运行时内存日志——**只进内存环形缓冲、不落盘**，新→旧，打开期间每 3 秒静默刷新。每行 `时间 [级别] 单行消息`，级别可筛「全部 / 警告及以上」，支持「清空日志」（两步确认，清空后留一条审计行）。内存有硬上限防无限增长：条数 ≤ `LOG_MAX_ENTRIES`(500) 与合计字符 ≤ `LOG_MAX_CHARS`(64KB) 双维度，任一超就从头部淘汰最旧（FIFO），单条 ≤ `LOG_MAX_LINE_CHARS`(500 字) 截断标注；被丢的条数记 dropped，面板以 `-N` 显示已丢弃条数，悬停可查看说明。写入入口统一 `this.logger.<level>()`：进缓冲 + 透传宿主日志（自动补 `[gitlab-todo-agent]` 前缀，业务消息不带前缀），消息格式为单行「<对象/动作>：<结果/细节>」。bridge 新增 `logs`（GET 投影 / POST `clear:true`）。
 
-## Issue Leader（v2.34 起，可选托管；v2.36 会话管理；v2.38 临时任务）
+## Issue Leader（v2.34 起，可选托管；v2.36 会话管理；v2.38 临时任务；v2.40 编排）
 
 Issue Tab 顶部提供折叠的 **Leader** 区域。创建独立 Leader 会话、选择它的模型，将需要管理的 Issue 会话逐条「托管」，再明确启动。默认关闭，不自动接管存量会话；「新建 Issue 默认托管」是独立的可选授权，仅对开启之后具有真实创建证明的新会话生效。它不把 Issue 改成 Todo 自动任务，不占 Todo 自动并发槽，也不改变 worker 的模型、工作区或项目规则。
 
 - **集中了解进度**：启动时给 Leader 一次当前名册简报，此后根据有界日志增量和状态变化汇总，稳定状态不不断唤醒模型。Leader 能读取已纳管会话，明确下一步时向原会话发送原 Issue 范围内的续办建议；idle 不是继续理由，回合结束也不代表 Issue 已关闭。
 - **拿不准交给你**：问题在 Leader 会话和托管列表汇总，只暂停对应 Issue，其他继续管理。你可以直接在 Leader 会话里回答，Leader 用 `relay_reply` 把你的原话转给对应 worker，同时恢复该 Issue；Host 只转达在 Leader 日志中能找到、来源为人类 GUI 输入的文字，不消耗推进预算，worker 正在运行、排队或有原生问答时拒绝转达。也可以用该 Issue 的明确恢复入口重新允许推进。正式工具审批／原生问答仍由人类在真实会话入口处理，Leader 不代答、不解除权限护栏；`read_issue` 会把 worker 待回答问题的原文带给 Leader，方便它在主窗口告诉你。
-- **只管理明确选中的会话**：限 Issue Tab 当前关联的独立 worker，路由目标与新建人工接手会话不隐式接管。Leader 只有 9 个受限工具，不提供 shell、文件、GitLab 写入、权限修改或审批代办：
+- **只管理明确选中的会话**：限 Issue Tab 当前关联的独立 worker，路由目标与新建人工接手会话不隐式接管。Leader 只有下列受限工具（v2.40 另有 complete／steer／issue_comment，见下），不提供 shell、文件、GitLab 写入、权限修改或审批代办：
   - `gitlab_leader_snapshot`：所有 Issue 会话状态、标题和 Leader 笔记总览。
   - `gitlab_leader_read_issue`：读取纳管 worker 最近日志、待回答问题原文，以及 GitLab Issue 正文／评论／关联 MR／流水线（只读），返回续办用的 `evidenceToken`。
   - `gitlab_leader_session_create`：传 `taskId` 时为 Issue Tab 中的待办 Issue 开 worker，走与「处理」相同的派发逻辑；该 Issue 已有活动 worker 时直接接管，不重复创建。
@@ -97,6 +97,14 @@ Issue Tab 顶部提供折叠的 **Leader** 区域。创建独立 Leader 会话�
 - **创建后先启动**：「创建 Leader」只建立并配置会话；点击「启动托管」之前 Leader 会话是空白的，DSH 会显示为 New Session，这不是创建失败。面板会显示「已创建 · 未启动」和对应提示。
 - **失败不重复操作**：管理记录、人工待办、游标和动作 outbox 单独保存在同一存储目录的 `leader.json`。严格保存后才投递；创建或投递结果不确定时保留记录、阻止自动重试，不因换 requestId、解除后重选而重复执行。损坏或未知版本的 Leader journal 只冻结此功能，不覆盖文件，也不影响原 Todo 工作台。
 - **人工核对与恢复**：投递结果不确定时，面板列出「未确认投递」，你打开目标会话核对后选择「已送达」或「未送达」，两者都不会自动重发；Leader 自身通知核对后可重新启动。创建结果不确定时，可填入核实过的 Leader 会话 ID 认领（不能是 Issue worker），或确认不存在后放弃该记录再创建，放弃会留存审计条目。启动简报被拒收时自动回退为暂停并提示可重新启动，不会留下“已启用但 Leader 不知情”的状态。
+- **并发上限与排队（v2.40）**：设置「并发上限」（1–10，默认 3）只限制同时运行的 worker，创建数量仍不限。满额时 Leader 的创建／续办请求进入持久队列（最多 50 条，同一 Issue 同类请求去重），有空位时按先后顺序自动执行；出队前重新校验，失效就丢弃并在下次唤醒时用一行说明。面板列出排队项，你可以取消；Leader 暂停时不出队。
+- **依赖（v2.40）**：Leader 可用 `update_issue` 的 `dependsOn` 给 Issue 设前置依赖（最多 10 个，拒绝自依赖、未知 Issue 和环）。依赖未完成时不能续办；上游完成后自动唤醒 Leader。依赖只认 Leader 的「完成」记录，上游被归档或解除托管时需要 Leader 修改依赖。
+- **验收收尾（v2.40）**：`gitlab_leader_complete` 收尾前核对 GitLab：worker 运行中、有待回答问题或未确认投递时拒绝；关联 MR 仍 open 且最新流水线失败时拒绝；Issue 仍 open 且没有已合并 MR 时，必须写明无需 MR 的理由（`acceptWithoutMr`）。完成项进入面板「已完成」列表；「完成后归档 worker」默认开启，归档失败不影响完成。
+- **纠偏（v2.40）**：`gitlab_leader_steer` 只对运行中的 worker 在当前回合插入一条范围内的纠偏，每个 Issue 10 分钟最多一次，占用推进预算；投递结果不确定时不重发。
+- **会话交接（v2.40）**：Leader 会话上下文太长时，在面板点「交接到新会话」：新建 Leader 会话并接手全部纳管 Issue、笔记、队列和预算，旧会话归档（失败不影响交接），原来在运行则自动恢复并发送交接简报。仅在 Leader 空闲且没有未确认投递时可用；历史 Leader 会话列在面板中。
+- **GitLab 进度评论（v2.40，默认关闭）**：开启「允许 Leader 在 GitLab 发进度评论」后，`gitlab_leader_issue_comment` 可以用你的账号在纳管 Issue 下发简短进度评论，末尾自动带签名（默认「—— 由 AI Leader 代发」，可改）。每个 Issue 30 分钟最多 1 条、每轮预算最多 10 条；结果不确定的评论不重试，面板提示你去 GitLab 核查。
+- **worker 主动汇报（v2.40）**：纳管的 worker 会话多一个工具 `gitlab_leader_report`，可向 Leader 报告进度、受阻、完成、提问，或给另一个纳管 Issue 留言（经 Leader 转达，worker 之间不直接通信）。Host 记录汇报并唤醒 Leader，`read_issue`／`snapshot` 中可见，面板「Worker 汇报」列出最近记录。有频率限制；汇报内容是 worker 自述，Leader 当作不可信状态处理。
+- **Todo 转交 worker（v2.40）**：已纳管 Issue 上新的 @我 Todo 直接交给该 Issue 的 worker，不再新开会话，并用一行说明唤醒 Leader；Todo 列表带「Leader worker」标签。
 
 Leader 续办使用原生 Agent 的非人类消息来源和 idle maintenance 同步校验，不使用会被宿主记作人类输入的普通 `session/prompt`；它不会因此获得恢复 goal、代答问题或批准工具的权限。托管权限变更经原生 Connection RPC，仅接受当前真实浏览器 Peer；普通 HTTP bridge 只读 Leader 快照，不能用 JSON 自报人类授权。该机制沿用本机单用户 Host 的信任边界，不宣称隔离能够执行任意本地脚本或读取浏览器凭据的同用户全权限程序。
 
@@ -213,6 +221,8 @@ Host 每次轮询先通过 `glab api user` 获取并缓存当前用户 ID，再�
 - **忙碌投递方式**：`busyRouteMode=queue`（默认）在当前回合结束后处理；`steer` 在当前回合的最近步骤边界插入引导，与前序工作共用该回合。目标空闲时两种方式都会直接开始新回合，插件统一使用 `queue`。
 - **单会话负载上限**：`maxQueuePerSession` 默认 3（1–10），统计该会话尚未结算的 Todo 消息；达到上限后自动路由退回新会话，手动路由明确报错，避免把任务堆进长会话后无人察觉。
 - **配置继承**：路由不改目标会话标题、模型、工作区或预设。危险操作护栏、原 note 回复、Todo 完成标记、结案报告与闭环核对全部照旧。
+- **同对象合并派发（v2.40）**：`mergeSameTarget` 默认开启。同一轮轮询里同一 MR/Issue 上的多条新 @我 Todo（首次自动派发）合并为一个会话的一轮处理，每组不超过 `maxQueuePerSession` 条；提示词逐条列出各 Todo，每条仍单独回复、单独记录和结案，Todo 列表显示「合并处理 ×N」。目标选择顺序：未结算的 pending 重试 → 该 Issue 的 Leader worker → 同目标自动续 → 新会话。非 @我、手动、续办和 Issue 面板任务不合并。
+- **Leader worker 转交（v2.40）**：目标 Issue 已被 Leader 纳管时，新 Todo 直接交给它的 worker（不受 `routeScope=plugin` 限制），并通知 Leader；转交失败退回上面的普通流程。worker 不会因此被自动归档。
 - **失败重试**：路由 pending 记录保存目标与 `requestId`，重试复用同一标识，由 Host 幂等去重；pending 未结算前禁止改投其他会话或另开会话，避免双执行。自动 pending 在后续轮询中跳过二次预检、直接重试，手动 pending 等人工重试。
 
 ## 收件箱与回复预览（v2.18）
@@ -325,3 +335,4 @@ MIT License。发布到 npm（`npm publish`，scoped 包需公开访问，`publi
 - v2.37.0（Todo 状态版本与 Leader journal 版本不变）：默认数据目录从 `~/.dsh-plugins/gitlabtodo/` 改为与其它 DSH 插件一致的 `<DSH_HOME>/storages/gitlab-workstation/`（默认 `~/.dsh/storages/gitlab-workstation/`）。未配置 `storageDirectory` 时首次启动把旧 `state.json`、`leader.json` 复制到新目录，只补缺失文件、从不覆盖，旧目录保留供人工确认后删除；显式配置的目录不受影响。
 - v2.38.0（状态版本不变）：工作台默认打开 **Issue** Tab。Leader 的 `gitlab_leader_session_create` 不传 `taskId`、改传 `title`＋`brief`（可选 `workingDirectory`）即可开**临时任务**会话，处理没有对应 GitLab Issue 的工作；临时任务自动纳管，可读取、续办、重命名、换模型、转达和归档，不限数量；创建结果不确定时只由人类在面板放弃，绝不自动重建。Leader journal 新增 `tasks` 记录，旧 journal 自动补空。
 - v2.39.0（状态版本不变）：移除工作台顶部的「过去 24 小时」摘要卡片及其明细展开；快照不再计算和携带 `digest` 字段。闭环统计、收件箱与回复预览不受影响。
+- v2.40.0（Todo 状态版本与 Leader journal 版本不变，旧数据直接兼容）：同一 Issue/MR 上的多条新 @我 Todo 合并为一个会话的一轮处理（设置「同对象 @我 合并派发」，默认开启，每条 Todo 仍单独记录和结案）；已纳管 Issue 上的新 Todo 直接转交其 worker。Leader 新增并发上限与持久排队、Issue 依赖、`gitlab_leader_complete` 验收收尾（可选完成后归档）、`gitlab_leader_steer` 纠偏、面板「交接到新会话」、默认关闭的 GitLab 进度评论 `gitlab_leader_issue_comment`；纳管 worker 新增 `gitlab_leader_report` 主动向 Leader 汇报或给其他 Issue 留言。面板显示排队、已完成、worker 汇报、历史 Leader 会话与不确定评论。

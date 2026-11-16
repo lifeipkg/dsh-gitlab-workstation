@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   buildIssuePrompt,
+  buildMergedTodoPrompt,
   buildSessionTitle,
   buildTodoPrompt,
   buildWorkspaceOverview,
@@ -34,12 +35,30 @@ export const dispatchMethods = {
 
   enqueueDispatch(todos) {
     if (!Array.isArray(todos) || todos.length === 0) return;
-    const queued = new Set(this.dispatchQueue.map((entry) => entry.todo.id));
+    const queued = new Set(this.dispatchQueue.flatMap((entry) => [entry.todo.id, ...(entry.group ?? []).map((todo) => todo.id)]));
+    // 同对象合并派发：同一 targetKey 的首次自动 Todo 合成一个派发单元（每组至多 maxQueuePerSession 条，超出另起一组）。
+    const merge = this.state.settings.mergeSameTarget !== false;
+    const limit = Math.max(1, Number(this.state.settings.maxQueuePerSession) || 3);
+    const open = new Map();
     for (const todo of todos) {
       if (queued.has(todo.id) || this.dispatches.has(todo.id) || this.state.handled[todo.id]) continue;
-      this.dispatchQueue.push({ todo, followUp: false });
+      queued.add(todo.id);
+      const key = merge && !isIssueItem(todo) ? targetKey(todo.url) : '';
+      const entry = key ? open.get(key) : null;
+      if (entry && entry.group.length < limit) {
+        entry.group.push(todo);
+        continue;
+      }
+      const next = { todo, followUp: false, ...(key ? { group: [todo] } : {}) };
+      if (key) open.set(key, next);
+      this.dispatchQueue.push(next);
     }
     this.ensureSessionTimer();
+  },
+
+  /** 合并组成员在出队时重新过滤：排队期间被处理、被别的派发占用或已有 pending 的不再并入。 */
+  groupMembers(group) {
+    return (group ?? []).filter((todo) => !this.state.handled[todo.id] && !this.dispatches.has(todo.id) && !this.state.pending[todo.id]);
   },
 
   pump() {
@@ -58,10 +77,33 @@ export const dispatchMethods = {
         await this.waitForSlotSignal();
         continue;
       }
-      const { todo, followUp, pendingRetry } = this.dispatchQueue.shift();
+      const { todo, followUp, pendingRetry, group } = this.dispatchQueue.shift();
       if (pendingRetry) {
-        if (!this.state.pending[todo.id]) continue;
+        const pending = this.state.pending[todo.id];
+        if (!pending) continue;
+        // 合并组的 pending 重试：把同批次、同 requestId 的重试条目一起取出，按原组重发（requestId 幂等）。
+        if (pending.batchId && !followUp) {
+          const mates = [];
+          for (let index = this.dispatchQueue.length - 1; index >= 0; index -= 1) {
+            const entry = this.dispatchQueue[index];
+            const other = entry.pendingRetry && !entry.followUp ? this.state.pending[entry.todo.id] : null;
+            if (other?.batchId === pending.batchId && other.requestId === pending.requestId && other.sessionId === pending.sessionId) {
+              mates.unshift(entry.todo);
+              this.dispatchQueue.splice(index, 1);
+            }
+          }
+          if (mates.length > 0) {
+            await this.dispatchGroup([todo, ...mates], { pendingRetry: true });
+            continue;
+          }
+        }
         await this.dispatch(todo, Boolean(this.state.handled[todo.id]), { trackSlot: true, followUp });
+        continue;
+      }
+      if (group) {
+        const members = this.groupMembers(group);
+        if (members.length > 1) await this.dispatchGroup(members);
+        else if (members.length === 1) await this.dispatch(members[0], false, { trackSlot: true });
         continue;
       }
       if (followUp) {
@@ -345,7 +387,7 @@ export const dispatchMethods = {
    * 校验并解析路由目标。手动选择失败时明确报错；自动路由失败返回 null，退回新会话。
    * 忙碌目标按 busyRouteMode 选择 queue/steer，空闲目标总是 queue（立即开始新回合）。
    */
-  async resolveRouteTarget(todo, target, manual = false) {
+  async resolveRouteTarget(todo, target, manual = false, incoming = 1) {
     const sessionId = typeof target?.sessionId === 'string' ? target.sessionId : '';
     const fail = (message) => {
       if (manual) throw new Error(message);
@@ -361,12 +403,14 @@ export const dispatchMethods = {
     if (summary.archived === true || this.archivedSessionIds().has(sessionId)) {
       return fail(`目标会话 ${sessionId} 已归档，未投递。`);
     }
-    if (this.state.settings.routeScope !== 'any' && !this.pluginCreatedSessionIds().has(sessionId)) {
+    // Leader 显式纳管的 worker（leaderWorkerForTarget 已核验）不受路由范围限制：纳管本身就是用户授权。
+    if (this.state.settings.routeScope !== 'any' && target?.leaderManaged !== true && !this.pluginCreatedSessionIds().has(sessionId)) {
       return fail('当前路由范围仅允许插件创建过的会话；可在设置中改为任意会话。');
     }
     const load = this.countSessionLoad(sessionId, todo?.id);
     const maxQueue = this.state.settings.maxQueuePerSession;
-    if (load >= maxQueue) return fail(`目标会话已有 ${load} 条未结算任务，达到单会话上限 ${maxQueue}。`);
+    // incoming：本次一并投递的条数（合并组 >1），投递后总负载不得超过单会话上限。
+    if (load + Math.max(1, incoming) > maxQueue) return fail(`目标会话已有 ${load} 条未结算任务，达到单会话上限 ${maxQueue}。`);
     const running = summary.running === true;
     return {
       sessionId,
@@ -423,6 +467,58 @@ export const dispatchMethods = {
         note: record.closureNote,
         openMrs: Array.isArray(record.openMrs) ? record.openMrs : [],
       }));
+  },
+
+  /**
+   * Leader 托管 Issue 转交：Todo 指向已纳管、可用的 Issue worker 时返回路由目标（附 leaderTaskId），
+   * 否则返回 null 由调用方回落到正常派发。任何异常（接口缺失、会话不可用、负载满）都只回落，不丢 Todo。
+   */
+  async resolveLeaderRoute(todo, incoming = 1) {
+    if (!todo?.url || isIssueItem(todo) || typeof this.leaderWorkerForTarget !== 'function') return null;
+    let worker = null;
+    try {
+      worker = await this.leaderWorkerForTarget(todo.url);
+    } catch (error) {
+      this.logger.warn(`查询 Todo ${todo.id} 的 Leader worker 失败，按正常派发：${errorMessage(error)}`);
+      return null;
+    }
+    const sessionId = typeof worker?.sessionId === 'string' ? worker.sessionId : '';
+    const taskId = typeof worker?.taskId === 'string' ? worker.taskId : '';
+    if (!sessionId || !taskId) return null;
+    try {
+      const route = await this.resolveRouteTarget(todo, { sessionId, leaderManaged: true }, false, incoming);
+      if (route) return { ...route, leaderTaskId: taskId };
+      this.logger.info(`Todo ${todo.id} 命中 Leader 托管任务 ${taskId}，但 worker 会话 ${sessionId} 当前不可投递，按正常派发。`);
+    } catch (error) {
+      this.logger.warn(`Todo ${todo.id} 转交 Leader worker ${sessionId} 失败，按正常派发：${errorMessage(error)}`);
+    }
+    return null;
+  },
+
+  /** 通知 Leader：有人在其托管的 Issue 上 @ 了我（失败只告警，不影响派发结果）。 */
+  async notifyLeaderTodo(leaderTaskId, todo) {
+    if (!leaderTaskId || typeof this.noteLeaderTodo !== 'function') return;
+    try {
+      const result = await this.noteLeaderTodo(leaderTaskId, { todoId: todo.id, title: todo.title, url: todo.url, author: todo.author });
+      if (result?.ok === false) this.logger.warn(`通知 Leader 任务 ${leaderTaskId} 关于 Todo ${todo.id} 未成功：${result.error ?? '未知原因'}`);
+    } catch (error) {
+      this.logger.warn(`通知 Leader 任务 ${leaderTaskId} 关于 Todo ${todo.id} 失败：${errorMessage(error)}`);
+    }
+  },
+
+  /** 合并组派发的幂等外壳：组内每条 Todo 共享同一个 operation（单条调用者也能等到组结果）。 */
+  dispatchGroup(todos, options = {}) {
+    const members = (todos ?? []).filter((todo, index, list) => todo?.id && list.findIndex((other) => other?.id === todo.id) === index
+      && (options.pendingRetry ? Boolean(this.state.pending[todo.id]) : !this.state.handled[todo.id]) && !this.dispatches.has(todo.id));
+    if (members.length === 0) return Promise.resolve({ ok: true, duplicate: true, results: [] });
+    if (members.length === 1) {
+      return this.dispatch(members[0], options.pendingRetry ? Boolean(this.state.handled[members[0].id]) : false, { trackSlot: true });
+    }
+    const operation = this.executeGroupDispatch(members, options).finally(() => {
+      for (const todo of members) if (this.dispatches.get(todo.id) === operation) this.dispatches.delete(todo.id);
+    });
+    for (const todo of members) this.dispatches.set(todo.id, operation);
+    return operation;
   },
 
   async dispatch(todo, force = false, options = {}) {
@@ -518,6 +614,248 @@ export const dispatchMethods = {
     return { ok: true };
   },
 
+  /**
+   * 同对象合并派发：同一 MR/Issue 上的多条首次自动 Todo 共用一个会话、一条提示词、一个回合与一个并发槽。
+   * 每条 Todo 仍有自己的 pending/handled 记录（同 sessionId、同 requestId、batchId/mergedWith 互相关联），
+   * 结算时按 todoId 归因结案报告，各自独立核对与续办。options.pendingRetry 时按原组的 requestId 幂等重发。
+   */
+  async executeGroupDispatch(todos, options = {}) {
+    const retry = options.pendingRetry === true;
+    // 非评论提及类（MR 直接完成、指派通知）不参与合并，逐条走原路径。
+    if (!retry && todos.some((todo) => {
+      const kind = classifyTodo(todo, this.gitlabUserId);
+      return kind === 'merge-request' || kind === 'assignment-notify';
+    })) {
+      const results = [];
+      for (const todo of todos) results.push(await this.executeDispatch(todo, false, { trackSlot: true }));
+      return { ok: results.every((result) => result.ok), results };
+    }
+    const settings = this.state.settings;
+    const ids = todos.map((todo) => todo.id);
+    const retryPending = retry ? this.state.pending[ids[0]] : null;
+    const judges = todos.map((todo) => {
+      const verdict = retry ? null : (this.judgeVerdicts.get(todo.id) ?? null);
+      this.judgeVerdicts.delete(todo.id);
+      return verdict;
+    });
+    const primary = todos[0];
+    let sessionId = retryPending?.sessionId ?? null;
+    let route = null;
+    let leaderTaskId = retryPending?.routed === true && retryPending.leaderTaskId ? retryPending.leaderTaskId : '';
+    const batchId = retryPending?.batchId || `batch-${randomUUID()}`;
+    const sessionTitle = buildSessionTitle(primary, 1);
+    let reserved = false;
+    try {
+      if (retry) {
+        if (!retryPending?.requestId) throw new Error('合并组的 pending 消息缺少 requestId，无法幂等重试。');
+        if (retryPending.routed === true) {
+          route = { sessionId, mode: retryPending.routeMode || 'queue', title: retryPending.sessionTitle ?? '' };
+        }
+      } else {
+        route = await this.resolveLeaderRoute(primary, todos.length);
+        if (route) {
+          leaderTaskId = route.leaderTaskId;
+        } else if (settings.autoRoute && judges.every((judge) => judge?.preferSession !== 'new')) {
+          for (const candidate of findRouteTargets(this.state.handled, primary, {
+            loadOf: (id) => this.countSessionLoad(id),
+            maxQueue: settings.maxQueuePerSession,
+          })) {
+            if (this.isLeaderManagedSession?.(candidate.sessionId)) continue;
+            route = await this.resolveRouteTarget(primary, candidate, false, todos.length);
+            if (route) break;
+          }
+        }
+        if (route) sessionId = route.sessionId;
+      }
+      let effectiveTitle = sessionTitle;
+      if (sessionId) {
+        effectiveTitle = route?.title || retryPending?.sessionTitle || '';
+        if (!effectiveTitle) {
+          try {
+            const projections = await this.host.invoke('projections', { sessionId });
+            if (projections?.kind === 'sequenced' && typeof projections.values?.title === 'string') {
+              effectiveTitle = projections.values.title.trim();
+            }
+          } catch {
+            // 标题缺失不是删除证据，不能触发 rename 或重新 create。
+          }
+        }
+      }
+      const requestId = retryPending?.requestId || `gitlab-todo-${randomUUID()}`;
+      const promptStartedAt = Number.isFinite(retryPending?.createdAt) ? retryPending.createdAt : Date.now();
+      const links = (todo) => ({
+        batchId,
+        mergedWith: ids.filter((id) => id !== todo.id),
+        ...(leaderTaskId && route ? { leaderTaskId } : {}),
+      });
+      const writePending = (todo) => {
+        const previousPending = this.state.pending[todo.id];
+        this.state.pending[todo.id] = {
+          sessionId,
+          createdAt: promptStartedAt,
+          automatic: true,
+          followUp: false,
+          routed: route !== null,
+          ...(route ? { routeMode: route.mode } : {}),
+          requestId,
+          round: 1,
+          firstAcceptedAt: Number.isFinite(previousPending?.firstAcceptedAt) ? previousPending.firstAcceptedAt : promptStartedAt,
+          history: [],
+          openMrs: [],
+          ...(effectiveTitle ? { sessionTitle: effectiveTitle } : {}),
+          ...links(todo),
+          item: todo,
+        };
+      };
+      if (!route) {
+        // 一个合并组只占一个并发槽：新会话预留一次，路由到已有会话不预留（与单条一致）。
+        if (!sessionId) {
+          this.reserveSlot();
+          reserved = true;
+        }
+      }
+      if (sessionId) {
+        for (const todo of todos) this.trackSession(sessionId, todo.id, promptStartedAt, true, requestId);
+        if (!retry) {
+          for (const todo of todos) writePending(todo);
+          await this.persistQuietly('pending 合并路由消息');
+        }
+      } else {
+        const request = { workspaceId: this.resolveWorkspaceId(settings.sessionCwd) };
+        if (typeof this.config.agentPreset === 'string' && this.config.agentPreset) request.agentPreset = this.config.agentPreset;
+        sessionId = await this.host.createSession(request);
+        for (const todo of todos) this.trackSession(sessionId, todo.id, promptStartedAt, true, requestId);
+        for (const todo of todos) writePending(todo);
+        await this.persistQuietly('pending 合并 Session');
+        const renamed = await this.host.renameSession(sessionId, sessionTitle);
+        if (typeof renamed?.title === 'string') {
+          effectiveTitle = renamed.title;
+          for (const id of ids) {
+            const current = this.state.pending[id];
+            if (current?.sessionId === sessionId && current.requestId === requestId) current.sessionTitle = renamed.title;
+          }
+          await this.persistQuietly('pending 会话标题');
+        }
+      }
+      if (reserved) {
+        this.releaseReservation();
+        reserved = false;
+      }
+      if (!route && settings.sessionModel) {
+        await this.host.selectModel({ sessionId, ...settings.sessionModel });
+      }
+      const followUpsAllowed = settings.followUpEnabled !== false ? settings.maxFollowUps : 0;
+      const idSet = new Set(ids);
+      const relatedOpen = [];
+      for (const todo of todos) {
+        for (const entry of this.relatedOpenTodos(todo)) {
+          if (!idSet.has(entry.todoId) && !relatedOpen.some((item) => item.todoId === entry.todoId)) relatedOpen.push(entry);
+        }
+      }
+      const carriedMrs = normalizeMrUrls(relatedOpen.flatMap((entry) => entry.openMrs), primary.url);
+      const mergedDuplicates = Object.values(this.state.handled)
+        .filter((entry) => idSet.has(entry?.mergedInto) && entry.outcome === 'precheck-skipped')
+        .slice(0, 5)
+        .map((entry) => ({ todoId: entry.id, author: entry.author ?? '', excerpt: entry.excerpt ?? '' }));
+      await this.host.prompt({
+        requestId,
+        sessionId,
+        mode: route?.mode ?? 'queue',
+        content: [{
+          type: 'text',
+          text: buildMergedTodoPrompt(todos, {
+            me: { username: this.gitlabUsername, id: this.gitlabUserId },
+            sessionTitle: effectiveTitle,
+            now: Date.now(),
+            round: 1,
+            maxRounds: Math.max(1, 1 + followUpsAllowed),
+            autoFollowUp: 1 <= followUpsAllowed,
+            followUpDelayMinutes: settings.followUpDelayMinutes,
+            customRules: settings.customRules,
+            signature: settings.replySignature ? (settings.signatureText || DEFAULT_SIGNATURE_TEXT) : '',
+            waitBudgetMinutes: WAIT_BUDGET_MINUTES,
+            history: [],
+            carriedMrs,
+            relatedOpen: relatedOpen.slice(0, 5),
+            mergedDuplicates,
+            route: route ? { mode: route.mode } : null,
+            sameSession: false,
+            mayReuse: settings.followUpReuseSession !== false,
+            missingReply: false,
+          }),
+        }],
+      });
+      const acceptedAt = Date.now();
+      const records = todos.map((todo) => ({
+        id: todo.id,
+        sessionId,
+        outcome: 'session-accepted',
+        executionStatus: 'running',
+        automatic: true,
+        routed: route !== null,
+        routeMode: route?.mode ?? '',
+        requestId,
+        sessionTitle: effectiveTitle,
+        archived: false,
+        archiveError: '',
+        acceptedAt,
+        title: todo.title,
+        url: todo.url,
+        project: todo.project,
+        round: 1,
+        firstAcceptedAt: this.state.pending[todo.id]?.firstAcceptedAt ?? acceptedAt,
+        history: [],
+        waitRounds: 0,
+        waitProbes: 0,
+        reused: false,
+        reuseCount: 0,
+        dispatchFailures: 0,
+        openMrs: [],
+        item: { ...todo, body: '' },
+        closure: '',
+        closureNote: '',
+        nextAttemptAt: null,
+        replied: null,
+        reportStatus: '',
+        reportSummary: '',
+        resumeAfterMinutes: null,
+        ...links(todo),
+      }));
+      for (const record of records) {
+        this.state.handled[record.id] = record;
+        delete this.state.pending[record.id];
+      }
+      this.state.recent = [...records, ...this.state.recent.filter((item) => !idSet.has(item.id))].slice(0, 50);
+      this.state.lastDispatchError = null;
+      await this.persistQuietly('已接受合并 Todo');
+      if (leaderTaskId && route) {
+        for (const todo of todos) await this.notifyLeaderTodo(leaderTaskId, todo);
+      }
+      this.logger.info(`合并派发 Todo ${ids.join(', ')} → ${route ? `路由会话 ${sessionId}` : `会话 ${sessionId}`}（${effectiveTitle}）${leaderTaskId && route ? `，转交 Leader 任务 ${leaderTaskId}` : ''}。`);
+      return {
+        ok: true,
+        sessionId,
+        duplicate: false,
+        routed: route !== null,
+        routeMode: route?.mode ?? '',
+        batchId,
+        todoIds: ids,
+        ...(leaderTaskId && route ? { leaderTaskId } : {}),
+      };
+    } catch (error) {
+      if (reserved) {
+        this.releaseReservation();
+        reserved = false;
+      }
+      // 与单条一致：失败即撤销跟踪；已写入的 pending（带 requestId）留给 pending 重试/核对按原 requestId 幂等处理。
+      if (sessionId) for (const id of ids) this.untrackTodo(sessionId, id);
+      this.state.lastDispatchError = `Todo ${ids.join(', ')} 合并创建或驱动 Session 失败：${errorMessage(error)}`;
+      await this.persistQuietly('派发错误');
+      this.logger.warn(this.state.lastDispatchError);
+      return { ok: false, error: this.state.lastDispatchError, sessionId };
+    }
+  },
+
   async executeDispatch(todo, force, options = {}) {
     const trackSlot = Boolean(options.trackSlot);
     const followUp = Boolean(options.followUp);
@@ -552,6 +890,12 @@ export const dispatchMethods = {
     const ownMrs = continuing && Array.isArray(previous.openMrs) ? previous.openMrs : [];
     const sessionTitle = buildSessionTitle(todo, round);
     let reserved = false;
+    // Leader 转交与合并组关联：pending 重试沿用原记录的字段（同会话才延续）。
+    let leaderTaskId = pending?.routed === true && pending.leaderTaskId ? pending.leaderTaskId : '';
+    const dispatchLinks = () => ({
+      ...(pending?.batchId && pending.sessionId === sessionId ? { batchId: pending.batchId, mergedWith: [...(pending.mergedWith ?? [])] } : {}),
+      ...(leaderTaskId && route ? { leaderTaskId } : {}),
+    });
     try {
       const kind = classifyTodo(todo, this.gitlabUserId);
       if (kind === 'merge-request' || kind === 'assignment-notify') {
@@ -600,6 +944,10 @@ export const dispatchMethods = {
           sessionId = reuse.sessionId;
           for (const entry of history) if (entry.sessionId === sessionId) entry.archived = false;
         }
+      } else if (verdictEligible && (route = await this.resolveLeaderRoute(todo))) {
+        // Leader 托管的 Issue 上的首次自动 Todo：转给该 Issue 的 worker 会话（不受 autoRoute/preferSession 影响）。
+        sessionId = route.sessionId;
+        leaderTaskId = route.leaderTaskId;
       } else if (trackSlot && !force && !followUp && !pending && this.state.settings.autoRoute && judge?.preferSession !== 'new') {
         // 预检判定“虽同对象但主题无关”（preferSession=new）时不复用旧会话；
         // 候选按新到旧逐个过宿主校验（存在性/外部归档/负载）：最新的失败不排除次新可用者。
@@ -664,6 +1012,7 @@ export const dispatchMethods = {
           history,
           openMrs: [...ownMrs],
           sessionTitle: effectiveTitle,
+          ...dispatchLinks(),
           item: todo,
         };
         await this.persistQuietly('pending 路由消息');
@@ -835,6 +1184,7 @@ export const dispatchMethods = {
         reportStatus: '',
         reportSummary: '',
         resumeAfterMinutes: null,
+        ...dispatchLinks(),
       };
       this.state.handled[todo.id] = record;
       delete this.state.pending[todo.id];
@@ -853,8 +1203,9 @@ export const dispatchMethods = {
       } else {
         await this.persistQuietly('已接受 Todo');
       }
-      this.logger.info(`派发 ${isIssueItem(todo) ? 'Issue' : 'Todo'} ${todo.id} → ${route ? `路由会话 ${sessionId}` : `会话 ${sessionId}`}（${effectiveTitle}）。`);
-      return { ok: true, sessionId, duplicate: false, routed: route !== null, routeMode: route?.mode ?? '' };
+      if (record.leaderTaskId) await this.notifyLeaderTodo(record.leaderTaskId, todo);
+      this.logger.info(`派发 ${isIssueItem(todo) ? 'Issue' : 'Todo'} ${todo.id} → ${route ? `路由会话 ${sessionId}` : `会话 ${sessionId}`}（${effectiveTitle}）${record.leaderTaskId ? `，转交 Leader 任务 ${record.leaderTaskId}` : ''}。`);
+      return { ok: true, sessionId, duplicate: false, routed: route !== null, routeMode: route?.mode ?? '', ...(record.leaderTaskId ? { leaderTaskId: record.leaderTaskId } : {}) };
     } catch (error) {
       if (reserved) {
         this.releaseReservation();

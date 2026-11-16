@@ -16,6 +16,7 @@ import {
   buildJevQuestions,
   buildJevState,
   buildJudgePrompt,
+  buildMergedTodoPrompt,
   buildSessionTitle,
   buildTodoPrompt,
   buildWorkspaceOverview,
@@ -989,6 +990,8 @@ test('automatic poll only dispatches direct note mentions from other users', asy
   // 本测试关注“哪些类别进入派发”，预检判定本身另测；关闭预检模拟“判定均需处理”。
   runtime.state.settings.precheckEnabled = false;
   runtime.state.settings.maxSessionsPerPoll = 4;
+  // 关注“哪些类别进入派发”：关闭同对象合并，保持一 Todo 一会话的基线。
+  runtime.state.settings.mergeSameTarget = false;
   const directMr = {
     ...directNoteTodo,
     id: 'direct-mr',
@@ -1029,6 +1032,8 @@ test('auto dispatch holds concurrency slots until sessions actually settle', asy
   runtime.state.settings.precheckEnabled = false;
   runtime.state.settings.maxSessionsPerPoll = 4;
   runtime.state.settings.maxConcurrentSessions = 2;
+  // 同一 Issue 上的 4 条：关闭同对象合并，验证一 Todo 一会话时的槽位节流。
+  runtime.state.settings.mergeSameTarget = false;
   const directTodos = Array.from({ length: 4 }, (_, index) => ({
     ...directNoteTodo,
     id: `slot-${index}`,
@@ -2925,9 +2930,14 @@ test('mutual duplicate references never fold both sides of a pair', async () => 
   ]);
   await runtime.executePoll('test');
   await runtime.pump();
-  // 互相指向属于判定矛盾：不折叠任何一边，两条都正常开会话，交给会话自行处理。
+  // 互相指向属于判定矛盾：不折叠任何一边，两条都正常派发，交给会话自行处理。
+  // 二者同一 Issue：按同对象合并进同一个会话与回合，各自保有 handled 记录。
   assert.deepEqual(marked, []);
-  assert.equal(calls.create, 2);
+  assert.equal(calls.create, 1);
+  assert.equal(calls.prompt, 1);
+  assert.equal(runtime.state.handled.a.outcome, 'session-accepted');
+  assert.equal(runtime.state.handled.b.outcome, 'session-accepted');
+  assert.equal(runtime.state.handled.a.batchId, runtime.state.handled.b.batchId);
   await runtime.stop();
 });
 
@@ -4204,4 +4214,200 @@ test('runtime logger feeds the in-memory buffer and logProjection/clearLogEntrie
   assert.match(after.items[0].message, /清空/);
   assert.ok(after.dropped >= 2);
   await runtime.stop();
+});
+
+// ---- 同对象合并派发 / Leader 托管 Issue 转交 ----
+
+const sameTargetTodos = (count, base = 40) => Array.from({ length: count }, (_, index) => ({
+  ...directNoteTodo,
+  id: `m${index + 1}`,
+  author: { id: 60 + index, username: `user-${index + 1}` },
+  body: `第 ${index + 1} 条请求`,
+  target_url: `https://gitlab.local/group/project/-/issues/7#note_${base + index}`,
+}));
+
+test('mergeSameTarget defaults on and validates as a boolean', () => {
+  assert.equal(defaultSettings().mergeSameTarget, true);
+  assert.equal(validateSettings({}).mergeSameTarget, true);
+  assert.equal(validateSettings({ mergeSameTarget: false }).mergeSameTarget, false);
+  // 旧状态没有该字段：回读时按默认补 true，不需要升级状态版本。
+  const legacy = JSON.parse(JSON.stringify(initialState()));
+  delete legacy.settings.mergeSameTarget;
+  assert.equal(normalizeState(legacy).settings.mergeSameTarget, true);
+});
+
+test('merged prompt lists every todo with its own reply, mark-done command and closure report', () => {
+  const todos = normalizeTodos(sameTargetTodos(2));
+  const text = buildMergedTodoPrompt(todos, { me: { username: 'me', id: '106' } });
+  assert.match(text, /合并承载同一对象上的 2 条 GitLab Todo/);
+  assert.match(text, /Todo m1：@user-1 的评论/);
+  assert.match(text, /Todo m2：@user-2 的评论/);
+  assert.match(text, /todos\/m1\/mark_as_done/);
+  assert.match(text, /todos\/m2\/mark_as_done/);
+  assert.match(text, /\[TODO-CLOSURE\] \{"todoId":"m1"/);
+  assert.match(text, /\[TODO-CLOSURE\] \{"todoId":"m2"/);
+  assert.match(text, /第 2 条请求/);
+  assert.match(buildMergedTodoPrompt(todos, { route: { mode: 'queue' } }), /合并路由到当前会话/);
+  // 只有一条时与单条任务书完全一致。
+  assert.equal(buildMergedTodoPrompt([todos[0]], {}), buildTodoPrompt(todos[0], {}));
+});
+
+test('same-target mentions in one poll share one session, prompt and slot but settle independently', async () => {
+  const { runtime, calls, prompts } = autoRuntime();
+  let pending = sameTargetTodos(2);
+  runtime.fetchTodos = async () => normalizeTodos(pending);
+  await runtime.executePoll('test');
+  await runtime.pump();
+  assert.equal(calls.create, 1);
+  assert.equal(calls.prompt, 1);
+  assert.match(prompts[0], /"todoId":"m1"/);
+  assert.match(prompts[0], /"todoId":"m2"/);
+  const first = runtime.state.handled.m1;
+  const second = runtime.state.handled.m2;
+  assert.equal(first.sessionId, 'session-1');
+  assert.equal(second.sessionId, 'session-1');
+  assert.equal(first.requestId, second.requestId);
+  assert.ok(first.batchId);
+  assert.equal(first.batchId, second.batchId);
+  assert.deepEqual(first.mergedWith, ['m2']);
+  assert.deepEqual(second.mergedWith, ['m1']);
+  assert.equal(first.leaderTaskId, undefined);
+  assert.equal(runtime.occupiedSlots(), 1);
+  const restored = normalizeState(JSON.parse(JSON.stringify(runtime.state)));
+  assert.equal(restored.handled.m2.batchId, first.batchId);
+  assert.deepEqual(restored.handled.m2.mergedWith, ['m1']);
+
+  // m1 输出了报告且已标记完成；m2 没有报告、Todo 仍在 → 各自结算，m2 待续办。
+  pending = pending.filter((todo) => todo.id !== 'm1');
+  calls.complete('session-1', 'completed', closureLine({ todoId: 'm1', status: 'done', summary: 'm1 已处理', resumeAfterMinutes: 0, openMrs: [] }));
+  await runtime.reconcileSessions();
+  assert.equal(runtime.state.handled.m1.closure, 'closed');
+  assert.equal(runtime.state.handled.m1.reportSummary, 'm1 已处理');
+  assert.equal(runtime.state.handled.m2.executionStatus, 'completed');
+  assert.equal(runtime.state.handled.m2.reportSummary, '');
+  assert.equal(runtime.state.handled.m2.closure, 'follow-up');
+  assert.equal(runtime.occupiedSlots(), 0);
+
+  // 续办仍按单条处理：只为 m2 开新会话，不再合并。
+  runtime.state.handled.m2.nextAttemptAt = Date.now() - 1;
+  await runtime.executePoll('test');
+  await runtime.pump();
+  assert.equal(calls.create, 2);
+  assert.doesNotMatch(prompts[1], /合并承载/);
+  assert.match(prompts[1], /"todoId":"m2"/);
+  assert.doesNotMatch(prompts[1], /todos\/m1\/mark_as_done/);
+  assert.equal(runtime.state.handled.m2.round, 2);
+  assert.equal(runtime.state.handled.m2.batchId, undefined);
+  await runtime.stop();
+});
+
+test('merged groups are capped at maxQueuePerSession and overflow forms the next unit', async () => {
+  const { runtime, calls, prompts } = autoRuntime({ settings: { maxSessionsPerPoll: 4, maxConcurrentSessions: 4, maxQueuePerSession: 3 } });
+  runtime.fetchTodos = async () => normalizeTodos(sameTargetTodos(4));
+  await runtime.executePoll('test');
+  await runtime.pump();
+  assert.equal(calls.create, 2);
+  assert.equal(calls.prompt, 2);
+  assert.match(prompts[0], /合并承载同一对象上的 3 条/);
+  for (const id of ['m1', 'm2', 'm3']) assert.match(prompts[0], new RegExp(`"todoId":"${id}"`));
+  assert.doesNotMatch(prompts[0], /"todoId":"m4"/);
+  assert.doesNotMatch(prompts[1], /合并承载/);
+  assert.equal(runtime.state.handled.m3.sessionId, 'session-1');
+  assert.equal(runtime.state.handled.m4.sessionId, 'session-2');
+  assert.equal(runtime.state.handled.m4.batchId, undefined);
+  assert.deepEqual(runtime.state.handled.m1.mergedWith, ['m2', 'm3']);
+  await runtime.stop();
+});
+
+test('mergeSameTarget=false keeps one session per same-target todo', async () => {
+  const { runtime, calls } = autoRuntime({ settings: { mergeSameTarget: false } });
+  runtime.fetchTodos = async () => normalizeTodos(sameTargetTodos(2));
+  await runtime.executePoll('test');
+  await runtime.pump();
+  assert.equal(calls.create, 2);
+  assert.equal(calls.prompt, 2);
+  assert.equal(runtime.state.handled.m1.batchId, undefined);
+  assert.notEqual(runtime.state.handled.m1.sessionId, runtime.state.handled.m2.sessionId);
+  await runtime.stop();
+});
+
+test('todos on a Leader-managed Issue are routed to its worker, notify the Leader and never archive it', async () => {
+  const { runtime, calls, prompts } = autoRuntime({ settings: { busyRouteMode: 'steer' } });
+  calls.sessions.set('worker-1', { running: true, events: [], title: 'ISSUE-7' });
+  const lookups = [];
+  const notes = [];
+  runtime.leaderWorkerForTarget = (url) => {
+    lookups.push(url);
+    return url.includes('/issues/7') ? { taskId: 'issue-77', sessionId: 'worker-1' } : null;
+  };
+  runtime.noteLeaderTodo = async (taskId, todo) => {
+    notes.push({ taskId, ...todo });
+    return { ok: true };
+  };
+  let pending = sameTargetTodos(2);
+  runtime.fetchTodos = async () => normalizeTodos(pending);
+  await runtime.executePoll('test');
+  await runtime.pump();
+  assert.equal(calls.create, 0);
+  assert.equal(calls.prompt, 1);
+  assert.equal(calls.modelSelections.length, 0);
+  const request = calls.invocations.find((call) => call.method === 'prompt').args.request;
+  assert.equal(request.sessionId, 'worker-1');
+  assert.equal(request.mode, 'steer');
+  assert.match(prompts[0], /合并路由到当前会话/);
+  assert.ok(lookups.length > 0);
+  for (const id of ['m1', 'm2']) {
+    const record = runtime.state.handled[id];
+    assert.equal(record.sessionId, 'worker-1');
+    assert.equal(record.routed, true);
+    assert.equal(record.leaderTaskId, 'issue-77');
+  }
+  assert.deepEqual(notes.map((note) => [note.taskId, note.todoId, note.author]), [['issue-77', 'm1', 'user-1'], ['issue-77', 'm2', 'user-2']]);
+  assert.equal(normalizeState(JSON.parse(JSON.stringify(runtime.state))).handled.m1.leaderTaskId, 'issue-77');
+
+  pending = [];
+  calls.complete('worker-1', 'completed', [
+    closureLine({ todoId: 'm1', status: 'done', summary: 'm1 完成', resumeAfterMinutes: 0, openMrs: [] }),
+    closureLine({ todoId: 'm2', status: 'done', summary: 'm2 完成', resumeAfterMinutes: 0, openMrs: [] }),
+  ].join('\n'));
+  await runtime.reconcileSessions();
+  assert.equal(runtime.state.handled.m1.closure, 'closed');
+  assert.equal(runtime.state.handled.m2.closure, 'closed');
+  assert.deepEqual(calls.archives, []);
+  await runtime.stop();
+});
+
+test('an unavailable Leader worker falls back to a new session; Leader notify failures never fail dispatch', async () => {
+  const { runtime, calls } = autoRuntime();
+  const notes = [];
+  runtime.leaderWorkerForTarget = () => ({ taskId: 'issue-77', sessionId: 'gone' });
+  runtime.noteLeaderTodo = async (taskId, todo) => { notes.push(todo.todoId); };
+  const [todo] = normalizeTodos(sameTargetTodos(1));
+  const result = await runtime.dispatch(todo, false, { trackSlot: true });
+  assert.equal(result.ok, true);
+  assert.equal(result.routed, false);
+  assert.equal(calls.create, 1);
+  assert.equal(runtime.state.handled.m1.leaderTaskId, undefined);
+  assert.deepEqual(notes, []);
+
+  // 可用 worker + 通知抛错：照常路由并接受，只告警。
+  const second = runtimeWithPrompt(async () => ({ accepted: true }), { autoComplete: false });
+  second.calls.sessions.set('worker-1', { running: false, events: [] });
+  second.runtime.leaderWorkerForTarget = () => ({ taskId: 'issue-77', sessionId: 'worker-1' });
+  second.runtime.noteLeaderTodo = async () => { throw new Error('journal down'); };
+  const [other] = normalizeTodos(sameTargetTodos(1));
+  const routed = await second.runtime.dispatch(other, false, { trackSlot: true });
+  assert.equal(routed.ok, true);
+  assert.equal(routed.routed, true);
+  assert.equal(routed.leaderTaskId, 'issue-77');
+  assert.equal(second.calls.create, 0);
+  assert.equal(second.runtime.state.handled.m1.leaderTaskId, 'issue-77');
+  // 手动派发不走 Leader 转交。
+  const third = runtimeWithPrompt(async () => ({ accepted: true }), { autoComplete: false });
+  third.calls.sessions.set('worker-1', { running: false, events: [] });
+  third.runtime.leaderWorkerForTarget = () => ({ taskId: 'issue-77', sessionId: 'worker-1' });
+  const manual = await third.runtime.dispatch(other, false, {});
+  assert.equal(manual.routed, false);
+  assert.equal(third.calls.create, 1);
+  await Promise.all([runtime.stop(), second.runtime.stop(), third.runtime.stop()]);
 });
