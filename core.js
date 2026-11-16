@@ -2244,99 +2244,6 @@ export function buildWorkspaceOverview(workspaces, roster, pluginSessions = [], 
 }
 
 /**
- * “最近会话”Tab 已并入“已处理”Tab（v2.29）：有会话的已处理记录直接承担
- * 会话入口/归档按钮，无会话记录展示判定原因；不再需要独立会话分页投影。
- */
-
-/**
- * “已处理”分页投影：handled 里所有 Todo 记录 + pending 中已投递未结算的记录，
- * 不过滤规则跳过/预检跳过项（这正是面板需要可见的黑盒）。按活动时刻倒序：
- * 已结算的用 completedAt，未结算的用 acceptedAt；并列时按 todoId 倒序保证稳定。
- * handled 的投影字段覆盖跳过原因、折叠去向、会话与闭环信息，供面板完整展示。
- */
-export function handledProjection(state) {
-  const handled = Object.values(state?.handled ?? {})
-    .map((record) => ({
-      todoId: record.id,
-      title: record.title,
-      url: record.url,
-      project: record.project,
-      outcome: record.outcome ?? '',
-      skipReason: record.skipReason ?? '',
-      mergedInto: record.mergedInto ?? null,
-      author: record.author ?? '',
-      excerpt: record.excerpt ?? '',
-      sessionId: record.sessionId ?? null,
-      sessionTitle: record.sessionTitle ?? '',
-      automatic: record.automatic !== false,
-      routed: record.routed === true,
-      routeMode: ROUTE_MODES.includes(record.routeMode) ? record.routeMode : '',
-      reused: record.reused === true,
-      executionStatus: record.executionStatus ?? '',
-      executionError: record.executionError ?? '',
-      archiveError: record.archiveError ?? '',
-      waitProbes: record.waitProbes ?? 0,
-      replied: record.replied ?? null,
-      closure: record.closure ?? '',
-      closureNote: record.closureNote ?? '',
-      reportStatus: record.reportStatus ?? '',
-      reportSummary: record.reportSummary ?? '',
-      round: record.round ?? 1,
-      acceptedAt: record.acceptedAt ?? null,
-      completedAt: record.completedAt ?? null,
-      acknowledgedAt: record.acknowledgedAt ?? null,
-      nextAttemptAt: record.nextAttemptAt ?? null,
-      archived: record.archived === true,
-      pendingUnconfirmed: record.pendingUnconfirmed === true,
-      lastReply: record.lastReply ? { ...record.lastReply } : null,
-      activityAt: Number.isFinite(record.completedAt) ? record.completedAt : (record.acceptedAt ?? 0),
-      pending: false,
-      // Issue 面板来源标记：已处理页据此打“Issue”标签区分 Todo 记录。
-      source: isIssueItem(record.item) ? 'issue' : '',
-      iid: isIssueItem(record.item) ? (record.item.iid ?? null) : null,
-    }));
-  const pending = Object.values(state?.pending ?? {})
-    .filter((record) => Boolean(record?.sessionId) && isRecord(record?.item))
-    .map((record) => ({
-      todoId: record.item.id,
-      title: record.item.title,
-      url: record.item.url,
-      project: record.item.project,
-      outcome: '',
-      skipReason: '',
-      mergedInto: null,
-      author: '',
-      excerpt: '',
-      sessionId: record.sessionId,
-      sessionTitle: record.sessionTitle ?? '',
-      automatic: record.automatic !== false,
-      routed: record.routed === true,
-      routeMode: ROUTE_MODES.includes(record.routeMode) ? record.routeMode : '',
-      reused: record.reused === true,
-      executionStatus: 'starting',
-      executionError: '',
-      closure: '',
-      closureNote: '',
-      reportStatus: '',
-      reportSummary: '',
-      round: record.round ?? 1,
-      acceptedAt: record.createdAt ?? null,
-      completedAt: null,
-      acknowledgedAt: null,
-      nextAttemptAt: null,
-      archived: false,
-      pendingUnconfirmed: false,
-      lastReply: null,
-      activityAt: record.createdAt ?? 0,
-      pending: true,
-      source: isIssueItem(record.item) ? 'issue' : '',
-      iid: isIssueItem(record.item) ? (record.item.iid ?? null) : null,
-    }));
-  return [...handled, ...pending]
-    .sort((a, b) => (b.activityAt - a.activityAt) || String(b.todoId).localeCompare(String(a.todoId)));
-}
-
-/**
  * Issue 面板投影：把 state.issues（指派给我的开放 Issue 快照）与 handled/pending
  * 记录按合成 id 关联，面板据此渲染“处理/打开会话/重新处理”与状态徽标。
  * orphans：有处理记录但已不在当前开放 Issue 列表里的条目（已关闭或已转移），
@@ -2387,21 +2294,6 @@ export function buildIssueProjection(state) {
     return bt - at;
   });
   return { items, orphans };
-}
-
-/**
- * “已处理”分页：默认 50 条/页，上限 200；total 为投影总数（含 pending）。
- */
-export function handledPage(state, offset = 0, limit = 50) {
-  const safeOffset = Number.isSafeInteger(offset) && offset >= 0 ? Math.min(offset, 1000000) : 0;
-  const safeLimit = Number.isSafeInteger(limit) && limit >= 1 ? Math.min(limit, 200) : 50;
-  const items = handledProjection(state);
-  return {
-    items: items.slice(safeOffset, safeOffset + safeLimit),
-    total: items.length,
-    offset: safeOffset,
-    limit: safeLimit,
-  };
 }
 
 /** 闭环统计：给面板显示“待续办 / 需人工”。已人工确认的需人工记录不再计数。 */
@@ -2528,7 +2420,6 @@ export function publicState(state, running = false, currentUserId = null) {
     closure: closureCounts(state),
     // recent 只给前端做摘要，不带 Todo 原文与历史链路。
     recent: state.recent.map(({ item, history, ...record }) => ({ ...record })),
-    handledCount: Object.keys(state.handled).length,
     pendingCount: state.todos.filter((todo) => !state.handled[todo.id]).length,
     running,
     lastRunAt: state.lastRunAt,

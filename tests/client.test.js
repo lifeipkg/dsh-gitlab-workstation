@@ -65,7 +65,7 @@ test('issue rows have no manual route action while todo routing remains availabl
     return source.slice(start, end);
   };
 
-  const issues = panel('issues', 'handled');
+  const issues = panel('issues', 'workspaces');
   const todos = panel('todos', 'issues');
   assert.doesNotMatch(issues, /openRouteTargets\(issue\)/);
   assert.doesNotMatch(issues, /t\('routeToSession'\)/);
@@ -422,9 +422,9 @@ test('journal rollback preserves known handoff identity and text while adopting 
   assert.match(source, /\['creating', 'creation-unknown'\]\.includes\(sessionEntry\.handoff\.status\) \? 'sessionHandoffUncertain'/);
 });
 
-test('all six session entries share the guard, archived rows remain reachable, and locales match', async () => {
+test('all five session entries share the guard, archived rows remain reachable, and locales match', async () => {
   const source = await clientSource();
-  assert.equal((source.match(/=> openSession\(\{/g) || []).length, 6);
+  assert.equal((source.match(/=> openSession\(\{/g) || []).length, 5);
   assert.equal((source.match(/ctx\.uiWorkspace\.openSession\(sessionId\)/g) || []).length, 1);
   assert.doesNotMatch(source, /item\.sessionId && !item\.archived && h\(Button/);
   assert.doesNotMatch(source, /session\.archived\s*\? h\('span'/);
@@ -442,10 +442,10 @@ test('all six session entries share the guard, archived rows remain reachable, a
 
 test('grouped workstation tabs navigate across groups, wrap, and ignore unrelated keys', async () => {
   const { WORKSTATION_TABS: tabs, nextWorkstationTab } = await loadWorkstationHelpers();
-  assert.deepEqual(Array.from(tabs, (tab) => tab.id), ['inbox', 'todos', 'issues', 'handled', 'workspaces', 'logs']);
-  assert.deepEqual(Array.from(tabs, (tab) => tab.group), ['tasksGroup', 'tasksGroup', 'tasksGroup', 'tasksGroup', 'environmentGroup', 'environmentGroup']);
-  assert.equal(nextWorkstationTab('handled', 'ArrowRight'), 'workspaces');
-  assert.equal(nextWorkstationTab('workspaces', 'ArrowLeft'), 'handled');
+  assert.deepEqual(Array.from(tabs, (tab) => tab.id), ['inbox', 'todos', 'issues', 'workspaces', 'logs']);
+  assert.deepEqual(Array.from(tabs, (tab) => tab.group), ['tasksGroup', 'tasksGroup', 'tasksGroup', 'environmentGroup', 'environmentGroup']);
+  assert.equal(nextWorkstationTab('issues', 'ArrowRight'), 'workspaces');
+  assert.equal(nextWorkstationTab('workspaces', 'ArrowLeft'), 'issues');
   assert.equal(nextWorkstationTab('inbox', 'ArrowLeft'), 'logs');
   assert.equal(nextWorkstationTab('logs', 'ArrowRight'), 'inbox');
   assert.equal(nextWorkstationTab('issues', 'Home'), 'inbox');
@@ -480,9 +480,7 @@ test('local list search filters loaded metadata without mutating records or pagi
 
   const source = await clientSource();
   assert.match(source, /visibleOrphans = filterWorkstationItems\(issuesData\?\.orphans, listQuery\)/);
-  assert.match(source, /activeTab === 'handled' \? t\('searchLoaded'\) : t\('searchList'\)/);
-  assert.match(source, /handledData && handledData\.items\.length < handledData\.total[^\n]*gta-load-more/);
-  assert.doesNotMatch(source, /fetchHandled\([^)]*listQuery/);
+  assert.doesNotMatch(source, /activeTab === 'handled'|handledData|fetchHandled|post\('handled'/);
 });
 
 test('status tones prioritize live execution and human closure over completed green', async () => {
@@ -586,7 +584,7 @@ async function loadLeaderHelpers() {
   const marker = '    function PanelIcon({ size = 20 }) {';
   assert.ok(source.includes(marker));
   const instrumented = source.replace(marker,
-    `    globalThis.__leaderHelpers = { callLeader, LEADER_RPC_OPERATIONS, normalizeLeaderProjection, readLeaderResponse, validLeaderSessionId, leaderItemForSession, canGrantLeaderAccess, canCreateLeader, canRetryLeaderSetup, leaderHumanItems, leaderNoteLines, leaderAuditDetail, createSessionEntryGuard, issueModelFromOption, withReasoningEffort, en, zh };\n${marker}`);
+    `    globalThis.__leaderHelpers = { callLeader, LEADER_RPC_OPERATIONS, normalizeLeaderProjection, readLeaderResponse, validLeaderSessionId, leaderItemForSession, canGrantLeaderAccess, canCreateLeader, canRetryLeaderSetup, leaderAuditDetail, createSessionEntryGuard, issueModelFromOption, withReasoningEffort, en, zh };\n${marker}`);
   let definition;
   const context = vm.createContext({ AbortController, AbortSignal,
     fetch() { assert.fail('Leader mutations must never fall back to HTTP'); },
@@ -777,8 +775,8 @@ test('known partial Leader setup can retry only the authoritative same ID while 
   assert.match(issues, /t\('leaderRetrySetup'\)/);
 });
 
-test('Leader managed lookup matches both task and session and human follow-up is per Issue, read-only', async () => {
-  const { normalizeLeaderProjection, leaderItemForSession, leaderHumanItems } = await loadLeaderHelpers();
+test('Leader managed lookup matches both task and session, read-only', async () => {
+  const { normalizeLeaderProjection, leaderItemForSession } = await loadLeaderHelpers();
   const items = [
     { taskId: '7', sessionId: 'a', title: 'Native question', status: 'needs-human', alerts: [{ id: 'q1', question: 'Pick one', status: 'pending' }] },
     { taskId: '8', sessionId: 'b', title: 'Running', status: 'running', alerts: [] },
@@ -790,7 +788,6 @@ test('Leader managed lookup matches both task and session and human follow-up is
   assert.equal(leaderItemForSession(projection, 7, 'a').title, 'Native question');
   assert.equal(leaderItemForSession(projection, 7, 'wrong'), null);
   assert.equal(leaderItemForSession(projection, 8, 'a'), null);
-  assert.deepEqual(Array.from(leaderHumanItems(projection), (item) => item.taskId), ['7', '9']);
   assert.equal(projection.items[1].status, 'running');
   assert.deepEqual(items[0].alerts, [{ id: 'q1', question: 'Pick one', status: 'pending' }]);
 });
@@ -834,26 +831,25 @@ test('Leader entry points reuse safeSessionOpener, keep worker task identity, an
   assert.deepEqual(Object.keys(en).sort(), Object.keys(zh).sort());
 });
 
-test('Leader controls are optional and compact, enrollment is explicit in active and orphan rows, questions are not answered', async () => {
+test('Leader controls are optional and compact, enrollment is one click in active and orphan rows, questions are not answered', async () => {
   const source = await clientSource();
   const start = source.indexOf("activeTab === 'issues' && snapshot && h('section'");
-  const end = source.indexOf("activeTab === 'handled' &&", start);
+  const end = source.indexOf("activeTab === 'workspaces' &&", start);
   const issues = source.slice(start, end);
   const leader = issues.slice(0, issues.indexOf("h('div', { className: 'gta-issue-toolbar' }"));
   assert.match(source, /const \[leaderOpen, setLeaderOpen\] = React\.useState\(false\)/);
   assert.match(source, /model: null, autoEnrollNew: false/);
   assert.ok(leader.indexOf("checked: leaderSettings.autoEnrollNew === true") < leader.indexOf("leaderOpen && h('div'"), 'auto-enrollment stays visible when collapsed');
   assert.match(leader, /confirmLeaderAccess\('start'/);
-  assert.match(source, /confirmLeaderAccess\('enroll', \{ taskId: String\(issue\.id\), sessionId: issue\.sessionId \}/);
+  assert.match(source, /void runLeader\('enroll', \{ taskId: String\(issue\.id\), sessionId: issue\.sessionId \}\)/);
+  assert.match(source, /void runLeader\('unenroll', \{ taskId: String\(issue\.id\), sessionId: issue\.sessionId \}\)/);
+  assert.doesNotMatch(source, /confirmLeaderAccess\('(enroll|unenroll)'/);
+  assert.doesNotMatch(issues, /t\('leaderManaged'\)\)\)|t\('leaderHuman'\)|gta-needs-human/);
   assert.match(leader, /confirmLeaderAccess\('configure', \{ settings: \{ autoEnrollNew: true \} \}/);
   assert.match(leader, /t\('leaderScope'\)/);
-  assert.match(leader, /t\('leaderNativeHuman'\)/);
   assert.match(leader, /t\('leaderResumeHint'\)/);
-  assert.match(source, /\(item\.paused \|\| \['paused', 'needs-human'\]\.includes\(item\.status\)\) && h\(Button/);
-  assert.match(source, /confirmLeaderAccess\('resumeIssue', \{ taskId: item\.taskId, sessionId: item\.sessionId \}/);
   assert.match(leader, /role: 'region', 'aria-label': t\('leaderConfirm'\)/);
   assert.doesNotMatch(leader, /role: 'dialog'|aria-modal|prompt\(|post\('answer'|post\('approval'|question\/answer|approval\/answer/);
-  assert.match(leader, /openManagedIssue\(item, event\.currentTarget\)/);
   assert.equal((issues.match(/issueLeaderControl\(issue\)/g) || []).length, 2);
   assert.equal((issues.match(/t\('leaderEnrolled'\)/g) || []).length, 2);
   assert.match(leader, /modelOptions\(leaderModel\)/);
@@ -881,14 +877,14 @@ test('hardened Leader projection exposes run state, budgets and unconfirmed deli
   const failed = readLeaderResponse({ ok: true, result: { ok: false, error: 'x' }, projection: leaderProjection() }, 'resolveCreation', null, t);
   assert.equal(failed.creationAbsent, false);
   assert.equal(readLeaderResponse({ ok: true, result: { ok: true }, projection: leaderProjection() }, 'resolveDelivery', null, t).creationAbsent, false);
-  for (const key of ['leaderNeverStartedHint', 'leaderResetBudget', 'leaderDeliveries', 'leaderClaim', 'leaderAbandon', 'leaderStandby', 'leaderCold']) {
+  for (const key of ['leaderNeverStartedHint', 'leaderDeliveries', 'leaderClaim', 'leaderAbandon', 'leaderStandby', 'leaderCold']) {
     assert.ok(en[key] && zh[key], key);
   }
   assert.match(zh.leaderNeverStartedHint, /New Session/);
 });
 
 test('Leader capability projection exposes provenance, notes and a display-only audit trail', async () => {
-  const { normalizeLeaderProjection, leaderNoteLines, leaderAuditDetail, en, zh } = await loadLeaderHelpers();
+  const { normalizeLeaderProjection, leaderAuditDetail, en, zh } = await loadLeaderHelpers();
   const projection = normalizeLeaderProjection(leaderProjection({ sessionId: 'leader-1', phase: 'ready',
     deliveries: [{ requestId: 'relay-1', kind: 'relay', taskId: 'issue:7', sessionId: 'worker-7', status: 'uncertain' }],
     audit: [{ action: 'session-rename', taskId: 'issue:7', sessionId: 'worker-7', at: 5, detail: '{"title":"#7 修复 CI"}' }, { action: '' }, null],
@@ -899,12 +895,9 @@ test('Leader capability projection exposes provenance, notes and a display-only 
   assert.deepEqual(plain(projection.items.map((item) => item.provenance)), ['leader', '']);
   assert.deepEqual(plain(projection.items[0].notes.decisions), ['方案 B']); assert.equal(projection.items[1].notes, null);
   assert.deepEqual(plain(projection.audit.map((entry) => entry.action)), ['session-rename']);
-  const t = (key) => zh[key];
-  assert.deepEqual(plain(leaderNoteLines(projection.items[0].notes, t)), ['决定：方案 B', '产出：MR !12']);
-  assert.equal(leaderNoteLines(null, t).length, 0);
   assert.equal(leaderAuditDetail('{"title":"#7 修复 CI"}'), '#7 修复 CI'); assert.equal(leaderAuditDetail('{"reason":"完成"}'), '完成');
   assert.equal(leaderAuditDetail('{"provider":"kiro","model":"deep"}'), 'kiro/deep'); assert.equal(leaderAuditDetail('not json'), '');
-  for (const key of ['leaderAudit', 'leaderAuditCreate', 'leaderAuditRelay', 'leaderProvenanceLeader', 'leaderRelayHint', 'leaderNoteDecisions']) assert.ok(en[key] && zh[key], key);
+  for (const key of ['leaderAudit', 'leaderAuditCreate', 'leaderAuditRelay', 'leaderRelayHint']) assert.ok(en[key] && zh[key], key);
 });
 
 test('Leader projection marks ad-hoc task items and keeps uncertain tasks for the human', async () => {

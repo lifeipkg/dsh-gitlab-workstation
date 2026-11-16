@@ -22,8 +22,6 @@ import {
   buildWorkspaceOverview,
   discussionsApiPath,
   findRouteTargets,
-  handledPage,
-  handledProjection,
   isIssueItem,
   issueApiPath,
   JEV_SKIP_REASONS,
@@ -285,30 +283,6 @@ test('new TODO titles do not migrate legacy stored session titles or history', (
   assert.equal(state.handled.legacy.sessionTitle, '[协助]-issue-7-note-10-续1');
 });
 
-test('handled projection lists session rows and skipped rows together (merged tabs)', () => {
-  const base = initialState();
-  base.handled.a = {
-    id: 'a', sessionId: 'session-a', acceptedAt: 20, sessionTitle: '[协助]-issue-1-note-2',
-    executionStatus: 'completed', automatic: true, title: 'A', url: 'https://gitlab.local/a', project: 'g/p',
-  };
-  base.handled.b = { id: 'b', sessionId: 'session-b', acceptedAt: 30, executionStatus: 'running', automatic: false, title: 'B', url: '', project: '' };
-  base.handled.mr = { id: 'mr', sessionId: null, outcome: 'merge-request-done', acceptedAt: 40, title: 'MR', url: '', project: '', skipReason: 'MR 已清理' };
-  base.pending.c = { sessionId: 'session-c', createdAt: 25, automatic: true, round: 3, item: normalizeTodos([{ ...sessionTodo, id: 'c' }])[0] };
-  const view = handledProjection(base);
-  // 活动时刻倒序：mr(40) > b(30) > c(25) > a(20)。
-  assert.deepEqual(view.map((item) => [item.todoId, item.sessionId, item.executionStatus]), [
-    ['mr', null, ''],
-    ['b', 'session-b', 'running'],
-    ['c', 'session-c', 'starting'],
-    ['a', 'session-a', 'completed'],
-  ]);
-  const a = view.find((item) => item.todoId === 'a');
-  assert.equal(a.sessionTitle, '[协助]-issue-1-note-2');
-  assert.equal(view.find((item) => item.todoId === 'c').round, 3);
-  // 无会话记录用 skipReason 展示判定原因。
-  assert.equal(view.find((item) => item.todoId === 'mr').skipReason, 'MR 已清理');
-});
-
 test('judge prompt and reply parsing are conservative', () => {
   const prompt = buildJudgePrompt(normalizeTodos([directNoteTodo])[0]);
   assert.match(prompt, /预检器/);
@@ -491,7 +465,7 @@ test('state normalization and public projection retain accepted session links', 
   base.todos = normalizeTodos([directNoteTodo]);
   const state = normalizeState(JSON.parse(JSON.stringify(base)));
   const view = publicState(state, false, '106');
-  assert.equal(view.handledCount, 1);
+  assert.equal(view.handledCount, undefined);
   assert.equal(view.recent[0].sessionId, 'session-a');
   assert.equal(view.settings.enabled, false);
   assert.equal(view.todos[0].directMention, true);
@@ -1174,94 +1148,7 @@ test('built-in fetch reads the current user once and paginates todos', async () 
   assert.equal(requests[2].at(-1), 'page=2');
 });
 
-test('session page paginates recent plugin sessions newest-first', () => {
-  const base = initialState();
-  for (let index = 0; index < 35; index += 1) {
-    base.handled[`t${index}`] = {
-      id: `t${index}`, sessionId: `s${index}`, acceptedAt: 1000 + index, executionStatus: 'completed',
-      automatic: true, title: `T${index}`, url: '', project: '', round: 1, closure: 'closed',
-    };
-  }
-  // v2.29：会话分页并入“已处理”——有 sessionId 的记录在 handled 列表里带 sessionId，
-  // 无会话记录（规则跳过）也在列、由 skipReason 承担判定原因展示。
-  base.handled.skip = { id: 'skip', sessionId: null, outcome: 'rule-skipped', acceptedAt: 9999, title: 'x', skipReason: '规则判定无需处理' };
-  const first = handledPage(base, 0, 30);
-  assert.equal(first.total, 36);
-  assert.equal(first.items.length, 30);
-  // 活动时刻倒序：skip(9999) 最前，其次 s34…s5。
-  assert.equal(first.items[0].todoId, 'skip');
-  assert.equal(first.items[0].sessionId, null);
-  assert.equal(first.items[1].sessionId, 's34');
-  const second = handledPage(base, 30, 30);
-  assert.equal(second.items.length, 6);
-  // 越界与非法参数按默认处理，不抛错。
-  assert.equal(handledPage(base, 100, 30).items.length, 0);
-  assert.equal(handledPage(base, -5, 500).items.length, 36 > 100 ? 100 : 36);
-});
-
-test('handled page includes skipped records and orders by activity newest-first', () => {
-  const base = initialState();
-  // 会话记录：completedAt 作为活动时刻。
-  base.handled.done = {
-    id: 'done', sessionId: 's-done', acceptedAt: 1000, completedAt: 2000,
-    executionStatus: 'completed', outcome: 'session-accepted', closure: 'closed',
-    title: '会话处理', url: '', project: 'g/p', sessionTitle: 'S1', automatic: true,
-  };
-  // 规则跳过：无 sessionId，acceptedAt 作为活动时刻——必须出现在列表里。
-  base.handled.skip = {
-    id: 'skip', sessionId: null, outcome: 'rule-skipped', acceptedAt: 3000,
-    skipReason: '流水线通知，规则判定无需处理', title: '流水线', url: '', project: 'g/p', automatic: true,
-  };
-  // 预检跳过且被折叠：带 mergedInto/author/excerpt。
-  base.handled.merged = {
-    id: 'merged', sessionId: null, outcome: 'precheck-skipped', acceptedAt: 4000,
-    skipReason: '与 Todo main 是同一请求，随主条目合并处理', mergedInto: 'main',
-    author: 'alice', excerpt: '摘录', title: '重复', url: '', project: 'g/p', automatic: true,
-  };
-  const projection = handledProjection(base);
-  assert.equal(projection.length, 3);
-  // 按活动时刻倒序：merged(4000) > skip(3000) > done(2000)。
-  assert.deepEqual(projection.map((item) => item.todoId), ['merged', 'skip', 'done']);
-  assert.equal(projection[0].mergedInto, 'main');
-  assert.equal(projection[0].excerpt, '摘录');
-  assert.equal(projection[1].sessionId, null);
-  const page = handledPage(base);
-  assert.equal(page.total, 3);
-  assert.equal(page.items.length, 3);
-  assert.equal(page.limit, 50);
-});
-
-test('handled page paginates, clamps inputs and marks pending rows', () => {
-  const base = initialState();
-  for (let index = 0; index < 60; index += 1) {
-    base.handled[`t${index}`] = {
-      id: `t${index}`, sessionId: `s${index}`, acceptedAt: 1000 + index,
-      outcome: 'session-accepted', executionStatus: 'completed', title: `T${index}`,
-      url: '', project: '', automatic: true,
-    };
-  }
-  // pending 投递中记录：标 pending:true、executionStatus 'starting'，排在最前（createdAt 最新）。
-  base.pending.p1 = {
-    sessionId: 's-new', createdAt: 9999, automatic: true, followUp: false, routed: true,
-    routeMode: 'steer', requestId: 'r1', round: 2, item: { id: 'p1', title: 'P', url: '', project: 'g/p' },
-  };
-  const first = handledPage(base);
-  assert.equal(first.total, 61);
-  assert.equal(first.items.length, 50);
-  assert.equal(first.items[0].todoId, 'p1');
-  assert.equal(first.items[0].pending, true);
-  assert.equal(first.items[0].executionStatus, 'starting');
-  assert.equal(first.items[0].routed, true);
-  assert.equal(first.items[0].routeMode, 'steer');
-  const second = handledPage(base, 50, 50);
-  assert.equal(second.items.length, 11);
-  // 非法参数按默认/夹取处理。
-  assert.equal(handledPage(base, -1, 0).items.length, 50);
-  assert.equal(handledPage(base, 0, 999).limit, 200);
-  assert.equal(handledPage(base, 99999999).items.length, 0);
-});
-
-test('bridge handled action serves session rows and archive toggling', async () => {
+test('bridge no longer serves the handled tab while archive toggling remains', async () => {
   const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }), { autoComplete: false });
   runtime.state.settings.enabled = true;
   runtime.state.settings.precheckEnabled = false;
@@ -1283,14 +1170,10 @@ test('bridge handled action serves session rows and archive toggling', async () 
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
   }));
-  const page1 = await (await post({ action: 'handled', offset: 0, limit: 30 })).json();
-  assert.equal(page1.ok, true);
-  assert.equal(page1.total, 32);
-  assert.equal(page1.items.length, 30);
-  // 最新活动的记录排最前（direct 结算时刻最新），会话行带 sessionId。
-  assert.equal(page1.items[0].sessionId, 'session-1');
-  const page2 = await (await post({ action: 'handled', offset: 30, limit: 30 })).json();
-  assert.equal(page2.items.length, 2);
+  // v2.41：已处理 Tab 及其 bridge action 已移除；handled 账本仍保留用于去重与 Issue 映射。
+  const removed = await post({ action: 'handled', offset: 0, limit: 30 });
+  assert.equal(removed.status, 400);
+  assert.equal(Object.keys(runtime.state.handled).length, 32);
 
   // 归档切换：完成态会话可归档、可取消归档；状态随持久化记录保留。
   const record = runtime.state.handled.direct;
@@ -3992,9 +3875,6 @@ test('issue projection joins open issues with handled records and lists orphans'
   assert.equal(view.orphans[0].id, 'issue-555-77');
   assert.equal(view.orphans[0].missing, true);
   assert.equal(view.orphans[0].sessionId, 'session-old');
-  // 已处理投影带 Issue 来源标记。
-  const handled = handledProjection(state).find((row) => row.todoId === gone.id);
-  assert.equal(handled.source, 'issue');
 });
 
 test('normalizeState preserves issue cache and issue-shaped handled items', () => {
