@@ -213,6 +213,53 @@ test('steer works while the Leader is paused and never targets the Leader or hum
   for (const sessionId of ['leader', 'outside']) assert.equal((await invoke('session', { action: 'steer', taskId: 'issue-1-a', sessionId, text: 'x' }, agent())).ok, false, sessionId);
   assert.equal(calls.prompt.length, 1);
 });
+
+// ------------------------------------------------------------------ missing Leader
+
+test('a deleted Leader session resets the stored ID on a UI snapshot so a new Leader can be created', async () => {
+  const { setup, invoke, runtime, sessions, calls, item } = fixture();
+  await setup();
+  assert.equal(runtime.leaderState.enabled, true);
+  sessions.delete('leader');
+  const snapshot = await invoke('snapshot');
+  assert.equal(snapshot.ok, true, snapshot.error);
+  const state = runtime.leaderState;
+  assert.equal(state.sessionId, null); assert.equal(state.creation, null); assert.equal(state.enabled, false);
+  assert.equal(state.phase, 'not-created'); assert.equal(state.error, '');
+  assert.equal(snapshot.result.runState, 'not-created'); assert.equal(snapshot.result.sessionId, null);
+  assert.equal(state.items.length, 2, 'the journal survives');
+  assert.equal(item().status, 'standby');
+  assert.ok(state.audit.some((entry) => entry.action === 'leader-reset' && /session-missing/u.test(entry.detail)));
+  const created = await invoke('create');
+  assert.equal(created.ok, true, created.error);
+  assert.equal(runtime.leaderState.sessionId, 'leader-2'); assert.equal(calls.create.length, 2);
+});
+
+test('only a confirmed missing session resets; unverifiable and archived Leaders do not', async () => {
+  const { setup, invoke, runtime, sessions } = fixture();
+  await setup({ start: false });
+  runtime.leaderMissingCheckAt = 0;
+  sessions.delete('leader');
+  const orig = runtime.host.sessionState;
+  runtime.host.sessionState = async () => { throw new Error('timeout'); };
+  await invoke('snapshot');
+  assert.equal(runtime.leaderState.sessionId, 'leader', 'an unverifiable session is never reset');
+  runtime.host.sessionState = orig; runtime.leaderMissingCheckAt = 0;
+  sessions.set('leader', sessionState()); runtime.ctx.workspaceRegistry.archivedSessionIds.push('leader');
+  await invoke('snapshot');
+  assert.equal(runtime.leaderState.sessionId, 'leader', 'an archived Leader is not reset');
+});
+
+test('create on a deleted Leader resets instead of latching an error', async () => {
+  const { setup, invoke, runtime, sessions } = fixture();
+  await setup({ start: false });
+  sessions.delete('leader');
+  const result = await invoke('create');
+  assert.equal(result.ok, false); assert.match(result.error, /已不存在/u);
+  assert.equal(runtime.leaderState.sessionId, null); assert.equal(runtime.leaderState.phase, 'not-created');
+  assert.equal((await invoke('create')).ok, true);
+});
+
 // ------------------------------------------------------------------ handoff
 
 test('handoff of a running Leader switches sessions, keeps the journal, archives the old one and sends a handoff brief', async () => {

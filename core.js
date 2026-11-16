@@ -18,7 +18,7 @@ export const LEADER_REPORT_KINDS = Object.freeze(['progress', 'blocked', 'done',
 // GitLab writes are off by default; when on, every Issue/MR note the Leader posts ends with this signature line.
 export const DEFAULT_LEADER_COMMENT_SIGNATURE = '—— 由 AI Leader 代发';
 // Journal bounds for handoff history and the GitLab write ledger.
-export const LEADER_OPS_LIMITS = Object.freeze({ maxPreviousSessions: 20, maxComments: 200 });
+export const LEADER_OPS_LIMITS = Object.freeze({ maxPreviousSessions: 20, maxComments: 200, missingCheckMs: 10000 });
 const DEFAULT_LEADER_SETTINGS = Object.freeze({ model: null, autoEnrollNew: false, maxRunningWorkers: 3, archiveOnComplete: true,
   gitlabWrite: false, commentSignature: DEFAULT_LEADER_COMMENT_SIGNATURE });
 const LEADER_QUEUE_KINDS = new Set(['create', 'continue']);

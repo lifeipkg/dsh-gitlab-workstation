@@ -240,7 +240,10 @@ export const leaderMethods = {
         this.leaderState ??= initialLeaderState();
         switch (operation) {
           case 'workerReport': return await this.workerReportRecord(request, identity);
-          case 'snapshot': return this.leaderSnapshotRecord();
+          case 'snapshot':
+            // UI polls land here: a Leader session deleted in the Host resets the stored ID so the human can create a new one.
+            if (identity.kind === 'ui') await this.resetMissingLeader();
+            return this.leaderSnapshotRecord();
           case 'create': return await this.createLeaderRecord(request);
           case 'configure': return await this.configureLeader(request.settings ?? request);
           case 'start': return await this.startLeaderRecord();
@@ -412,6 +415,10 @@ export const leaderMethods = {
     }
     const inspection = await this.inspectLeaderSession(state.sessionId);
     if (state.enabled) return failure('请先暂停 Leader 再重新设置既有会话。');
+    // Confirmed deleted in the Host: clear the stored ID instead of latching an error; the human creates a new Leader.
+    if (inspection.status === 'missing' && await this.resetMissingLeader({ force: true })) {
+      return failure('原 Leader 会话已不存在，记录已重置；请重新点击“创建 Leader”。', this.leaderProjection());
+    }
     if (inspection.status !== 'active' || !quiet(inspection.state)) {
       state.phase = inspection.status === 'unknown' ? 'uncertain' : 'error'; state.error = inspection.error || 'Leader 会话忙碌/已归档，未改变设置。';
       await this.saveLeaderStrict(); return failure(state.error, this.leaderProjection());
@@ -830,6 +837,7 @@ export const leaderMethods = {
     const state = this.leaderState;
     if (!state?.enabled || this.stopping || this.leaderStorageFault) return success(this.leaderProjection());
     const leader = await this.inspectLeaderSession(state.sessionId);
+    if (leader.status === 'missing' && await this.resetMissingLeader({ force: true })) return failure('Leader 会话已不存在，记录已重置；请重新创建 Leader。', this.leaderProjection());
     if (leader.status !== 'active') { state.enabled = false; state.phase = leader.status === 'unknown' ? 'uncertain' : 'paused'; state.error = leader.error || 'Leader 已归档。'; await this.saveLeaderStrict(); return failure(state.error); }
     if (!this.leaderAdapterAvailable()) { state.enabled = false; state.phase = 'error'; state.error = 'unavailable：安全 Leader 适配器不可用。'; await this.saveLeaderStrict(); return failure(state.error); }
     // Observe with bounded concurrency; results are merged in item order so journals stay deterministic.

@@ -171,6 +171,38 @@ export const leaderOpsMethods = {
     });
   },
 
+  // ---------------------------------------------------------------- missing Leader
+
+  /**
+   * Called under the journal lock. When the recorded Leader session is confirmed gone from the Host
+   * (structured `session/not-found`, never a timeout or an archived session), clear the stored ID so the
+   * human can create a new Leader. Items, notes, queue, completed and audit stay. Nothing is created here.
+   * Returns true when the record was reset.
+   */
+  async resetMissingLeader({ force = false } = {}) {
+    const state = this.leaderState;
+    if (!state?.sessionId || !['created', 'ready'].includes(state.creation?.status)) return false;
+    if (this.stopping || this.leaderStorageFault) return false;
+    const now = Date.now();
+    if (!force && now - (this.leaderMissingCheckAt ?? 0) < LEADER_OPS_LIMITS.missingCheckMs) return false;
+    this.leaderMissingCheckAt = now;
+    const oldId = state.sessionId;
+    const inspection = await this.inspectLeaderSession(oldId);
+    if (inspection.status !== 'missing' || state.sessionId !== oldId) return false;
+    this.stopLeader();
+    state.enabled = false; state.epoch += 1; this.bumpCreationPolicy();
+    for (const item of state.items) if (item.status === 'watching') item.status = 'standby';
+    // Notifications addressed to the vanished Leader can never be delivered or confirmed.
+    for (const entry of state.outbox) if (entry.kind === 'notify' && (entry.status === 'prepared' || OPEN_DELIVERY.has(entry.status))) entry.status = 'cancelled';
+    state.sessionId = null; state.configuredModel = null; state.creation = null; state.phase = 'not-created';
+    // Leave `error` empty: a non-empty error keeps the UI from treating the snapshot as an authoritative not-created.
+    state.error = '';
+    this.leaderAudit('leader-reset', null, { from: oldId, reason: 'session-missing' });
+    await this.saveLeaderStrict();
+    try { await this.leaderAdapter?.refreshBindings?.(); } catch { /* best-effort; authorization is by journal sessionId */ }
+    return true;
+  },
+
   // ---------------------------------------------------------------- handoff
 
   /**
