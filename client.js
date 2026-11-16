@@ -11,7 +11,7 @@ window.__ModuleLoader__.load({
       subtitle: 'A compact workspace for GitLab tasks, sessions and human follow-up.',
       enable: 'Enable Todo auto-polling', disable: 'Pause Todo auto-polling', checkNow: 'Check Todos', checking: 'Checking…',
       todoPolling: 'Todo auto-polling', todoSettings: 'Todo settings', tasksGroup: 'Tasks', environmentGroup: 'Environment',
-      workstationViews: 'Workstation views', searchList: 'Search this list', searchLoaded: 'Search loaded records only',
+      workstationViews: 'Workstation views', searchList: 'Search this list',
       searchNoMatches: 'No loaded items match your search.', clearSearch: 'Clear search', searchResults: 'Matches / loaded',
       loadedRecords: 'Loaded / total', saving: 'Saving…', settingsSaved: 'Settings saved',
       modelSummary: 'Model', workspaceSummary: 'Workspace', autoWorkspaceShort: 'Auto', defaultModelShort: 'DSH default',
@@ -24,7 +24,7 @@ window.__ModuleLoader__.load({
       todoList: 'Todo', noTodos: 'No pending todos.',
       directMention: 'Comment @ me',
       sessionsTitle: 'Recent sessions', noSessions: 'No session has been dispatched yet.', autoDispatch: 'auto', manualDispatch: 'manual',
-      loadMore: 'Load more', sessionsError: 'Could not load recent sessions',
+      sessionsError: 'Could not load recent sessions',
       archiveSession: 'Archive', unarchiveSession: 'Unarchive',
       sessionStarting: 'Starting', sessionAccepted: 'Queued', waitProbesLabel: 'Wait probes: ',
       process: 'Process', reprocess: 'Process again', dispatched: 'Accepted', waiting: 'Waiting',
@@ -109,7 +109,6 @@ window.__ModuleLoader__.load({
       defaultPaused: 'Polling starts paused so installation never dispatches your real todos automatically.',
       inboxTitle: 'Inbox', inboxEmpty: 'Nothing is waiting for you.', inboxTakeover: 'Open session to take over',
       inboxAcknowledge: 'Mark handled', inboxPendingUnconfirmed: 'Legacy message unconfirmed', inboxError: 'Could not load the inbox',
-      handledTitle: 'Handled', handledEmpty: 'No handled records.',
       mergedIntoLabel: 'Merged into', pendingStarting: 'Dispatching', acceptedLabel: 'Accepted', outcomeSessionAccepted: 'Session accepted',
       replyPreview: 'Our reply',
       signatureLabel: 'Sign replies as AI-generated', signatureText: 'Signature text', signatureHint: 'When enabled, Todo session prompts require a one-line AI signature on GitLab replies. Applies to new Todo prompts only.',
@@ -125,11 +124,8 @@ window.__ModuleLoader__.load({
       leaderResumeHint: 'First handle any native approval or question yourself in the actual session. Resume only confirms your follow-up decision; the Host refuses while native input or work is pending.',
       leaderAutoEnrollConfirm: 'Apply this access to future sessions created from the Issue tab only. Existing sessions remain untouched.',
       leaderConfirm: 'Confirm access', leaderEnrolled: 'Managed', leaderEnroll: 'Manage with Leader', leaderUnenroll: 'Unmanage',
-      leaderPauseIssue: 'Pause Issue', leaderResumeIssue: 'Resume Issue', leaderManaged: 'Managed sessions',
-      leaderManagedEmpty: 'No sessions enrolled. Select an existing Issue session below; nothing is enrolled automatically.',
-      leaderHuman: 'Needs your decision', leaderHumanEmpty: 'No human follow-up reported.',
-      leaderNativeHuman: 'Handle native approvals and questions yourself in the actual session. Leader cannot approve or answer them; other Issues can continue.',
-      leaderHumanOpen: 'Open actual session', leaderError: 'Leader action failed', leaderSnapshotError: 'Could not read Leader status',
+      leaderManaged: 'Managed sessions',
+      leaderError: 'Leader action failed', leaderSnapshotError: 'Could not read Leader status',
       leaderInvalidResponse: 'Leader response could not be verified. Refresh status before granting access.',
       leaderRpcUnavailable: 'Authenticated browser connection is unavailable. Leader access changes cannot use HTTP; refresh the page or check the Host.',
       leaderCreateUncertain: 'Creation was sent but no session ID is confirmed. Refresh status or check the Host; do not create another Leader.',
@@ -141,10 +137,6 @@ window.__ModuleLoader__.load({
       leaderNeverStartedHint: 'Leader is created but supervision has not started. Until you click "Start supervision", the Leader session stays blank and DSH shows it as "New Session". This is not a failed creation; do not create another Leader.',
       leaderPausedHint: 'Supervision is paused. Managed Issues are on standby; start supervision again to let Leader report progress here.',
       leaderMainWindow: 'Leader is your main window: once supervision runs, it posts progress for every Issue session in its own conversation.',
-      leaderBudget: 'Actions', leaderResetBudget: 'Reset budget',
-      leaderResetBudgetHint: 'Grants this Issue a fresh action budget and lease. A paused Issue still needs an explicit resume.',
-      leaderNoteDecisions: 'Decisions', leaderNoteDeliverables: 'Deliverables',
-      leaderProvenanceUi: 'Added by you', leaderProvenanceCreated: 'Auto-enrolled', leaderProvenanceLeader: 'Opened by Leader',
       leaderAudit: 'Leader session actions', leaderAuditHint: 'Sessions Leader created, renamed, archived or switched models for, and replies it relayed. Display only.',
       leaderAuditCreate: 'Created session', leaderAuditEnroll: 'Took over session', leaderAuditRename: 'Renamed', leaderAuditArchive: 'Archived',
       leaderAuditModel: 'Switched model', leaderAuditRelay: 'Relayed your reply', leaderAuditTaskCreate: 'Opened ad-hoc task', leaderAuditTaskDismiss: 'Dismissed uncertain task',
@@ -189,7 +181,7 @@ window.__ModuleLoader__.load({
       subtitle: '集中处理 GitLab 任务、会话与需人工接手的事项。',
       enable: '启用 Todo 自动轮询', disable: '暂停 Todo 自动轮询', checkNow: '检查 Todo', checking: '检查中…',
       todoPolling: 'Todo 自动轮询', todoSettings: 'Todo 设置', tasksGroup: '任务', environmentGroup: '环境',
-      workstationViews: '工作台视图', searchList: '搜索当前列表', searchLoaded: '仅搜索已加载记录',
+      workstationViews: '工作台视图', searchList: '搜索当前列表',
       searchNoMatches: '已加载条目中没有匹配结果。', clearSearch: '清除搜索', searchResults: '匹配 / 已加载',
       loadedRecords: '已加载 / 总数', saving: '保存中…', settingsSaved: '设置已保存',
       modelSummary: '模型', workspaceSummary: '工作区', autoWorkspaceShort: '自动', defaultModelShort: 'DSH 默认',
@@ -202,7 +194,7 @@ window.__ModuleLoader__.load({
       todoList: 'Todo', noTodos: '暂无待处理 Todo。',
       directMention: '评论中 @ 我',
       sessionsTitle: '最近会话', noSessions: '还没有分派过会话。', autoDispatch: '自动', manualDispatch: '手动',
-      loadMore: '加载更多', sessionsError: '无法加载最近会话列表',
+      sessionsError: '无法加载最近会话列表',
       archiveSession: '归档', unarchiveSession: '取消归档',
       sessionStarting: '启动中', sessionAccepted: '已入队', waitProbesLabel: '等待探测：',
       process: '处理', reprocess: '重新处理', dispatched: '已接受', waiting: '待处理',
@@ -287,7 +279,6 @@ window.__ModuleLoader__.load({
       defaultPaused: '插件默认停用，避免安装后立即处理真实 Todo。',
       inboxTitle: '收件箱', inboxEmpty: '没有等待你处理的 Todo。', inboxTakeover: '打开会话接手',
       inboxAcknowledge: '我已处理', inboxPendingUnconfirmed: '旧消息未确认', inboxError: '无法加载收件箱',
-      handledTitle: '已处理', handledEmpty: '暂无处理记录。',
       mergedIntoLabel: '合并进', pendingStarting: '投递中', acceptedLabel: '接受于', outcomeSessionAccepted: '会话处理',
       replyPreview: '我方回复',
       signatureLabel: '回复署名（AI 代发标识）', signatureText: '署名文本', signatureHint: '开启后，Todo 会话提示词会要求 GitLab 回复末尾添加 AI 署名。只影响之后派发的 Todo 提示词。',
@@ -303,11 +294,8 @@ window.__ModuleLoader__.load({
       leaderResumeHint: '请先在实际会话入口亲自处理原生审批或问答。恢复仅确认你的续办决策；存在未决原生输入或正在执行时 Host 会拒绝恢复。',
       leaderAutoEnrollConfirm: '仅对之后从 Issue 页创建的会话授予此访问权限；既有会话保持不变。',
       leaderConfirm: '确认授权', leaderEnrolled: '已托管', leaderEnroll: '交给 Leader 托管', leaderUnenroll: '解除托管',
-      leaderPauseIssue: '暂停此 Issue', leaderResumeIssue: '恢复此 Issue', leaderManaged: '纳管会话',
-      leaderManagedEmpty: '暂无纳管会话。可在下方明确选入已有 Issue 会话，不会自动选入。',
-      leaderHuman: '需人类决策', leaderHumanEmpty: '暂无需人工接手事项。',
-      leaderNativeHuman: '原生审批与问答只能由你在实际会话入口处理；Leader 不能审批或代答，其他 Issue 可继续。',
-      leaderHumanOpen: '打开实际会话', leaderError: 'Leader 操作失败', leaderSnapshotError: '无法读取 Leader 状态',
+      leaderManaged: '纳管会话',
+      leaderError: 'Leader 操作失败', leaderSnapshotError: '无法读取 Leader 状态',
       leaderInvalidResponse: '无法核验 Leader 响应；请先刷新状态再授予访问权限。',
       leaderRpcUnavailable: '已认证浏览器连接不可用。Leader 权限变更不会回退到 HTTP；请刷新页面或核查 Host。',
       leaderCreateUncertain: '已发送创建请求，但尚未确认会话 ID。请刷新状态或核查 Host，不要重复创建 Leader。',
@@ -319,10 +307,6 @@ window.__ModuleLoader__.load({
       leaderNeverStartedHint: 'Leader 已创建，但尚未启动托管。点击“启动托管”之前，Leader 会话是空白的，DSH 会把它显示为“New Session”。这不是创建失败，请不要重复创建 Leader。',
       leaderPausedHint: '托管已暂停，纳管的 Issue 处于待命状态；重新启动托管后，Leader 会继续在其会话里汇报进度。',
       leaderMainWindow: 'Leader 会话是你的主窗口：托管运行时，它会在自己的对话里汇报每个 Issue 会话的进度。',
-      leaderBudget: '推进次数', leaderResetBudget: '重置预算',
-      leaderResetBudgetHint: '为该 Issue 重新发放推进预算和托管时限；已暂停的 Issue 仍需显式恢复。',
-      leaderNoteDecisions: '决定', leaderNoteDeliverables: '产出',
-      leaderProvenanceUi: '你选入', leaderProvenanceCreated: '自动纳管', leaderProvenanceLeader: 'Leader 开启',
       leaderAudit: 'Leader 会话操作', leaderAuditHint: 'Leader 创建、重命名、归档、换模型的会话，以及它转达的回复。仅供查看。',
       leaderAuditCreate: '创建会话', leaderAuditEnroll: '接管会话', leaderAuditRename: '重命名', leaderAuditArchive: '归档',
       leaderAuditModel: '更换模型', leaderAuditRelay: '转达你的回复', leaderAuditTaskCreate: '开启临时任务', leaderAuditTaskDismiss: '放弃不确定的临时任务',
@@ -702,7 +686,6 @@ window.__ModuleLoader__.load({
       { id: 'inbox', label: 'inboxTitle', group: 'tasksGroup' },
       { id: 'todos', label: 'todoList', group: 'tasksGroup' },
       { id: 'issues', label: 'issuesTitle', group: 'tasksGroup' },
-      { id: 'handled', label: 'handledTitle', group: 'tasksGroup' },
       { id: 'workspaces', label: 'workspacesTitle', group: 'environmentGroup' },
       { id: 'logs', label: 'logsTitle', group: 'environmentGroup' },
     ];
@@ -763,7 +746,6 @@ window.__ModuleLoader__.load({
       standby: 'leaderStandby', cold: 'leaderCold' };
     const LEADER_RUN_STATES = ['error', 'creation-uncertain', 'not-created', 'setup-incomplete', 'delivery-uncertain', 'running', 'paused', 'never-started'];
 
-    const LEADER_PROVENANCE_LABELS = { ui: 'leaderProvenanceUi', created: 'leaderProvenanceCreated', leader: 'leaderProvenanceLeader' };
     const LEADER_AUDIT_LABELS = { 'session-create': 'leaderAuditCreate', 'session-enroll': 'leaderAuditEnroll', 'session-rename': 'leaderAuditRename',
       'session-archive': 'leaderAuditArchive', 'session-model': 'leaderAuditModel', 'relay-reply': 'leaderAuditRelay',
       'task-create': 'leaderAuditTaskCreate', 'task-dismiss': 'leaderAuditTaskDismiss',
@@ -773,15 +755,6 @@ window.__ModuleLoader__.load({
       'comment-uncertain': 'leaderAuditCommentUncertain' };
     const LEADER_REPORT_LABELS = { progress: 'leaderReportProgress', blocked: 'leaderReportBlocked', done: 'leaderReportDone',
       question: 'leaderReportQuestion', message: 'leaderReportMessage' };
-
-    /** Leader's structured Issue notes as short display lines (untrusted text, rendered as plain text). */
-    function leaderNoteLines(notes, t) {
-      if (!notes) return [];
-      const colonText = t('colon') || ': ';
-      // stage / next / waitingOn are already folded into the Host-written summary line.
-      return [['leaderNoteDecisions', notes.decisions.join('；')], ['leaderNoteDeliverables', notes.deliverables.join('；')]]
-        .filter(([, value]) => value).map(([key, value]) => `${t(key)}${colonText}${value}`);
-    }
 
     /** Audit detail is a Host-written JSON string; show only the human-meaningful field. */
     function leaderAuditDetail(detail) {
@@ -914,11 +887,6 @@ window.__ModuleLoader__.load({
       return Boolean(projection && !projection.enabled && validLeaderSessionId(knownSessionId)
         && projection.sessionId === knownSessionId
         && (['error', 'uncertain'].includes(projection.phase) || (projection.phase === 'paused' && projection.error)));
-    }
-
-    function leaderHumanItems(projection) {
-      return (projection?.items || []).filter((item) => item.status === 'needs-human'
-        || item.alerts.some((alert) => alert.status === 'pending'));
     }
 
     function PanelIcon({ size = 20 }) {
@@ -1057,47 +1025,6 @@ window.__ModuleLoader__.load({
         });
         return () => { disposed = true; };
       }, []);
-
-      // 已处理（分页，v2.29 起含会话入口/归档）：规则跳过、预检跳过、会话派发与
-      // 投递中记录全部在列；打开期间每 10s 静默刷新已加载范围（刷新不重置已翻页）。
-      const [handledData, setHandledData] = React.useState(null);
-      const [handledError, setHandledError] = React.useState(null);
-      const [handledBusy, setHandledBusy] = React.useState(false);
-      const handledInFlight = React.useRef(false);
-      const handledDataRef = React.useRef(null);
-      const applyHandledPage = (page, append) => {
-        const previous = handledDataRef.current;
-        const items = append && previous ? [...previous.items, ...page.items] : page.items;
-        const next = { ...page, items };
-        handledDataRef.current = next;
-        setHandledData(next);
-      };
-      const fetchHandled = async (append) => {
-        if (handledInFlight.current) return;
-        handledInFlight.current = true;
-        setHandledBusy(true);
-        try {
-          const loaded = handledDataRef.current?.items?.length ?? 0;
-          const request = append
-            ? { offset: loaded, limit: 50 }
-            : { offset: 0, limit: Math.max(50, loaded) };
-          applyHandledPage(await post('handled', request), append);
-          setHandledError(null);
-        } catch (cause) {
-          setHandledError(cause.message);
-        } finally {
-          handledInFlight.current = false;
-          setHandledBusy(false);
-        }
-      };
-      const refreshHandled = () => fetchHandled(false);
-      React.useEffect(() => {
-        if (activeTab !== 'handled') return undefined;
-        void refreshHandled();
-        const timer = setInterval(() => void refreshHandled(), 10000);
-        return () => clearInterval(timer);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [activeTab]);
 
       // 收件箱（需人工待办）：打开期间每 10s 刷新；确认动作后立即重拉。
       const [inboxData, setInboxData] = React.useState(null);
@@ -1454,9 +1381,7 @@ window.__ModuleLoader__.load({
           }
         }), generation, routeGeneration, closeRouteTargets).then((done) => {
           if (!done) return;
-          // v2.29 遗留笔误：refreshSessions 已不存在；路由成功的记录进已处理投影，
-          // Issue 条目再顺带刷新 Issue 面板。
-          void refreshHandled();
+          // Issue 条目路由成功后顺带刷新 Issue 面板。
           if (routeTodo?.source === 'issue') void fetchIssues(false);
         });
       };
@@ -1549,13 +1474,6 @@ window.__ModuleLoader__.load({
         return perform(`dispatch:${issue.id}`, () => post('dispatch', { id: issue.id }))
           .then((done) => { if (done) void fetchIssues(false); });
       };
-      // 快捷切换归档状态：成功后连同已处理页一起刷新。
-      const toggleSessionArchive = (record) => perform(`archive:${record.sessionId}`, () => post('setSessionArchived', {
-        sessionId: record.sessionId,
-        archived: record.archived !== true,
-      })).then((done) => {
-        if (done) void refreshHandled();
-      });
       const settings = snapshot?.settings;
       // 与 task-board 的 model-options 实现一致：直接遍历目录 groups，不按 routableProviders 二次过滤。
       const modelGroups = (Array.isArray(modelCatalog?.groups) ? modelCatalog.groups : [])
@@ -1596,7 +1514,6 @@ window.__ModuleLoader__.load({
       const leaderCanGrant = leaderFresh && !leaderBusy && canGrantLeaderAccess(leaderProjection);
       const leaderCanConfigure = leaderFresh && !leaderBusy && leaderProjection && !['error', 'uncertain'].includes(leaderProjection.phase);
       const leaderItems = leaderProjection?.items ?? [];
-      const leaderHuman = leaderHumanItems(leaderProjection);
       const leaderRunState = leaderProjection?.runState || '';
       const leaderPhaseLabel = !leaderFresh ? t('leaderUncertain') : leaderProjection?.enabled && leaderProjection.phase === 'ready'
         ? t('enabled') : leaderRunState === 'never-started' ? t('leaderNeverStartedPhase')
@@ -1611,19 +1528,6 @@ window.__ModuleLoader__.load({
       const leaderUncertainComments = (leaderProjection?.comments ?? []).filter((entry) => entry.status === 'uncertain');
       const leaderCanHandoff = leaderFresh && !leaderBusy && Boolean(leaderView.sessionId) && leaderProjection?.creation?.status === 'ready';
       const leaderCreationUnresolved = leaderFresh && leaderRunState === 'creation-uncertain';
-      const leaderBudgetSpent = (item) => item.actions !== null && item.maxActions !== null && item.actions >= item.maxActions
-        || (item.expiresAt !== null && item.expiresAt <= Date.now());
-      const leaderItemActions = (item) => h('div', { className: 'gta-todo-actions' },
-        item.sessionId && h(Button, { onClick: (event) => openManagedIssue(item, event.currentTarget) }, t('openSession')),
-        ['watching', 'running', 'needs-human', 'standby', 'cold'].includes(item.status) && !item.paused && h(Button, { disabled: !leaderFresh || Boolean(leaderBusy),
-          onClick: () => { void runLeader('pauseIssue', { taskId: item.taskId, sessionId: item.sessionId }); } }, t('leaderPauseIssue')),
-        leaderBudgetSpent(item) && h(Button, { disabled: !leaderFresh || Boolean(leaderBusy) || !item.sessionId, title: t('leaderResetBudgetHint'),
-          onClick: () => { void runLeader('resetIssueBudget', { taskId: item.taskId, sessionId: item.sessionId }); } }, t('leaderResetBudget')),
-        (item.paused || ['paused', 'needs-human'].includes(item.status)) && h(Button, { disabled: !leaderCanGrant || !item.sessionId,
-          onClick: () => confirmLeaderAccess('resumeIssue', { taskId: item.taskId, sessionId: item.sessionId }, item.title) }, t('leaderResumeIssue')),
-        h(Button, { disabled: !leaderFresh || Boolean(leaderBusy),
-          onClick: () => { void runLeader('unenroll', { taskId: item.taskId, ...(item.sessionId ? { sessionId: item.sessionId } : {}) }); } }, t('leaderUnenroll')),
-      );
       const issueLeaderControl = (issue) => {
         if (!issue.sessionId) return null;
         const item = leaderItemForSession(leaderProjection, issue.id, issue.sessionId);
@@ -1631,7 +1535,7 @@ window.__ModuleLoader__.load({
           disabled: Boolean(leaderBusy) || (item ? !leaderFresh : !leaderCanGrant),
           title: item ? t('leaderEnrolled') : t('leaderScope'),
           onClick: () => item ? void runLeader('unenroll', { taskId: String(issue.id), sessionId: issue.sessionId })
-            : confirmLeaderAccess('enroll', { taskId: String(issue.id), sessionId: issue.sessionId }, issue.title),
+            : void runLeader('enroll', { taskId: String(issue.id), sessionId: issue.sessionId }),
         }, item ? t('leaderUnenroll') : t('leaderEnroll'));
       };
       // 工作区下拉：值仍是工作区路径（sessionCwd 语义不变）；比较忽略大小写/斜杠差异。
@@ -1667,18 +1571,15 @@ window.__ModuleLoader__.load({
       const visibleInbox = filterWorkstationItems(inboxData, listQuery);
       const visibleIssues = filterWorkstationItems(issuesData?.items, listQuery);
       const visibleOrphans = filterWorkstationItems(issuesData?.orphans, listQuery);
-      const visibleHandled = filterWorkstationItems(handledData?.items, listQuery);
       const searchableList = {
         todos: { loaded: snapshot?.todos.length ?? 0, matches: visibleTodos.length, ready: Boolean(snapshot) },
         inbox: { loaded: inboxData?.length ?? 0, matches: visibleInbox.length, ready: inboxData !== null },
         issues: { loaded: (issuesData?.items.length ?? 0) + (issuesData?.orphans.length ?? 0), matches: visibleIssues.length + visibleOrphans.length, ready: issuesData !== null },
-        handled: { loaded: handledData?.items.length ?? 0, matches: visibleHandled.length, ready: handledData !== null },
       }[activeTab];
       const tabCounts = {
         inbox: snapshot?.closure?.needsHuman ?? 0,
         todos: snapshot?.todos.length ?? 0,
         issues: issuesData?.items.length ?? snapshot?.issueCount ?? 0,
-        handled: handledData?.total ?? snapshot?.handledCount ?? 0,
         workspaces: workspaceOptions.length,
         logs: logData?.items.length ?? 0,
       };
@@ -1913,16 +1814,16 @@ window.__ModuleLoader__.load({
         ),
         snapshot && searchableList && h('div', { className: 'gta-list-tools' },
           h('label', { className: 'gta-list-search' },
-            h('span', null, activeTab === 'handled' ? t('searchLoaded') : t('searchList')),
+            h('span', null, t('searchList')),
             h('input', {
               type: 'search', value: listQuery, disabled: !searchableList.ready,
-              placeholder: activeTab === 'handled' ? t('searchLoaded') : t('searchList'),
+              placeholder: t('searchList'),
               onChange: (event) => setListSearches({ ...listSearches, [activeTab]: event.target.value }),
             }),
           ),
           listQuery && h(Button, { onClick: () => setListSearches({ ...listSearches, [activeTab]: '' }) }, t('clearSearch')),
           searchableList.ready && h('span', { className: 'gta-muted', role: 'status' },
-            `${listQuery ? t('searchResults') : t('loadedRecords')}${colon()}${listQuery ? `${searchableList.matches}/${searchableList.loaded}` : `${searchableList.loaded}/${activeTab === 'handled' ? handledData.total : searchableList.loaded}`}`),
+            `${listQuery ? t('searchResults') : t('loadedRecords')}${colon()}${listQuery ? `${searchableList.matches}/${searchableList.loaded}` : searchableList.loaded}`),
         ),
         activeTab === 'inbox' && snapshot && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-inbox`, 'aria-labelledby': `${PANEL_ID}-tab-inbox`, tabIndex: 0 },
           inboxError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, `${t('inboxError')}${colon()}${inboxError}`),
@@ -2030,7 +1931,6 @@ window.__ModuleLoader__.load({
               h(Button, { expanded: leaderOpen, controls: `${PANEL_ID}-leader-body`,
                 onClick: () => { setLeaderOpen(!leaderOpen); if (leaderOpen) setLeaderConfirm(null); } },
               `${leaderOpen ? '▾' : '▸'} ${t('leaderTitle')} · ${leaderPhaseLabel} · ${t('leaderManaged')} ${leaderItems.length}`),
-              leaderHuman.length > 0 && h(Button, { className: 'gta-needs-human', onClick: () => setLeaderOpen(true) }, `${t('leaderHuman')} ${leaderHuman.length}`),
               h('label', { className: 'gta-check', title: t('leaderAutoEnrollHint') }, h('input', {
                 type: 'checkbox', checked: leaderSettings.autoEnrollNew === true, disabled: !leaderCanConfigure,
                 onChange: (event) => event.target.checked
@@ -2141,28 +2041,6 @@ window.__ModuleLoader__.load({
                   h(Button, { onClick: () => setLeaderConfirm(null) }, t('cancel')),
                 ),
               ),
-              h('div', { className: 'gta-section-title gta-subsection-title' }, h('h2', null, t('leaderManaged')), h('span', { className: 'gta-muted' }, leaderItems.length)),
-              leaderItems.length === 0 ? h('p', { className: 'gta-muted' }, t('leaderManagedEmpty'))
-                : h('div', { className: 'gta-list gta-leader-list', role: 'list', 'aria-label': t('leaderManaged') }, leaderItems.map((item) =>
-                  h('article', { className: 'gta-todo', role: 'listitem', key: `${item.taskId}:${item.sessionId}` },
-                    h('div', { className: 'gta-todo-main' },
-                      h('div', { className: 'gta-todo-title' }, h('span', null, item.title || item.taskId),
-                        h('span', { className: `gta-tag ${['needs-human', 'unknown', 'missing'].includes(item.status) ? 'gta-tag-attention' : 'gta-tag-neutral'}` }, t(LEADER_STATUS_LABELS[item.status])),
-                        item.kind === 'task' && h('span', { className: 'gta-tag gta-tag-neutral' }, t('leaderTaskTag')),
-                        LEADER_PROVENANCE_LABELS[item.provenance] && h('span', { className: 'gta-tag gta-tag-neutral' }, t(LEADER_PROVENANCE_LABELS[item.provenance]))),
-                      item.summary && h('div', { className: 'gta-muted gta-meta gta-leader-summary' }, item.summary),
-                      leaderNoteLines(item.notes, t).map((line) => h('div', { key: line, className: 'gta-muted gta-meta' }, line)),
-                      item.blockedBy.length > 0 && h('div', { className: 'gta-muted gta-attention gta-meta' }, `${t('leaderBlockedBy')}${colon()}${item.blockedBy.join('、')}`),
-                      item.lastReport && h('div', { className: 'gta-muted gta-meta', title: t('leaderReportsHint') },
-                        `${t('leaderLastReport')} [${t(LEADER_REPORT_LABELS[item.lastReport.kind])}]${colon()}${item.lastReport.text.slice(0, 200)}`),
-                      item.lastTodo && h('div', { className: 'gta-muted gta-meta' },
-                        `${t('leaderLastTodo')}${colon()}${[item.lastTodo.author && `@${item.lastTodo.author}`, item.lastTodo.title].filter(Boolean).join(' · ')}`),
-                      item.commentCount > 0 && h('div', { className: 'gta-muted gta-meta' }, `${t('leaderComments')} ${item.commentCount}/${item.maxComments ?? 10}`),
-                      item.actions !== null && item.maxActions !== null && h('div', { className: 'gta-muted gta-meta' },
-                        `${t('leaderBudget')} ${item.actions}/${item.maxActions}${item.expiresAt ? ` · ${formatTime(item.expiresAt, '')}` : ''}`),
-                      item.error && h('div', { className: 'gta-muted gta-attention gta-meta' }, item.error),
-                    ), leaderItemActions(item),
-                  ))),
               leaderUncertainTasks.length > 0 && h('div', { className: 'gta-banner gta-warn', role: 'status' },
                 h('strong', null, t('leaderTasksUncertain')), h('p', { className: 'gta-muted' }, t('leaderTasksUncertainHint')),
                 leaderUncertainTasks.map((task) => h('div', { key: task.taskId, className: 'gta-form-actions' },
@@ -2207,20 +2085,6 @@ window.__ModuleLoader__.load({
                   h('div', { key: `${entry.at}:${index}`, role: 'listitem', className: 'gta-muted gta-meta' },
                     [entry.at ? formatTime(entry.at, '') : '', LEADER_AUDIT_LABELS[entry.action] ? t(LEADER_AUDIT_LABELS[entry.action]) : entry.action,
                       entry.taskId, leaderAuditDetail(entry.detail)].filter(Boolean).join(' · '))))),
-              h('div', { className: 'gta-section-title gta-subsection-title' }, h('h2', null, t('leaderHuman')), h('span', { className: 'gta-muted' }, leaderHuman.length)),
-              h('p', { className: 'gta-muted' }, t('leaderNativeHuman')),
-              h('p', { className: 'gta-muted' }, t('leaderRelayHint')),
-              leaderHuman.length === 0 ? h('p', { className: 'gta-muted' }, t('leaderHumanEmpty'))
-                : h('div', { className: 'gta-list gta-leader-list', role: 'list', 'aria-label': t('leaderHuman') }, leaderHuman.map((item) =>
-                  h('article', { className: 'gta-todo', role: 'listitem', key: `human:${item.taskId}:${item.sessionId}` },
-                    h('div', { className: 'gta-todo-main' }, h('div', { className: 'gta-todo-title' }, item.title || item.taskId),
-                      item.alerts.filter((alert) => alert.status === 'pending').map((alert, index) =>
-                        h('div', { key: alert.id || index, className: 'gta-muted gta-meta gta-leader-summary' }, alert.question,
-                          alert.createdAt && h('span', null, ` · ${formatTime(alert.createdAt, '')}`))),
-                      item.summary && h('div', { className: 'gta-muted gta-meta' }, item.summary),
-                    ),
-                    item.sessionId && h(Button, { onClick: (event) => openManagedIssue(item, event.currentTarget) }, t('leaderHumanOpen')),
-                  ))),
             ),
           ),
           h('div', { className: 'gta-issue-toolbar' },
@@ -2336,58 +2200,6 @@ window.__ModuleLoader__.load({
                   issueLeaderControl(issue),
                 ),
               ))),
-        ),
-        activeTab === 'handled' && snapshot && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-handled`, 'aria-labelledby': `${PANEL_ID}-tab-handled`, tabIndex: 0 },
-          h('div', { className: 'gta-section-title' }, h('span', { className: 'gta-muted' },
-            handledData ? `${handledData.items.length}/${handledData.total}` : `${snapshot.handledCount}`)),
-          handledError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, `${t('handledTitle')}${colon()}${handledError}`),
-          !handledData && !handledError && h('div', { className: 'gta-empty' }, t('loading')),
-          handledData && handledData.total === 0 && h('div', { className: 'gta-empty' }, t('handledEmpty')),
-          handledData && handledData.items.length > 0 && visibleHandled.length === 0 && h('div', { className: 'gta-empty', role: 'status' }, t('searchNoMatches')),
-          visibleHandled.length > 0 && h('div', { className: 'gta-list gta-scroll-list', role: 'list', 'aria-label': t('handledTitle') }, visibleHandled.map((item) =>
-                h('article', { role: 'listitem', className: 'gta-todo', key: `${item.todoId}-${item.round}` },
-                  h('div', { className: 'gta-todo-main' },
-                    h('div', { className: 'gta-todo-title' },
-                      item.url
-                        ? h('a', { href: item.url, target: '_blank', rel: 'noreferrer' }, item.title)
-                        : h('span', null, item.title),
-                      h('span', { className: `gta-tag ${recordStatusClass(item)}` }, handledStatusLabel(item, t)),
-                      routedLabel(item, t) && h('span', { className: 'gta-tag gta-tag-routed' }, routedLabel(item, t)),
-                      item.closure && handledStatusLabel(item, t) !== closureLabel(item.closure, t)
-                        && h('span', { className: `gta-tag ${recordStatusClass({ closure: item.closure })}` }, closureLabel(item.closure, t)),
-                      item.source === 'issue' && h('span', { className: 'gta-tag gta-tag-mention' }, t('issueTag')),
-                      h('span', { className: 'gta-tag gta-tag-mention' }, item.automatic ? t('autoDispatch') : t('manualDispatch')),
-                      item.archived && h('span', { className: 'gta-tag gta-tag-success' }, t('sessionArchived')),
-                    ),
-                    h('div', { className: 'gta-muted gta-meta' },
-                      [`#${item.todoId}`, item.project,
-                        item.round > 1 && `${t('roundLabel')} ${item.round}`,
-                        item.mergedInto ? `${t('mergedIntoLabel')} #${item.mergedInto}` : '',
-                        item.skipReason, item.reportSummary, item.closureNote,
-                        item.sessionTitle && item.sessionId ? item.sessionTitle : '',
-                        item.executionError,
-                        item.archiveError,
-                        item.waitProbes > 0 ? `${t('waitProbesLabel')}${item.waitProbes}` : '',
-                        item.closure === 'follow-up' && item.nextAttemptAt ? `${t('nextAttempt')} ${formatTime(item.nextAttemptAt, '')}` : '',
-                        `${item.completedAt ? formatTime(item.completedAt, '') : `${t('acceptedLabel')} ${formatTime(item.acceptedAt, '')}`}`,
-                      ].filter(Boolean).join(' · ')),
-                    item.excerpt && h('div', { className: 'gta-muted gta-meta' },
-                      `${item.author ? `@${item.author}${colon()}` : ''}${item.excerpt}`),
-                    h(ReplyPreview, { reply: item.lastReply, t }),
-                  ),
-                  h('div', { className: 'gta-todo-actions' },
-                    // 有会话的记录：会话入口 + 归档切换（原「最近会话」Tab 的动作并入这里）；
-                    // 无会话的记录（规则/预检跳过）：判定原因已在上面的 skipReason 行展示。
-                    item.sessionId && h(Button, { onClick: (event) => openSession({ sessionId: item.sessionId, taskId: item.todoId, title: item.title, url: item.url, manualHandoffs: item.manualHandoffs }, event.currentTarget) }, t('openSession')),
-                    item.sessionId && item.executionStatus !== 'starting' && item.routed !== true && h(Button, {
-                      disabled: busySet.has(`archive:${item.sessionId}`) || (item.archived !== true && item.executionStatus === 'running'),
-                      onClick: () => toggleSessionArchive(item),
-                    }, busySet.has(`archive:${item.sessionId}`) ? '…' : (item.archived ? t('unarchiveSession') : t('archiveSession'))),
-                  ),
-                ),
-              )),
-          handledData && handledData.items.length < handledData.total && h('div', { className: 'gta-load-more' },
-            h(Button, { disabled: Boolean(handledBusy), onClick: () => fetchHandled(true) }, handledBusy ? '…' : t('loadMore'))),
         ),
         activeTab === 'workspaces' && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-workspaces`, 'aria-labelledby': `${PANEL_ID}-tab-workspaces`, tabIndex: 0 },
           workspaceError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, `${t('workspacesError')}${colon()}${workspaceError}`),
