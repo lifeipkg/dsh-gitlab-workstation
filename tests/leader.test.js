@@ -1215,3 +1215,97 @@ test('orchestration journal fields migrate from older journals and survive norma
   const projection = buildLeaderProjection(restored);
   assert.deepEqual(projection.queue[0], { id: 'q1', kind: 'continue', taskId: 't', sessionId: 's', position: 1, title: '', reason: 'r', queuedAt: 1 });
 });
+// v2.42 Leader autonomy: list_issues + manage, and no UI-only human gates for truncation/native input.
+test('list_issues shows every assigned Issue with enrollment state and optional refresh', async () => {
+  const { runtime, setup, invoke, agent } = fixture(); await setup();
+  runtime.state.issues.push({ id: 'issue-1-171', title: 'Fresh issue', source: 'issue', url: 'https://gitlab.test/project/-/issues/171', project: 'project', iid: '171', projectId: '1' });
+  let refreshed = 0; runtime.refreshIssues = async () => { refreshed += 1; };
+  const listed = await invoke('listIssues', { refresh: true }, agent()); assert.equal(listed.ok, true, listed.error);
+  assert.equal(refreshed, 1); assert.equal(listed.result.refreshed, true);
+  const byId = Object.fromEntries(listed.result.issues.map((entry) => [entry.taskId, entry]));
+  assert.equal(byId['issue-1-a'].enrolled, true); assert.equal(byId['issue-1-b'].enrolled, false); assert.equal(byId['issue-1-b'].sessionId, 'worker-b');
+  assert.equal(byId['issue-1-171'].sessionId, null); assert.equal(byId['issue-1-171'].iid, '171'); assert.match(byId['issue-1-171'].next, /新建/);
+  runtime.refreshIssues = async () => { throw new Error('glab timeout'); };
+  const failed = await invoke('listIssues', { refresh: true }, agent());
+  assert.equal(failed.ok, true); assert.equal(failed.result.refreshed, false); assert.match(failed.result.refreshError, /glab timeout/);
+  assert.equal((await invoke('listIssues', {}, createLeaderAgentCaller({ sessionId: 'outside', agentId: 'x' }))).ok, false);
+  assert.equal((await invoke('listIssues', {})).ok, false); // UI caller has no reason to use the agent tool.
+});
+
+test('manage lets the Leader enroll, pause, resume, reset budget and unenroll with audit', async () => {
+  const { runtime, setup, invoke, issue, agent } = fixture(); await setup();
+  const manage = (action, extra = {}) => invoke('manage', { action, ...extra }, agent());
+  const enrolled = await manage('enroll', { ...issue('b'), reason: '人类要求纳管' }); assert.equal(enrolled.ok, true, enrolled.error);
+  const item = runtime.leaderState.items.find((entry) => entry.taskId === 'issue-1-b');
+  assert.equal(item.provenance.kind, 'leader'); assert.equal(item.status, 'watching');
+  assert.equal((await manage('pause', issue('b'))).ok, true); assert.equal(item.paused, true);
+  item.actions = 20;
+  assert.equal((await manage('resume', issue('b'))).ok, false);
+  assert.equal((await manage('reset_budget', issue('b'))).ok, true); assert.equal(item.actions, 0);
+  const resumed = await manage('resume', issue('b')); assert.equal(resumed.ok, true, resumed.error); assert.equal(item.paused, false);
+  assert.match(resumed.result.note, /read_issue/);
+  assert.equal((await manage('unenroll', issue('b'))).ok, true);
+  assert.equal(runtime.leaderState.items.some((entry) => entry.taskId === 'issue-1-b'), false);
+  assert.equal((await manage('grant')).ok, false);
+  assert.deepEqual(auditActions(runtime).filter((action) => action.startsWith('manage-')), ['manage-enroll', 'manage-pause', 'manage-reset_budget', 'manage-resume', 'manage-unenroll']);
+  assert.equal(runtime.leaderState.audit.find((entry) => entry.action === 'manage-enroll').detail.includes('人类要求纳管'), true);
+});
+
+test('manage start renews an expired run without a new bootstrap; pause_leader stops it', async () => {
+  const { runtime, setup, invoke, agent, calls } = fixture(); await setup();
+  runtime.leaderState.expiresAt = Date.now() - 1; await runtime.reconcileLeader();
+  assert.equal(runtime.leaderState.enabled, false); assert.match(calls.notify.at(-1).body, /gitlab_leader_manage start|自动托管即将暂停/);
+  const notices = calls.notify.length;
+  const started = await invoke('manage', { action: 'start', reason: '人类让我继续' }, agent()); assert.equal(started.ok, true, started.error);
+  assert.equal(runtime.leaderState.enabled, true); assert.ok(runtime.leaderState.expiresAt > Date.now() + 23 * 3600000);
+  assert.equal(runtime.leaderState.wakeups, 0); assert.equal(runtime.leaderState.items[0].status, 'watching');
+  assert.equal(calls.notify.length, notices); // the Leader is mid-turn: no bootstrap brief.
+  const paused = await invoke('manage', { action: 'pause_leader' }, agent()); assert.equal(paused.ok, true);
+  assert.equal(runtime.leaderState.enabled, false);
+});
+
+test('manage resolve_delivery is recorded as the Leader and never resends', async () => {
+  const { runtime, setup, invoke, agent, calls, advance, lastAdvance } = fixture(); await setup();
+  runtime.leaderAdapter.deliver = async (request) => { calls.deliver.push(copy(request)); throw new Error('socket closed'); };
+  await advance(); const entry = lastAdvance(); assert.equal(entry.status, 'uncertain');
+  const before = calls.deliver.length;
+  const resolved = await invoke('manage', { action: 'resolve_delivery', requestId: entry.requestId, outcome: 'delivered' }, agent());
+  assert.equal(resolved.ok, true, resolved.error);
+  assert.equal(entry.status, 'sent'); assert.equal(entry.resolvedBy, 'leader'); assert.equal(calls.deliver.length, before);
+  assert.equal((await invoke('manage', { action: 'resolve_delivery', requestId: entry.requestId, outcome: 'delivered' }, agent())).ok, false);
+});
+
+test('log truncation no longer pauses an Issue and clears after a clean observation', async () => {
+  const { runtime, setup, invoke, issue, agent, sessions, advance } = fixture(); await setup();
+  const normal = runtime.leaderAdapter.observe;
+  runtime.leaderAdapter.observe = async () => ({ cursor: 10, highWater: 10, events: [], truncated: true, epoch: 'live-log' });
+  sessions.set('worker-a', sessionState({ cursor: 10 }));
+  await runtime.reconcileLeader();
+  const item = runtime.leaderState.items[0];
+  assert.equal(item.paused, false); assert.match(item.error, /自动清除/);
+  runtime.leaderAdapter.observe = normal; sessions.set('worker-a', sessionState({ cursor: 12 }));
+  await runtime.reconcileLeader(); assert.equal(item.error, ''); assert.equal(item.paused, false);
+  const continued = await advance(); assert.equal(continued.ok, true, continued.error);
+});
+
+test('native question marks needs-human without pausing and recovers once answered', async () => {
+  const { runtime, setup, sessions, advance } = fixture(); await setup();
+  sessions.set('worker-a', sessionState({ cursor: 11, pendingInput: ['question'] }));
+  await runtime.reconcileLeader();
+  const item = runtime.leaderState.items[0];
+  assert.equal(item.status, 'needs-human'); assert.equal(item.paused, false); assert.match(item.error, /worker 会话内回答/);
+  assert.equal((await advance()).ok, false);
+  sessions.set('worker-a', sessionState({ cursor: 12 }));
+  await runtime.reconcileLeader(); assert.equal(item.status, 'watching'); assert.equal(item.error, '');
+  assert.equal((await advance()).ok, true);
+});
+
+test('legacy UI-only human gates from older journals are lifted on load', async () => {
+  const { runtime, setup } = fixture(); await setup(2);
+  const [a, b] = runtime.leaderState.items;
+  Object.assign(a, { paused: true, status: 'unknown', error: '日志增量超出有界补扫，证据已截断；停止推进，需 UI 人类核查后恢复。', cursor: 5 });
+  Object.assign(b, { paused: true, status: 'paused', error: '托管时限/推进预算已耗尽。' });
+  assert.equal(runtime.liftLegacyHumanGates(), true);
+  assert.equal(a.paused, false); assert.equal(a.error, ''); assert.equal(a.cursor, null); assert.equal(a.status, 'watching');
+  assert.equal(b.paused, true); // a real budget stop stays until manage reset_budget + resume.
+});

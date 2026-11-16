@@ -29,9 +29,9 @@ export const LEADER_STATUS_GLOSSARY = Object.freeze({
   watching: 'worker 空闲，Leader 正在观察；空闲本身不是继续的理由。',
   running: 'worker 正在执行一个回合。',
   cold: 'worker 未加载到内存（例如 DSH 重启后）；需要推进时由 Host 自动激活。',
-  paused: '该 Issue 已暂停自动推进（人类暂停或预算耗尽）。',
-  'needs-human': '需要人类：原生审批/问答等待，或 Leader 提出的问题待人类回复。',
-  unknown: '状态无法验证（日志截断、投递不确定等），需人类核查。',
+  paused: '该 Issue 已暂停自动推进（暂停或预算耗尽）；可用 gitlab_leader_manage reset_budget/resume 恢复。',
+  'needs-human': '需要人类：worker 会话内的原生审批/问答等待人类回答（回答后自动恢复），或 Leader 提出的问题待人类在本会话回复。',
+  unknown: '状态暂时无法验证（会话状态读取失败、投递不确定等）；投递不确定时先 read_issue 核对，再用 gitlab_leader_manage resolve_delivery 判定。日志截断只让本次 evidenceToken 失效，下次观察自动恢复。',
   missing: '会话已不存在。',
   archived: '会话已归档。',
   task: 'kind=task：Leader 派发的临时任务会话（不对应 GitLab Issue），同样受纳管、预算与审计约束。',
@@ -140,7 +140,7 @@ export const leaderToolMethods = {
     if (request.taskId === undefined) return this.leaderCreateTaskRecord(request, options);
     if (!validId(request.taskId)) return failure('必须提供 snapshot.issues 中的 taskId；临时任务不传 taskId，改传 title + brief。');
     const issue = (Array.isArray(this.state.issues) ? this.state.issues : []).find((entry) => entry.id === request.taskId);
-    if (!issue) return failure('该 taskId 不在 Issue tab 当前列表中；请人类先刷新 Issue 列表。若任务不对应 GitLab Issue，不传 taskId，改传 title + brief 创建临时任务会话。');
+    if (!issue) return failure('该 taskId 不在 Issue tab 当前列表中；先用 gitlab_leader_list_issues（refresh=true）刷新 Issue 列表。若任务不对应 GitLab Issue，不传 taskId，改传 title + brief 创建临时任务会话。');
     if (this.state.pending?.[issue.id] || this.dispatches?.has?.(issue.id)) return failure('该 Issue 已有正在创建的会话，请稍后用 snapshot 查看结果。');
     const handled = this.state.handled?.[issue.id];
     if (validId(handled?.sessionId) && handled.routed !== true && handled.sessionId !== this.leaderState?.sessionId) {

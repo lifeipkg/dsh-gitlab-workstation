@@ -143,7 +143,9 @@ window.__ModuleLoader__.load({
       leaderTaskTag: 'Ad-hoc task', leaderTasksUncertain: 'Ad-hoc tasks with uncertain creation', leaderTasksUncertainHint: 'Leader tried to open these sessions but the result is unknown. Check the DSH session list; archive any stray session yourself, then dismiss the record here.', leaderTaskDismiss: 'Dismiss',
       leaderRelayHint: 'You can also answer in the Leader session; Leader forwards your exact words to the Issue session. Native approvals and questions still need you in the actual session.',
       leaderAuditQueue: 'Queued', leaderAuditDequeue: 'Dequeued', leaderAuditQueueDrop: 'Dropped from queue', leaderAuditComplete: 'Completed',
-      leaderAuditArchiveFailed: 'Archive after completion failed', leaderAuditTodoRouted: 'Routed Todo to worker', leaderAuditSteer: 'Steered running worker',
+      leaderAuditArchiveFailed: 'Archive after completion failed', leaderAuditTodoRouted: 'Routed Todo to worker', leaderAuditManageEnroll: 'Leader enrolled Issue', leaderAuditManageUnenroll: 'Leader unenrolled Issue',
+    leaderAuditManagePause: 'Leader paused Issue', leaderAuditManageResume: 'Leader resumed Issue', leaderAuditManageReset: 'Leader reset Issue budget',
+    leaderAuditManageDelivery: 'Leader resolved uncertain delivery', leaderAuditManageStart: 'Leader started/renewed run', leaderAuditManagePauseLeader: 'Leader paused itself', leaderAuditSteer: 'Steered running worker',
       leaderAuditSteerUncertain: 'Steer delivery uncertain', leaderAuditHandoff: 'Leader session handoff', leaderAuditComment: 'Posted GitLab comment',
       leaderAuditCommentUncertain: 'GitLab comment uncertain',
       leaderReportProgress: 'Progress', leaderReportBlocked: 'Blocked', leaderReportDone: 'Done', leaderReportQuestion: 'Question', leaderReportMessage: 'Message',
@@ -313,7 +315,9 @@ window.__ModuleLoader__.load({
       leaderTaskTag: '临时任务', leaderTasksUncertain: '创建结果不确定的临时任务', leaderTasksUncertainHint: 'Leader 尝试开启这些会话但结果未知。请在 DSH 会话列表核查，如有多余会话请自行归档，再在此放弃该记录。', leaderTaskDismiss: '放弃记录',
       leaderRelayHint: '也可以直接在 Leader 会话里回复，Leader 会把你的原话转给对应 Issue 会话；原生审批与问答仍需你在实际会话中处理。',
       leaderAuditQueue: '排队', leaderAuditDequeue: '出队执行', leaderAuditQueueDrop: '移出队列', leaderAuditComplete: '完成收尾',
-      leaderAuditArchiveFailed: '完成后归档失败', leaderAuditTodoRouted: 'Todo 转交 worker', leaderAuditSteer: '纠偏运行中会话',
+      leaderAuditArchiveFailed: '完成后归档失败', leaderAuditTodoRouted: 'Todo 转交 worker', leaderAuditManageEnroll: 'Leader 纳管 Issue', leaderAuditManageUnenroll: 'Leader 解除纳管',
+    leaderAuditManagePause: 'Leader 暂停 Issue', leaderAuditManageResume: 'Leader 恢复 Issue', leaderAuditManageReset: 'Leader 重置预算',
+    leaderAuditManageDelivery: 'Leader 核对投递', leaderAuditManageStart: 'Leader 开始/续期托管', leaderAuditManagePauseLeader: 'Leader 暂停托管', leaderAuditSteer: '纠偏运行中会话',
       leaderAuditSteerUncertain: '纠偏投递不确定', leaderAuditHandoff: 'Leader 会话交接', leaderAuditComment: '发布 GitLab 评论',
       leaderAuditCommentUncertain: 'GitLab 评论结果不确定',
       leaderReportProgress: '进度', leaderReportBlocked: '受阻', leaderReportDone: '完成', leaderReportQuestion: '提问', leaderReportMessage: '消息',
@@ -752,7 +756,9 @@ window.__ModuleLoader__.load({
       queue: 'leaderAuditQueue', dequeue: 'leaderAuditDequeue', 'queue-drop': 'leaderAuditQueueDrop', complete: 'leaderAuditComplete',
       'archive-failed': 'leaderAuditArchiveFailed', 'todo-routed': 'leaderAuditTodoRouted', steer: 'leaderAuditSteer',
       'steer-uncertain': 'leaderAuditSteerUncertain', handoff: 'leaderAuditHandoff', comment: 'leaderAuditComment',
-      'comment-uncertain': 'leaderAuditCommentUncertain' };
+      'comment-uncertain': 'leaderAuditCommentUncertain', 'manage-enroll': 'leaderAuditManageEnroll', 'manage-unenroll': 'leaderAuditManageUnenroll',
+      'manage-pause': 'leaderAuditManagePause', 'manage-resume': 'leaderAuditManageResume', 'manage-reset_budget': 'leaderAuditManageReset',
+      'manage-resolve_delivery': 'leaderAuditManageDelivery', 'manage-start': 'leaderAuditManageStart', 'manage-pause_leader': 'leaderAuditManagePauseLeader' };
     const LEADER_REPORT_LABELS = { progress: 'leaderReportProgress', blocked: 'leaderReportBlocked', done: 'leaderReportDone',
       question: 'leaderReportQuestion', message: 'leaderReportMessage' };
 
