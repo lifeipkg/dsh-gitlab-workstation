@@ -3700,8 +3700,8 @@ test('issueApiPath prefers projectId/iid and falls back to web_url parsing', () 
 test('issue prompt and title stay minimal without changing todo conventions', () => {
   const issue = normalizeIssue(gitlabIssue);
   assert.equal(buildIssuePrompt(issue, { customRules: 'ignored', signature: 'ignored' }), `${issue.url}\n开始处理`);
-  assert.equal(buildSessionTitle(issue, 1), 'project #42');
-  assert.equal(buildSessionTitle(issue, 3), 'project #42');
+  assert.equal(buildSessionTitle(issue, 1), 'ISSUE-project #42');
+  assert.equal(buildSessionTitle(issue, 3), 'ISSUE-project #42');
 
   const todo = normalizeTodo(directNoteTodo);
   assert.equal(buildSessionTitle(todo, 2), 'TODO-issue-7-note-10-续1');
@@ -3735,8 +3735,8 @@ test('issue dispatch sends only the link and start command with a repository tit
   const record = runtime.state.handled[issue.id];
   assert.equal(record.automatic, false);
   assert.equal(record.round, 2);
-  assert.equal(record.sessionTitle, 'project #42');
-  assert.deepEqual(calls.renames.map((entry) => entry.title), ['project #42', 'project #42']);
+  assert.equal(record.sessionTitle, 'ISSUE-project #42');
+  assert.deepEqual(calls.renames.map((entry) => entry.title), ['ISSUE-project #42', 'ISSUE-project #42']);
   assert.equal(publicState(runtime.state).issueCount, 1);
   await runtime.stop();
 });

@@ -742,7 +742,7 @@ export function buildSessionTitle(todo, round = 1) {
   if (isIssueItem(todo)) {
     const repository = String(todo.project ?? '').split('/').filter(Boolean).pop() || 'Issue';
     const number = String(todo.iid ?? '').trim() || url.match(/\/-\/(?:issues|work_items)\/(\d+)/)?.[1] || 'unknown';
-    return `${repository} #${number}`;
+    return `ISSUE-${repository} #${number}`;
   }
   const noteId = String(todo?.noteId ?? '');
   // 续办会话（第 2 轮起）在标题末尾加 -续N，N 为第几次续办。
