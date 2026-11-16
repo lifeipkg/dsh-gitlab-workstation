@@ -73,20 +73,21 @@
 
 **Log Tab（v2.32）**：显示运行时内存日志——**只进内存环形缓冲、不落盘**，新→旧，打开期间每 3 秒静默刷新。每行 `时间 [级别] 单行消息`，级别可筛「全部 / 警告及以上」，支持「清空日志」（两步确认，清空后留一条审计行）。内存有硬上限防无限增长：条数 ≤ `LOG_MAX_ENTRIES`(500) 与合计字符 ≤ `LOG_MAX_CHARS`(64KB) 双维度，任一超就从头部淘汰最旧（FIFO），单条 ≤ `LOG_MAX_LINE_CHARS`(500 字) 截断标注；被丢的条数记 dropped，面板以 `-N` 显示已丢弃条数，悬停可查看说明。写入入口统一 `this.logger.<level>()`：进缓冲 + 透传宿主日志（自动补 `[gitlab-todo-agent]` 前缀，业务消息不带前缀），消息格式为单行「<对象/动作>：<结果/细节>」。bridge 新增 `logs`（GET 投影 / POST `clear:true`）。
 
-## Issue Leader（v2.34 起，可选托管；v2.36 会话管理；v2.38 临时任务；v2.40 编排；v2.43 六个基础工具）
+## WorkStation Leader（v2.34 起，可选托管；v2.36 会话管理；v2.38 临时任务；v2.40 编排；v2.43 基础工具；v2.44 统管 Issue／Todo／临时任务会话）
 
 Issue Tab 顶部提供折叠的 **Leader** 区域。创建独立 Leader 会话、选择它的模型，再明确「启动托管」。默认关闭，不自动接管存量会话；「新建 Issue 默认托管」是独立的可选授权，仅对开启之后具有真实创建证明的新会话生效。它不把 Issue 改成 Todo 自动任务，不占 Todo 自动并发槽，也不改变 worker 的工作区或项目规则。
 
-你只需要和 Leader 对话：Leader 自己决定纳管、新建 worker、发消息、归档或只汇报，并直接用工具去做，不要求你去 UI 点按钮。v2.43 起 Leader 只有 6 个基础工具，没有 shell、文件或其他工具：
+你只需要和 Leader 对话：Leader 统一管理本插件创建的所有会话（Issue worker、收件箱 Todo 会话、临时任务），自己决定纳管、新建会话（数量不限）、发消息、归档或只汇报，并直接用工具去做，不要求你去 UI 点按钮。Leader 只有下面 7 个工具，没有 shell、文件或其他工具；新建的 Leader 会话会自动注入工作区的 `AGENTS.md`／`CLAUDE.md`（v2.44，只读加载）：
 
 - `gitlab_leader_overview`：全局概览。托管状态、你被指派的全部 open Issue（含还没有会话或未纳管的）及其 worker 状态、笔记、依赖、待回答问题、最近汇报，临时任务、排队、未决投递和已完成项。`refresh=true` 先从 GitLab 刷新，刷新失败时返回缓存和 `refreshError`。
-- `gitlab_leader_read`：读一个纳管 worker 的详情：状态、最近事件、原生问题原文、笔记、汇报、未决投递，以及 GitLab Issue 正文／评论／关联 MR／流水线。
+- `gitlab_leader_inbox`（v2.44）：读取 GitLab 收件箱。返回每条 Todo 的处理状态（新／派发中／已处理）、结果、会话和是否已纳管，以及「需要人工处理」清单（与面板收件箱一致）。`refresh=true` 先拉取 GitLab Todo（与面板刷新相同），失败时返回缓存和 `refreshError`。
+- `gitlab_leader_read`：读一个纳管会话的详情：状态、最近事件、原生问题原文、笔记、汇报、未决投递；Issue 会话附 GitLab Issue 正文／评论／关联 MR／流水线，Todo 会话附 Todo 原文。
 - `gitlab_leader_session`：按 `action` 操作 worker 会话：
-  - `create`：传 `taskId` 为 Issue 开 worker（走与「处理」相同的派发逻辑，已有活动 worker 时直接接管）；不传 `taskId`、改传 `title`（≤70 字）和自包含的 `brief`（≤8000 字）开**临时任务**会话，可选 `workingDirectory`、`model`。数量不限，新会话自动纳管；创建结果不确定时绝不自动重建，面板列出记录，由你核查后点「放弃」。
+  - `create`：传 `taskId` 为 Issue 或收件箱 Todo 开会话（走与「处理」相同的派发逻辑，已有活动会话时直接接管；Todo 被路由到人类已有会话时只返回结果、不纳管）；不传 `taskId`、改传 `title`（≤70 字）和自包含的 `brief`（≤8000 字）开**临时任务**会话，可选 `workingDirectory`、`model`。数量不限，新会话自动纳管；创建结果不确定时绝不自动重建，面板列出记录，由你核查后点「放弃」。
   - `send`：给空闲 worker 发一条消息（≤8000 字，标明来自 Leader、不是人类输入），可带 `requestId` 去重；并发满额时排队。转告你的答复也用它。
   - `steer`：在运行中的 worker 当前回合插入一条纠偏。
   - `rename`、`model`（换成宿主模型目录中的模型）、`archive`（理由可选；DSH 拒绝归档活动会话时返回错误）。
-  - `enroll`／`unenroll`：纳管或解除插件创建的 Issue 会话。
+  - `enroll`／`unenroll`：纳管或解除插件创建的 Issue 或 Todo 会话。Todo 会话可自由重命名（≤80 字），收尾时不做 GitLab 核对。
   - `resolve_delivery`：投递结果不确定时，先 `read` 核对，再用 `requestId` 和 `outcome`（`delivered`／`not-delivered`）判定；两种结果都不会重发。
 - `gitlab_leader_note`：记录阶段、下一步、等待项、决定、产出和依赖（`dependsOn`，最多 10 个，拒绝自依赖、未知 Issue 和环）；`needsHuman` 记录要问你的问题，该 worker 显示「需要人类」；`complete: { summary, acceptWithoutMr?, reason? }` 验收收尾（见下）。
 - `gitlab_leader_gitlab_api`：调用 GitLab REST API（`method` 为 GET／POST／PUT／DELETE，`path`，可选 JSON `body`，经 `glab api --input` 发送）。GET 随时可用；写方法只在你开启「允许 Leader 写 GitLab」（`gitlabWrite`，默认关闭）后可用。POST 到 Issue `.../notes` 时正文末尾自动带签名（默认「—— 由 AI Leader 代发」，可改）；评论结果不确定时不重试，面板提示你去 GitLab 核查。
@@ -103,7 +104,7 @@ Host 守住的底线：
 
 其他行为：
 
-- **Leader 会话是主窗口**：启动简报和每次唤醒都要求 Leader 在自己的对话里用中文汇报逐 Issue 进度，需要你时给出 Issue 和会话 ID。
+- **Leader 会话是主窗口**：启动简报和每次唤醒都要求 Leader 在自己的对话里用中文汇报逐项进度和需要人工处理的事，需要你时给出条目和会话 ID。
 - **创建后先启动**：「创建 Leader」只建立并配置会话；点击「启动托管」之前 Leader 会话是空白的，DSH 会显示为 New Session，这不是创建失败。Leader 用 `gitlab_leader_run start` 自行启动时不再发启动简报。重启后默认暂停。冷会话（未加载）只在启动托管或 Leader 发送消息时经 DSH 会话控制器激活；轮询本身从不激活。
 - **失败不重复操作**：管理记录、游标和动作 outbox 单独保存在同一存储目录的 `leader.json`。损坏或未知版本的 Leader journal 只冻结此功能，不覆盖文件，也不影响原 Todo 工作台。创建结果不确定时，可填入核实过的 Leader 会话 ID 认领（不能是 Issue worker），或确认不存在后放弃该记录再创建。
 - **并发上限与排队（v2.40）**：「并发上限」（1–10，默认 3）只限制同时运行的 worker。满额时创建／发送请求进入持久队列（最多 50 条，同一 Issue 同类请求去重），有空位时按顺序执行；出队前重新校验，失效就丢弃并在下次唤醒时说明。面板列出排队项，你可以取消。
@@ -116,7 +117,7 @@ Host 守住的底线：
 
 Leader 续办使用原生 Agent 的非人类消息来源和 idle maintenance 同步校验，不使用会被宿主记作人类输入的普通 `session/prompt`；它不会因此获得恢复 goal、代答问题或批准工具的权限。托管权限变更经原生 Connection RPC，仅接受当前真实浏览器 Peer；普通 HTTP bridge 只读 Leader 快照，不能用 JSON 自报人类授权。该机制沿用本机单用户 Host 的信任边界，不宣称隔离能够执行任意本地脚本或读取浏览器凭据的同用户全权限程序。
 
-正常卸载会先停止托管、取消并清理 Leader 自有自动队列，等其停止执行后再解除工具限制；不会取消 workers。已加载路径在原生 `agent/created` awaited barrier 内先安装限制并清除旧自有通知。新建 Leader 默认使用本插件随附的 `gitlab-issue-leader` preset（只有 persona 与压缩，不挂文件／Shell／网络工具插件），即使插件未加载，Leader 也没有通用工具。`config.leaderAgentPreset` 可显式指定其他 preset（显式值不可用时拒绝创建），设为 `''` 则使用 DSH 默认 preset。既有 Leader 保留创建时的 preset；需要隔离 preset 时，放弃旧 Leader 后重建。使用 DSH 默认 preset 的 Leader 在**插件完全未加载／被禁用时不存在这些 runtime 限制**。崩溃恢复后不要在停用插件或 Leader journal 不可读的状态直接恢复旧 Leader；先重新加载插件并修复可读 journal 建立隔离，或由人类核查并清理旧自动输入。随附 preset 只移除通用工具，不改变宿主的审批与权限模型。
+正常卸载会先停止托管、取消并清理 Leader 自有自动队列，等其停止执行后再解除工具限制；不会取消 workers。已加载路径在原生 `agent/created` awaited barrier 内先安装限制并清除旧自有通知。新建 Leader 默认使用本插件随附的 `gitlab-issue-leader` preset（persona、`AGENTS.md` 注入与压缩，不挂文件／Shell／网络工具插件），即使插件未加载，Leader 也没有通用工具。`config.leaderAgentPreset` 可显式指定其他 preset（显式值不可用时拒绝创建），设为 `''` 则使用 DSH 默认 preset。既有 Leader 保留创建时的 preset；需要隔离 preset 时，放弃旧 Leader 后重建。使用 DSH 默认 preset 的 Leader 在**插件完全未加载／被禁用时不存在这些 runtime 限制**。崩溃恢复后不要在停用插件或 Leader journal 不可读的状态直接恢复旧 Leader；先重新加载插件并修复可读 journal 建立隔离，或由人类核查并清理旧自动输入。随附 preset 只移除通用工具，不改变宿主的审批与权限模型。
 
 已结束的投递记录会压缩（保留最近 200 条，较早条目丢弃正文），未决投递累计达到 100 条才停止新动作；未变化的 journal 不重写；纳管会话并发观察（最多 4 个）。需要 DSH 已有 Agent、会话控制器与会话投影服务，以及 Cordis 4.1；缺失时明确不可用，不回退成伪人类投递。现成实现复用本插件的会话跟踪／严格创建 journal，以及 DSH 的 `Agent.runMaintenance`、限定工具作用域和日志 API，没有引入新的多 Agent 框架。
 
@@ -274,7 +275,7 @@ Host 每次轮询先通过 `glab api user` 获取并缓存当前用户 ID，再�
 
 ## 存储与升级
 
-设置、Todo 去重和 Session 链接保存在 `<DSH_HOME>/storages/gitlab-workstation/state.json`，Issue Leader journal 保存在同目录的 `leader.json`（`DSH_HOME` 未设置时为 `~/.dsh`；每台机器、每个用户独立），采用原子写入，重启后恢复。这与其它 DSH 插件（如 dsh-context、dshmarket 的 `~/.dsh/storages/<插件>/`）一致。配置项 `storageDirectory` 可显式指定其它目录。插件不保存 GitLab 令牌，也不创建临时脚本。
+设置、Todo 去重和 Session 链接保存在 `<DSH_HOME>/storages/gitlab-workstation/state.json`，WorkStation Leader journal 保存在同目录的 `leader.json`（`DSH_HOME` 未设置时为 `~/.dsh`；每台机器、每个用户独立），采用原子写入，重启后恢复。这与其它 DSH 插件（如 dsh-context、dshmarket 的 `~/.dsh/storages/<插件>/`）一致。配置项 `storageDirectory` 可显式指定其它目录。插件不保存 GitLab 令牌，也不创建临时脚本。
 
 数据目录迁移（v2.37）：
 
@@ -335,7 +336,7 @@ MIT License。发布到 npm（`npm publish`，scoped 包需公开访问，`publi
 - v2.32.1（状态版本不变）：修复 **Issue Tab 打开时只读空缓存、不触发远端刷新**的问题——客户端 `post()` 显式使用 POST，避免 `issues`/`logs` 等支持只读 GET 的 action 把写请求也降级成 GET；同时修复 Log「清空日志」请求。新增客户端网络层回归测试，Issue 缓存投影的 GET 行为不变。
 - v2.33（历史版本，状态版本不变）：原仓库改名 **dsh-gitlab-workstation**，产品展示名改为 **GitLab Workstation / GitLab 工作台**。界面改为紧凑工作台，任务/环境分区、上下文操作、折叠设置与本地列表搜索；Todo 自动处理和 Issue 手动处理语义保持不变。npm/Loader/Bridge/存储身份保留，旧配置和会话记录无需迁移。
 - v2.33.1（状态版本不变）：统一安全会话入口，按真实存在/归档状态核验、显式恢复、确认客户端可加载后导航；删除或查询失败留在当前面板，不静默新建、不把任务标记完成。可追溯任务提供明确人工接手，只创建空白会话并保留原记录。同版本后续将 npm/加载包名和客户端模块 ID 同步为 `@lifeipkg/dsh-gitlab-workstation`；旧包需要显式切换，内部数据与会话协议标识保留。
-- v2.34（原 Todo 状态版本不变）：新增可选 Issue Leader，独立模型与会话、显式托管、进度汇总、受控非人类续办和逐 Issue 人工待办。权限变更走真实浏览器 RPC，Leader 限定工具与严格 journal/outbox，重启默认暂停；不自动代答审批或操控存量会话。
+- v2.34（原 Todo 状态版本不变）：新增可选 Issue Leader（v2.44 起改名 WorkStation Leader），独立模型与会话、显式托管、进度汇总、受控非人类续办和逐 Issue 人工待办。权限变更走真实浏览器 RPC，Leader 限定工具与严格 journal/outbox，重启默认暂停；不自动代答审批或操控存量会话。
 - v2.34.2（状态版本不变）：修复 DSH 0.2.2-rc.3 的 Connection 公共 RPC 包装器在自身 Context 读取未注入的 `webServer`、导致 Leader 路由落入 405 的问题；插件声明 `webServer`，并仅对该确切错误用同一 Connection 注册实现和显式 Context 兼容挂载，不重写认证或 Peer 校验。只有成功的 Host 只读快照明确证明未创建、无会话 ID 且无错误时，才恢复失败后的创建按钮；未知、失败或部分创建状态仍禁止重复创建。
 - v2.33.2（状态版本不变）：新建 Todo 会话前缀由 `[协助]-` 改为 `TODO-`，保留目标类型、编号、note 与续办后缀；Issue 标题、既有路由/复用会话及历史记录不改名。归档永久删除与定时清理因当前宿主缺少安全删除能力而延期，未在本版本实现。
 - v2.35.0（Todo 状态版本与 Leader journal 版本不变，旧 `leader.json` 直接兼容）：Leader 加固。已结束投递压缩、过期创建凭证清理，长期运行不再卡在 500 条上限；只在回合结束和状态转折时唤醒 Leader，并持久保存唤醒原因；启动简报失败自动回退为暂停；显式启动、恢复或受控推进可激活冷 worker；新 Leader 默认使用无通用工具的 `gitlab-issue-leader` preset；重新托管保留已用预算，新增显式重置；未确认投递与不确定创建可人工核对；投影新增运行状态、预算和未确认投递，Issue 新增「待命」「未加载」状态；Leader 作为人类主窗口逐 Issue 汇报，`snapshot` 提供全部 Issue 会话只读概览；面板提示“已创建 · 未启动”。
@@ -347,3 +348,4 @@ MIT License。发布到 npm（`npm publish`，scoped 包需公开访问，`publi
 - v2.41.0（状态版本与 Leader journal 版本不变）：Issue 行「交给 Leader 托管」与「取消托管」直接执行，不再二次确认；Leader 面板移除「纳管会话」与「需人类决策」栏（单个 Issue 的暂停/恢复/重置预算入口随之移除，取消托管仍在 Issue 行）；移除「已处理」Tab 及其 bridge `handled` 接口与 `handledPage`/`handledProjection` 投影，内部处理台账保留用于去重与 Issue 映射。
 - v2.42.0（状态版本与 Leader journal 版本不变）：Leader 自主管理。新增工具 `gitlab_leader_list_issues`（读取全部被指派的 open Issue，可刷新）和 `gitlab_leader_manage`（纳管／解除、暂停／恢复、重置预算、核对不确定投递、自行续期／暂停托管，全部审计）；日志截断与原生审批／问答不再暂停 Issue 等待 UI 点击，旧版因此暂停的 Issue 加载时自动解除；Leader 提示词、启动简报、状态释义与唤醒通知改为指向这些工具。原生审批／问答仍只由人类在 worker 会话回答。
 - v2.43.0（状态版本与 Leader journal 版本不变，旧 `leader.json` 直接兼容）：Leader 工具精简为 6 个基础工具 `gitlab_leader_overview`／`read`／`session`／`note`／`gitlab_api`／`run`，取代原来的约 15 个工具；worker 汇报工具 `gitlab_leader_report` 保留。新增通用 GitLab REST API 工具，写方法由新设置「允许 Leader 写 GitLab」（`gitlabWrite`，默认关闭，旧 `issueComments` 自动迁移）控制。移除推进预算、托管时限与唤醒上限、单 Issue 暂停／恢复、证据 token、纠偏／评论／汇报频率与数量限制、转达人类原话校验；Leader 暂停只停自动唤醒。保留底线：不确定投递不自动重发、只操作插件创建的 worker 会话、不可信内容标注、GitLab 写入需授权、原生审批／问答只由人类回答、全部操作审计。面板移除对应的暂停 Issue／重置预算入口。
+- v2.44.0（状态版本与 Leader journal 版本不变）：Leader 改名 WorkStation Leader，统一管理插件创建的 Issue、收件箱 Todo 和临时任务会话：`session create` 可为收件箱 Todo 开会话，Todo 会话可纳管、读取（附 Todo 原文）、重命名、发消息、归档和收尾；新增工具 `gitlab_leader_inbox` 读取收件箱与待人工处理清单；随附 Leader preset 增加 `@deepseek-ai/dsh-agent-instructions`，新建 Leader 自动注入工作区 `AGENTS.md`。工具名与 preset id 保持不变。

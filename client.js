@@ -116,7 +116,7 @@ window.__ModuleLoader__.load({
       issuesTitle: 'Issues', issuesEmpty: 'No open issues assigned to you on GitLab.',
       issuesError: 'Could not load the issue list', issuesHint: 'Open issues assigned to you',
       issuesOrphans: 'Closed or unassigned', issueTag: 'Issue',
-      leaderTitle: 'Issue Leader', leaderCreate: 'Create Leader', leaderOpen: 'Open Leader',
+      leaderTitle: 'WorkStation Leader', leaderCreate: 'Create Leader', leaderOpen: 'Open Leader',
       leaderStart: 'Start supervision', leaderPause: 'Pause all', leaderModel: 'Leader model',
       leaderAutoEnroll: 'Manage new Issue sessions by default', leaderAutoEnrollHint: 'Off by default. Never enrolls existing sessions.',
       leaderScope: 'Enrollment lets Leader read the selected session and send instructions only within its original task scope. It grants no human approval or question-answering authority.',
@@ -167,7 +167,7 @@ window.__ModuleLoader__.load({
       leaderDeliveries: 'Unconfirmed deliveries',
       leaderDeliveriesHint: 'The Host could not confirm whether these messages arrived. Open the target session, check, then record the result. Nothing is resent automatically.',
       leaderDelivered: 'It arrived', leaderNotDelivered: 'It did not arrive', leaderDeliveryOpen: 'Open target session',
-      leaderCreationUnresolved: 'A previous creation never confirmed its session ID. Check the session list: if a "GitLab Issue Leader" session exists, paste its ID and claim it; if none exists, abandon the record and create again.',
+      leaderCreationUnresolved: 'A previous creation never confirmed its session ID. Check the session list: if a "WorkStation Leader" session exists, paste its ID and claim it; if none exists, abandon the record and create again.',
       leaderClaim: 'Claim this session', leaderClaimPlaceholder: 'Leader session ID', leaderAbandon: 'No Leader exists, abandon record',
       logsTitle: 'Log', logsEmpty: 'No runtime log entries yet.',
       logsError: 'Could not load the runtime log', logsClear: 'Clear log', confirmClearLogs: 'Confirm clear log?',
@@ -287,7 +287,7 @@ window.__ModuleLoader__.load({
       issuesTitle: 'Issue', issuesEmpty: 'GitLab 上没有指派给你的开放 Issue。',
       issuesError: '无法加载 Issue 列表', issuesHint: 'GitLab 上指派给我的开放 Issue',
       issuesOrphans: '已关闭或取消指派', issueTag: 'Issue',
-      leaderTitle: 'Issue Leader', leaderCreate: '创建 Leader', leaderOpen: '打开 Leader',
+      leaderTitle: 'WorkStation Leader', leaderCreate: '创建 Leader', leaderOpen: '打开 Leader',
       leaderStart: '启动托管', leaderPause: '暂停全部', leaderModel: 'Leader 模型',
       leaderAutoEnroll: '新 Issue 会话默认托管', leaderAutoEnrollHint: '默认关闭，不会纳管既有会话。',
       leaderScope: '选入即允许 Leader 读取所选会话，并仅在原任务范围内发送指令；不授予人类审批或代答问答权限。',
@@ -338,7 +338,7 @@ window.__ModuleLoader__.load({
       leaderDeliveries: '未确认投递',
       leaderDeliveriesHint: 'Host 无法确认这些消息是否已送达。请打开目标会话核对后记录结果；无论选择哪项都不会自动重发。',
       leaderDelivered: '已送达', leaderNotDelivered: '未送达', leaderDeliveryOpen: '打开目标会话',
-      leaderCreationUnresolved: '之前的一次创建没有确认会话 ID。请检查会话列表：如果存在“GitLab Issue Leader”会话，填入它的 ID 并认领；如果不存在，放弃该记录后重新创建。',
+      leaderCreationUnresolved: '之前的一次创建没有确认会话 ID。请检查会话列表：如果存在“WorkStation Leader”会话，填入它的 ID 并认领；如果不存在，放弃该记录后重新创建。',
       leaderClaim: '认领此会话', leaderClaimPlaceholder: 'Leader 会话 ID', leaderAbandon: '确认不存在，放弃该记录',
       logsTitle: '日志', logsEmpty: '暂无运行时日志。',
       logsError: '无法加载运行时日志', logsClear: '清空日志', confirmClearLogs: '确认清空日志？',
@@ -815,7 +815,7 @@ window.__ModuleLoader__.load({
             id: text(alert.id), question: alert.question, status: text(alert.status), createdAt: alert.createdAt,
           })),
           provenance: ['ui', 'created', 'leader'].includes(item.provenance) ? item.provenance : '',
-          kind: item.kind === 'task' ? 'task' : 'issue',
+          kind: ['task', 'todo'].includes(item.kind) ? item.kind : 'issue',
           notes: item.notes && typeof item.notes === 'object' ? { stage: text(item.notes.stage), next: text(item.notes.next), waitingOn: text(item.notes.waitingOn),
             decisions: (Array.isArray(item.notes.decisions) ? item.notes.decisions : []).filter((entry) => typeof entry === 'string'),
             deliverables: (Array.isArray(item.notes.deliverables) ? item.notes.deliverables : []).filter((entry) => typeof entry === 'string'),
@@ -832,7 +832,7 @@ window.__ModuleLoader__.load({
           .map((entry) => ({ id: entry.id, kind: entry.kind, taskId: text(entry.taskId), position: count(entry.position),
             title: text(entry.title), reason: text(entry.reason), queuedAt: count(entry.queuedAt) })),
         completed: (Array.isArray(value.completed) ? value.completed : []).filter((entry) => entry && text(entry.taskId)).map((entry) => ({
-          taskId: entry.taskId, title: text(entry.title), url: text(entry.url), kind: entry.kind === 'task' ? 'task' : 'issue',
+          taskId: entry.taskId, title: text(entry.title), url: text(entry.url), kind: ['task', 'todo'].includes(entry.kind) ? entry.kind : 'issue',
           summary: text(entry.summary), completedAt: count(entry.completedAt), acceptWithoutMr: entry.acceptWithoutMr === true, reason: text(entry.reason),
         })),
         previousSessions: (Array.isArray(value.previousSessions) ? value.previousSessions : []).filter((entry) => entry && validLeaderSessionId(entry.sessionId))
@@ -1432,7 +1432,7 @@ window.__ModuleLoader__.load({
       const safeSessionOpener = openSession;
       const openLeader = (trigger) => {
         const sessionId = leaderViewRef.current.sessionId;
-        if (validLeaderSessionId(sessionId)) safeSessionOpener({ sessionId, title: 'Issue Leader' }, trigger);
+        if (validLeaderSessionId(sessionId)) safeSessionOpener({ sessionId, title: 'WorkStation Leader' }, trigger);
       };
       const openManagedIssue = (item, trigger) => {
         if (validLeaderSessionId(item.sessionId)) safeSessionOpener({ sessionId: item.sessionId, taskId: item.taskId, title: item.title, url: item.url }, trigger);

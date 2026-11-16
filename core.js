@@ -26,6 +26,8 @@ export const DEFAULT_LEADER_AGENT_PRESET = 'gitlab-issue-leader';
 // Leader-dispatched ad-hoc tasks (no GitLab Issue): namespaced taskIds plus their own journal registry.
 export const LEADER_TASK_STATUSES = Object.freeze(['creating', 'created', 'uncertain', 'archived']);
 export const isLeaderTaskId = (value) => typeof value === 'string' && /^leader-task-[0-9a-f]{12}$/u.test(value);
+/** Managed worker kind: ad-hoc task (leader-task-…), plugin-created Todo session, or Issue session (default). */
+export const leaderItemKind = (item) => (isLeaderTaskId(item?.taskId) ? 'task' : item?.kind === 'todo' ? 'todo' : 'issue');
 const TERMINAL_OUTBOX = new Set(['sent', 'rejected', 'cancelled']);
 const OPEN_DELIVERY = new Set(['sending', 'uncertain']);
 export function initialLeaderState() {
@@ -282,6 +284,7 @@ export function normalizeLeaderState(value) {
   for (const item of result.items) {
     item.lastTodo = normalizeLeaderTodo(item.lastTodo);
     item.kickedAt = Number.isSafeInteger(item.kickedAt) ? item.kickedAt : null;
+    item.kind = leaderItemKind(item);
   }
   // Worker → Leader reports journal (older journals lack it and start empty). Content is untrusted worker output.
   const seenReports = new Set();
@@ -307,7 +310,7 @@ export function normalizeLeaderCompletion(entry) {
   const verification = isRecord(entry.verification) ? entry.verification : {};
   const pipeline = isRecord(verification.pipeline) ? { status: text(verification.pipeline.status).slice(0, 50), url: safeUrl(verification.pipeline.url) } : null;
   return { taskId: entry.taskId, sessionId: typeof entry.sessionId === 'string' ? entry.sessionId.slice(0, 200) : null,
-    title: text(entry.title).slice(0, 1000), url: safeUrl(entry.url), kind: entry.kind === 'task' ? 'task' : 'issue',
+    title: text(entry.title).slice(0, 1000), url: safeUrl(entry.url), kind: ['task', 'todo'].includes(entry.kind) ? entry.kind : 'issue',
     summary: text(entry.summary).slice(0, 1000), completedAt: timestamp(entry.completedAt),
     acceptWithoutMr: entry.acceptWithoutMr === true, reason: text(entry.reason).slice(0, 500),
     verification: { issueState: text(verification.issueState).slice(0, 50) || null,
@@ -338,7 +341,7 @@ export function buildLeaderProjection(state = initialLeaderState()) {
     settings: JSON.parse(JSON.stringify(state.settings)),
     creation,
     run: { wakeups: Number.isSafeInteger(state.wakeups) ? state.wakeups : 0, lastStartedAt: timestamp(state.lastStartedAt) },
-    items: state.items.map((item) => ({ taskId: item.taskId, kind: isLeaderTaskId(item.taskId) ? 'task' : 'issue', sessionId: item.sessionId, title: item.title, url: item.url,
+    items: state.items.map((item) => ({ taskId: item.taskId, kind: leaderItemKind(item), sessionId: item.sessionId, title: item.title, url: item.url,
       status: item.status, summary: item.summary || '', error: item.error || '', alerts: item.alerts.map((alert) => ({ ...alert })),
       enrolledAt: timestamp(item.enrolledAt), provenance: ['created', 'leader'].includes(item.provenance?.kind) ? item.provenance.kind : 'ui',
       notes: normalizeLeaderNotes(item.notes, { strict: false }), lastActivityAt: timestamp(item.lastActivityAt),
