@@ -76,7 +76,7 @@ test('default Leader is off with no existing enrollment and independent settings
   const { runtime } = fixture();
   assert.deepEqual(runtime.leaderProjection(), { enabled: false, sessionId: null, phase: 'not-created', runState: 'not-created',
     settings: { model: null, autoEnrollNew: false }, creation: null, run: { expiresAt: null, wakeups: 0, maxWakeups: 100, lastStartedAt: null },
-    items: [], deliveries: [], audit: [], events: [], error: '' });
+    items: [], deliveries: [], audit: [], tasks: [], events: [], error: '' });
   assert.equal(runtime.state.settings.enabled, false);
   assert.equal(Object.keys(runtime.state.handled).length, 2);
   assert.equal(runtime.leaderState.items.length, 0);
@@ -935,4 +935,90 @@ test('a running worker silent for 20 minutes wakes the Leader once per stall', a
   runtime.leaderState.items[0].lastActivityAt = Date.now() - 21 * 60 * 1000; await runtime.reconcileLeader();
   assert.equal(calls.notify.length, count + 1); assert.match(calls.notify.at(-1).body, /stalled/);
   await runtime.reconcileLeader(); assert.equal(calls.notify.length, count + 1);
+});
+
+// ---- Leader ad-hoc task sessions (v2.38: work without a GitLab Issue) ----
+
+const withTaskHost = (runtime, sessions, sessionId = 'task-s') => {
+  const created = []; const prompts = []; const archived = [];
+  runtime.host.createSession = async (request) => { created.push(copy(request)); sessions.set(sessionId, sessionState()); return sessionId; };
+  runtime.host.prompt = async (request) => { prompts.push(copy(request)); };
+  runtime.host.archiveSession = async (id) => { archived.push(id); };
+  return { created, prompts, archived };
+};
+
+test('session_create without taskId opens an enrolled ad-hoc task session with its brief, even while paused', async () => {
+  const { runtime, setup, invoke, agent, sessions, calls } = fixture(); await setup();
+  const host = withTaskHost(runtime, sessions);
+  for (const request of [{}, { title: '调查 IAM' }, { brief: '梳理' }, { title: 'x'.repeat(71), brief: '梳理' }, { title: '调查', brief: 'x'.repeat(8001) }]) {
+    assert.equal((await invoke('createSession', request, agent())).ok, false, JSON.stringify(request).slice(0, 40));
+  }
+  assert.equal(host.created.length, 0);
+  assert.equal((await invoke('pause')).ok, true);
+  const result = await invoke('createSession', { title: '调查 IAM 架构', brief: '梳理 IAM 服务的模块边界与鉴权链路，输出结论。' }, agent());
+  assert.equal(result.ok, true, result.error);
+  const { taskId } = result.result;
+  assert.match(taskId, /^leader-task-[0-9a-f]{12}$/u); assert.equal(result.result.kind, 'task'); assert.equal(result.result.briefDelivered, true);
+  assert.deepEqual(host.created, [{ workspaceId: 'issue-workspace' }]);
+  assert.deepEqual(calls.rename.at(-1), ['task-s', '[临时] 调查 IAM 架构']);
+  assert.equal(host.prompts.length, 1); assert.equal(host.prompts[0].requestId, `${taskId}-brief`); assert.equal(host.prompts[0].mode, 'queue');
+  assert.match(host.prompts[0].content[0].text, /临时任务/); assert.match(host.prompts[0].content[0].text, /梳理 IAM 服务的模块边界/);
+  const projection = runtime.leaderProjection();
+  const item = projection.items.find((entry) => entry.taskId === taskId);
+  assert.equal(item.kind, 'task'); assert.equal(item.provenance, 'leader'); assert.equal(item.sessionId, 'task-s');
+  assert.deepEqual(projection.tasks.map((task) => [task.taskId, task.status]), [[taskId, 'created']]);
+  assert.equal(projection.audit.at(-1).action, 'task-create');
+  // No count limit: a second task is just another session.
+  withTaskHost(runtime, sessions, 'task-t');
+  assert.equal((await invoke('createSession', { title: '第二个调查', brief: '另一个独立问题。' }, agent())).ok, true);
+  assert.equal(runtime.leaderProjection().tasks.length, 2);
+});
+
+test('ad-hoc tasks are read, continued, renamed and archived like Issue workers', async () => {
+  const { runtime, setup, invoke, agent, sessions, calls } = fixture(); await setup();
+  const host = withTaskHost(runtime, sessions);
+  const { taskId } = (await invoke('createSession', { title: '调查 IAM 架构', brief: '梳理 IAM 鉴权链路。' }, agent())).result;
+  const target = { taskId, sessionId: 'task-s' };
+  let gitlab = 0; runtime.leaderIssueGitlab = async () => { gitlab += 1; return {}; };
+  const read = await invoke('readIssue', target, agent()); assert.equal(read.ok, true, read.error);
+  assert.equal(read.result.kind, 'task'); assert.match(read.result.brief, /IAM 鉴权链路/); assert.equal(gitlab, 0); assert.equal(read.result.gitlab, undefined);
+  const continued = await invoke('continueIssue', { ...target, evidenceToken: read.result.evidenceToken, body: '补充：只看 paas-iam 仓。', reason: '人类补充范围。' }, agent());
+  assert.equal(continued.ok, true, continued.error); assert.match(calls.deliver.at(-1).body, /仅限原临时任务：调查 IAM 架构/);
+  const renamed = await invoke('renameSession', { ...target, title: 'IAM 架构调查（已出结论）' }, agent()); assert.equal(renamed.ok, true, renamed.error);
+  assert.deepEqual(calls.rename.at(-1), ['task-s', 'IAM 架构调查（已出结论）']);
+  assert.equal(runtime.leaderProjection().tasks[0].title, 'IAM 架构调查（已出结论）');
+  assert.equal((await invoke('archiveSession', { ...target, reason: '' }, agent())).ok, false);
+  const archived = await invoke('archiveSession', { ...target, reason: '调查已完成并已汇报' }, agent()); assert.equal(archived.ok, true, archived.error);
+  assert.deepEqual(host.archived, ['task-s']);
+  assert.equal(runtime.leaderState.items.some((entry) => entry.taskId === taskId), false);
+  assert.deepEqual(runtime.leaderProjection().tasks, []);
+  assert.equal(runtime.leaderState.tasks[0].status, 'archived');
+});
+
+test('ad-hoc task workspace must be registered and failures list the available workspaces', async () => {
+  const { runtime, setup, invoke, agent, sessions } = fixture(); await setup();
+  const host = withTaskHost(runtime, sessions);
+  runtime.resolveWorkspaceId = () => { throw new Error('配置的工作区文件夹未在 DSH 工作区中注册：D:\\nope'); };
+  runtime.ctx.workspaceRegistry.list = () => [{ path: 'D:\\agent-workspace' }, { cwd: 'D:\\other' }];
+  const result = await invoke('createSession', { title: '调查', brief: '说明', workingDirectory: 'D:\\nope' }, agent());
+  assert.equal(result.ok, false); assert.deepEqual(result.result.available, ['D:\\agent-workspace', 'D:\\other']);
+  assert.equal(host.created.length, 0); assert.deepEqual(runtime.leaderState.tasks, []);
+});
+
+test('uncertain ad-hoc creation is never retried and only the human can dismiss it', async () => {
+  const { runtime, setup, invoke, agent } = fixture(); await setup();
+  runtime.host.createSession = async () => { throw new Error('timeout'); };
+  const failed = await invoke('createSession', { title: '调查 IAM', brief: '说明' }, agent());
+  assert.equal(failed.ok, false); assert.match(failed.error, /timeout/);
+  const { taskId } = failed.result;
+  assert.equal(runtime.leaderProjection().tasks[0].status, 'uncertain');
+  assert.equal(runtime.leaderState.items.some((entry) => entry.taskId === taskId), false);
+  // A crash between reservation and Host create also latches as uncertain.
+  const reloaded = normalizeLeaderState({ ...copy(runtime.leaderState), tasks: [{ taskId: 'leader-task-0123456789ab', sessionId: null, title: 't', brief: 'b', workspace: '', status: 'creating', createdAt: 1, error: '' }] });
+  assert.equal(reloaded.tasks[0].status, 'uncertain'); assert.match(reloaded.tasks[0].error, /禁止自动重建/);
+  assert.equal((await invoke('resolveTask', { taskId, action: 'dismiss' }, agent())).ok, false);
+  assert.equal((await invoke('resolveTask', { taskId, action: 'retry' })).ok, false);
+  const dismissed = await invoke('resolveTask', { taskId, action: 'dismiss' }); assert.equal(dismissed.ok, true, dismissed.error);
+  assert.deepEqual(dismissed.result.tasks, []); assert.equal(runtime.leaderProjection().audit.at(-1).action, 'task-dismiss');
+  assert.equal((await invoke('resolveTask', { taskId, action: 'dismiss' })).ok, false);
 });

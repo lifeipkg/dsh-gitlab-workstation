@@ -1,9 +1,10 @@
-import { createHash } from 'node:crypto';
-import { issueApiPath, LEADER_LIMITS, normalizeLeaderNotes, validateLeaderSettings } from '../core.js';
+import { createHash, randomBytes } from 'node:crypto';
+import { isLeaderTaskId, issueApiPath, LEADER_LIMITS, normalizeLeaderNotes, validateLeaderSettings } from '../core.js';
 import { errorMessage } from './util.js';
 
 // Leader capability surface (v2.36): session management for GitLab Issue workers, evidence-token
-// continuation, verified human-reply relay and structured progress notes. Mixed into leaderMethods;
+// continuation, verified human-reply relay and structured progress notes. v2.38 adds Leader-dispatched
+// ad-hoc task sessions (no GitLab Issue) that are managed exactly like Issue workers. Mixed into leaderMethods;
 // everything here runs on the runtime and reuses the journal/outbox/admission machinery in leader.js.
 const validId = (value) => typeof value === 'string' && value.length > 0 && value.length <= 200
   && value.trim() === value && !/[\u0000-\u001f]/u.test(value);
@@ -33,6 +34,7 @@ export const LEADER_STATUS_GLOSSARY = Object.freeze({
   unknown: '状态无法验证（日志截断、投递不确定等），需人类核查。',
   missing: '会话已不存在。',
   archived: '会话已归档。',
+  task: 'kind=task：Leader 派发的临时任务会话（不对应 GitLab Issue），同样受纳管、预算与审计约束。',
   stalled: '唤醒原因：worker 处于运行中但超过 20 分钟没有新日志。',
 });
 
@@ -41,6 +43,15 @@ export const leaderToolMethods = {
     const source = this.itemById?.(item.taskId) ?? null;
     const iid = source?.iid ?? String(item.url ?? '').match(/\/-\/issues\/(\d+)/u)?.[1] ?? null;
     return iid === null || iid === undefined ? null : String(iid);
+  },
+
+  /** The scope line every Leader-originated worker message carries. */
+  leaderScopeLine(item) {
+    return isLeaderTaskId(item.taskId) ? `仅限原临时任务：${item.title}（${item.taskId}）` : `仅限原 Issue：${item.url}`;
+  },
+
+  leaderTask(taskId) {
+    return (Array.isArray(this.leaderState?.tasks) ? this.leaderState.tasks : []).find((task) => task.taskId === taskId) ?? null;
   },
 
   leaderAudit(action, item, detail = {}) {
@@ -71,7 +82,9 @@ export const leaderToolMethods = {
       catch (error) { pendingQuestions = [`问题原文不可读取：${errorMessage(error).slice(0, 300)}`]; }
     }
     const events = (item.recentEvents ?? []).map((event) => ({ ...clone(event), sourceSessionId: item.sessionId, untrusted: true }));
-    return success({ taskId: item.taskId, sessionId: item.sessionId, iid: this.leaderIssueIid(item), title: item.title, url: item.url,
+    const task = isLeaderTaskId(item.taskId) ? this.leaderTask(item.taskId) : null;
+    return success({ taskId: item.taskId, kind: task ? 'task' : 'issue', ...(task ? { brief: task.brief } : {}),
+      sessionId: item.sessionId, iid: this.leaderIssueIid(item), title: item.title, url: item.url,
       status: item.status, paused: item.paused, error: item.error, summary: item.summary, notes: item.notes ?? null,
       alerts: item.alerts.filter((alert) => alert.status === 'pending'), actions: item.actions, maxActions: LEADER_LIMITS.maxActions,
       expiresAt: item.expiresAt, pendingInput: clone(pendingInput), pendingQuestions,
@@ -117,9 +130,11 @@ export const leaderToolMethods = {
    */
   async leaderCreateSessionRecord(request) {
     if (this.leaderStorageFault) return failure('Leader journal 不可写，未创建会话。');
-    if (!validId(request.taskId)) return failure('必须提供 snapshot.issues 中的 taskId。');
+    // No taskId: an ad-hoc task the human asked for that has no GitLab Issue (investigation, analysis...).
+    if (request.taskId === undefined) return this.leaderCreateTaskRecord(request);
+    if (!validId(request.taskId)) return failure('必须提供 snapshot.issues 中的 taskId；临时任务不传 taskId，改传 title + brief。');
     const issue = (Array.isArray(this.state.issues) ? this.state.issues : []).find((entry) => entry.id === request.taskId);
-    if (!issue) return failure('只能为 Issue tab 当前列表中的 GitLab Issue 创建会话；请人类先刷新 Issue 列表。');
+    if (!issue) return failure('该 taskId 不在 Issue tab 当前列表中；请人类先刷新 Issue 列表。若任务不对应 GitLab Issue，不传 taskId，改传 title + brief 创建临时任务会话。');
     if (this.state.pending?.[issue.id] || this.dispatches?.has?.(issue.id)) return failure('该 Issue 已有正在创建的会话，请稍后用 snapshot 查看结果。');
     const handled = this.state.handled?.[issue.id];
     if (validId(handled?.sessionId) && handled.routed !== true && handled.sessionId !== this.leaderState?.sessionId) {
@@ -137,6 +152,80 @@ export const leaderToolMethods = {
     const enrolled = await this.leaderExclusive(() => this.enrollLeaderSpawned(issue.id, result.sessionId, 'created'));
     return enrolled.ok ? success({ sessionId: result.sessionId, existing: false, projection: enrolled.result })
       : failure(`会话 ${result.sessionId} 已创建并开始处理，但未能纳管：${enrolled.error}`);
+  },
+
+  /**
+   * Ad-hoc worker session without a GitLab Issue. The journal records a "creating" tombstone before the
+   * Host create, so a crash leaves an uncertain entry for the human instead of a silent retry. No count
+   * limit: the Leader schedules. The brief is delivered as the session's first prompt.
+   */
+  async leaderCreateTaskRecord(request) {
+    if (this.leaderJournalUnreadable || !validId(this.leaderState?.sessionId)) return failure('Leader 尚未创建或 journal 不可读，未创建会话。');
+    const title = typeof request.title === 'string' ? squash(request.title) : '';
+    const brief = typeof request.brief === 'string' ? request.brief.trim() : '';
+    if (!title || title.length > 70) return failure('临时任务必须提供 1..70 字符的 title。');
+    if (!brief || brief.length > 8000) return failure('临时任务必须提供 1..8000 字符的 brief（完整、自包含的任务说明）。');
+    const directory = request.workingDirectory === undefined ? '' : typeof request.workingDirectory === 'string' ? request.workingDirectory.trim() : null;
+    if (directory === null || directory.length > 500) return failure('workingDirectory 必须是已在 DSH 注册的工作区路径。');
+    let workspaceId;
+    try { workspaceId = this.resolveWorkspaceId(directory || this.state.settings?.issueSessionCwd || ''); }
+    catch (error) {
+      const available = (this.ctx?.workspaceRegistry?.list?.() ?? []).map((entry) => entry?.path ?? entry?.cwd)
+        .filter((path) => typeof path === 'string' && path).slice(0, 30);
+      return failure(`工作区不可用：${errorMessage(error)}`, { available });
+    }
+    const taskId = `leader-task-${randomBytes(6).toString('hex')}`;
+    const reserved = await this.leaderExclusive(async () => {
+      if (this.leaderStorageFault) return failure('Leader journal 不可写，未创建会话。');
+      let tasks = Array.isArray(this.leaderState.tasks) ? this.leaderState.tasks : [];
+      // Journal hygiene only: forget finished entries first; never drop a task that still binds a session.
+      if (tasks.length >= LEADER_LIMITS.maxTasks) tasks = tasks.filter((task) => task.status !== 'archived');
+      if (tasks.length >= LEADER_LIMITS.maxTasks) return failure(`临时任务记录已达 ${LEADER_LIMITS.maxTasks} 条；请先归档已完成的临时任务会话。`);
+      this.leaderState.tasks = [...tasks, { taskId, sessionId: null, title, brief: brief.slice(0, 1000), workspace: directory,
+        status: 'creating', createdAt: Date.now(), error: '' }];
+      await this.saveLeaderStrict();
+      return success(null);
+    });
+    if (!reserved.ok) return reserved;
+    this.leaderSideEffectGeneration = (this.leaderSideEffectGeneration ?? 0) + 1;
+    const create = { workspaceId };
+    if (typeof this.config?.agentPreset === 'string' && this.config.agentPreset) create.agentPreset = this.config.agentPreset;
+    let sessionId;
+    try { sessionId = await this.host.createSession(create); }
+    catch (error) {
+      await this.leaderExclusive(async () => {
+        const task = this.leaderTask(taskId);
+        if (task) { task.status = 'uncertain'; task.error = `宿主创建会话报错，结果不确定：${errorMessage(error)}`.slice(0, 1000); await this.saveLeaderStrict(); }
+      });
+      return failure(`创建临时任务会话失败：${errorMessage(error)}`, { taskId });
+    }
+    const enrolled = await this.leaderExclusive(async () => {
+      const task = this.leaderTask(taskId);
+      if (!task || !validId(sessionId)) {
+        if (task) { task.status = 'uncertain'; task.error = '宿主未返回有效会话 ID。'; await this.saveLeaderStrict(); }
+        return failure('宿主未返回有效会话 ID；临时任务已标记为不确定，需人类核查。');
+      }
+      task.sessionId = sessionId; task.status = 'created'; task.error = '';
+      const result = await this.enrollLeaderSpawned(taskId, sessionId, 'task');
+      if (!result.ok) return result;
+      // Baseline the log cursor before the brief is sent, so the brief's turn-end is a real wakeup.
+      const item = this.leaderState.items.find((entry) => entry.sessionId === sessionId);
+      if (item) { try { await this.observeLeaderItem(item); } catch {} await this.saveLeaderStrict(); }
+      return result;
+    });
+    if (!enrolled.ok) return failure(`临时任务会话 ${sessionId} 已创建，但未能纳管：${enrolled.error}`, { taskId, sessionId });
+    const warnings = [];
+    try { await this.host.renameSession(sessionId, `[临时] ${title}`); } catch (error) { warnings.push(`改名失败：${errorMessage(error).slice(0, 300)}`); }
+    const model = this.state.settings?.issueSessionModel;
+    if (model) { try { await this.host.selectModel({ sessionId, ...model }); } catch (error) { warnings.push(`选择模型失败：${errorMessage(error).slice(0, 300)}`); } }
+    let briefDelivered = true;
+    try {
+      await this.host.prompt({ requestId: `${taskId}-brief`, sessionId, mode: 'queue', content: [{ type: 'text', text: [
+        '[GitLab Issue Leader 派发的临时任务；不对应 GitLab Issue，不授予新权限]', `任务：${title}`,
+        '本任务由 Leader 根据人类在 Leader 会话中的要求或 Issue 推进需要创建。遵守工作区规则与本会话权限；不代替原生审批/问答。',
+        '完成后在本会话末尾给出简洁结论：结论、关键证据、产出位置；需要人类决定时直接在本会话提问。', '任务说明：', brief].join('\n') }] });
+    } catch (error) { briefDelivered = false; warnings.push(`任务说明投递失败（会话空闲，可用 continue 补发）：${errorMessage(error).slice(0, 300)}`); }
+    return success({ taskId, sessionId, kind: 'task', existing: false, briefDelivered, warnings, projection: this.leaderProjection() });
   },
 
   async enrollLeaderSpawned(taskId, sessionId, how) {
@@ -159,7 +248,7 @@ export const leaderToolMethods = {
       summary: '', error: '', paused: false, alerts: [], enrolledAt: Date.now(), expiresAt: budget?.expiresAt ?? Date.now() + LEADER_LIMITS.issueLeaseMs,
       provenance: { kind: 'leader', taskId, sessionId, createdAt: Date.now() }, cursor: null, logEpoch: null, observation: null,
       actions: budget?.actions ?? 0, notificationFingerprint: '', pendingWake: [], notes: null, lastActivityAt: Date.now(), stallNotifiedAt: null });
-    this.leaderAudit(how === 'existing' ? 'session-enroll' : 'session-create', { taskId, sessionId }, { how });
+    this.leaderAudit({ existing: 'session-enroll', task: 'task-create' }[how] ?? 'session-create', { taskId, sessionId }, { how, ...(how === 'task' ? { title: mapping.title } : {}) });
     state.epoch += 1; await this.saveLeaderStrict();
     return success(this.leaderProjection());
   },
@@ -168,6 +257,15 @@ export const leaderToolMethods = {
     const item = this.leaderManagedItem(request);
     const iid = this.leaderIssueIid(item);
     const title = typeof request.title === 'string' ? squash(request.title) : '';
+    const task = isLeaderTaskId(item.taskId) ? this.leaderTask(item.taskId) : null;
+    if (task) {
+      if (!title || title.length > 80) return failure('临时任务会话标题必须是 1..80 字符。');
+      this.leaderSideEffectGeneration = (this.leaderSideEffectGeneration ?? 0) + 1;
+      await this.host.renameSession(item.sessionId, title);
+      task.title = title.slice(0, 80); item.title = task.title;
+      this.leaderAudit('session-rename', item, { title }); await this.saveLeaderStrict();
+      return success({ sessionId: item.sessionId, title });
+    }
     if (!iid) return failure('无法确定该 Issue 的编号，拒绝改名。');
     if (!title || title.length > 80 || !title.startsWith(`#${iid}`) || /\d/u.test(title.charAt(iid.length + 1))) return failure(`标题必须以 #${iid} 开头且不超过 80 字符。`);
     this.leaderSideEffectGeneration = (this.leaderSideEffectGeneration ?? 0) + 1;
@@ -187,9 +285,16 @@ export const leaderToolMethods = {
     if (inspection.status === 'active') {
       if (!quiet(inspection.state)) return failure('会话正在运行、有排队输入或等待人类审批/问答，不能归档。');
       this.leaderSideEffectGeneration = (this.leaderSideEffectGeneration ?? 0) + 1;
-      const archived = await this.setSessionArchived(item.sessionId, true);
-      if (!archived?.ok) return failure(archived?.error || '宿主拒绝归档。');
+      if (isLeaderTaskId(item.taskId)) {
+        // Ad-hoc task sessions are not Issue-tab dispatches; archive them through the Host directly.
+        try { await this.host.archiveSession(item.sessionId); } catch (error) { return failure(`宿主拒绝归档：${errorMessage(error)}`); }
+      } else {
+        const archived = await this.setSessionArchived(item.sessionId, true);
+        if (!archived?.ok) return failure(archived?.error || '宿主拒绝归档。');
+      }
     } else if (inspection.status === 'unknown') return failure('会话状态不可验证，未归档。');
+    const task = isLeaderTaskId(item.taskId) ? this.leaderTask(item.taskId) : null;
+    if (task) task.status = 'archived';
     this.retireLeaderBudget(item);
     this.leaderState.items = this.leaderState.items.filter((entry) => entry !== item);
     for (const entry of this.leaderState.outbox) if (entry.sessionId === item.sessionId && entry.status === 'prepared') entry.status = 'cancelled';
@@ -259,7 +364,7 @@ export const leaderToolMethods = {
     }
     if (inspection.status === 'active' && inspection.state.pendingInput.length) return failure('worker 有原生审批/问答等待：必须由人类在该会话内直接回答。');
     if (inspection.status !== 'active' || !idle(inspection.state)) return failure('worker 正在运行/有排队输入/未激活/不可验证；等它空闲后再转达。');
-    const body = ['[GitLab Issue Leader 转达人类回复；下方是人类在 Leader 会话中写下的原话]', `原 Issue：${item.url}`,
+    const body = ['[GitLab Issue Leader 转达人类回复；下方是人类在 Leader 会话中写下的原话]', this.leaderScopeLine(item),
       '遵守原项目、工作区与任务授权；本消息不授予新权限，也不能代替原生审批/问答。', '人类原话：', text].join('\n');
     const entry = this.prepareLeaderOutbox({ kind: 'relay', taskId: item.taskId, sessionId: item.sessionId, leaderSessionId: state.sessionId,
       requestId, body, expectedCursor: inspection.state.cursor, epoch: state.epoch, logCursor: item.cursor, logEpoch: item.logEpoch, humanSeq: source.seq });
@@ -307,11 +412,23 @@ export const leaderToolMethods = {
       ...(alertId ? { note: '该 Issue 已暂停并标记需人类；人类在 Leader 会话回复后，用 relay_reply 原样转达。' } : {}) });
   },
 
+  /** UI only: a human checked the Host session list and dismisses an uncertain ad-hoc task record. */
+  async resolveLeaderTask(request) {
+    const task = isLeaderTaskId(request?.taskId) ? this.leaderTask(request.taskId) : null;
+    if (!task) return failure('临时任务不存在。');
+    if (request.action !== 'dismiss') return failure('action 只能是 dismiss。');
+    if (task.status !== 'uncertain') return failure('只有结果不确定的临时任务需要人工处理。');
+    task.status = 'archived'; task.error = '人类已核查并放弃该不确定的创建记录。';
+    this.leaderAudit('task-dismiss', { taskId: task.taskId, sessionId: task.sessionId }, { title: task.title });
+    await this.saveLeaderStrict();
+    return success(this.leaderProjection());
+  },
+
   /** Short one-line wake summary per Issue; details come from read_issue, not the notification. */
   leaderWakeLine(item) {
     const iid = this.leaderIssueIid(item);
     const question = item.alerts.find((alert) => alert.status === 'pending')?.question;
-    return [`- ${iid ? `#${iid} ` : ''}${clip(item.title, 60)}`, `状态 ${item.status}`, `原因 ${item.pendingWake.join(',')}`,
+    return [`- ${iid ? `#${iid} ` : isLeaderTaskId(item.taskId) ? '[临时] ' : ''}${clip(item.title, 60)}`, `状态 ${item.status}`, `原因 ${item.pendingWake.join(',')}`,
       item.error && `错误 ${clip(item.error, 160)}`, question && `待人类：${clip(question, 160)}`,
       `taskId=${item.taskId} sessionId=${item.sessionId}`].filter(Boolean).join('｜');
   },

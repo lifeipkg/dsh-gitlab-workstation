@@ -2,7 +2,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { buildIssueProjection, buildLeaderProjection, compactLeaderOutbox, DEFAULT_LEADER_AGENT_PRESET, initialLeaderState,
-  LEADER_LIMITS, normalizeLeaderState, pruneCreatedEnrollments, validateLeaderSettings } from '../core.js';
+  isLeaderTaskId, LEADER_LIMITS, normalizeLeaderState, pruneCreatedEnrollments, validateLeaderSettings } from '../core.js';
 import { errorMessage } from './util.js';
 import { leaderToolMethods } from './leader-tools.js';
 
@@ -42,9 +42,9 @@ const quiet = (state) => validState(state) && !state.running
 const idle = (state) => quiet(state) && state.active && Array.isArray(state.queue);
 const freeze = (value) => { if (value && typeof value === 'object') { for (const child of Object.values(value)) freeze(child); Object.freeze(value); } return value; };
 const uiOperations = new Set(['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue',
-  'resetIssueBudget', 'resolveDelivery', 'resolveCreation']);
+  'resetIssueBudget', 'resolveDelivery', 'resolveCreation', 'resolveTask']);
 // The Leader agent's complete capability set (v2.36). Session operations are limited to enrolled
-// GitLab Issue workers; nothing here touches the Leader itself, human sessions, permissions or GitLab writes.
+// GitLab Issue workers and Leader-dispatched ad-hoc task sessions; nothing here touches the Leader itself, human sessions, permissions or GitLab writes.
 const agentOperations = new Set(['snapshot', 'readIssue', 'createSession', 'renameSession', 'archiveSession',
   'selectSessionModel', 'continueIssue', 'relayReply', 'updateIssue']);
 // Operations that must not hold the journal lock for their whole duration.
@@ -155,7 +155,7 @@ export const leaderMethods = {
     }
     const result = await this.leaderLockedOperation(operation, request, caller);
     // GitLab reads can take up to the glab timeout; run them after releasing the journal lock.
-    if (operation === 'readIssue' && result.ok && result.result?.taskId) result.result.gitlab = await this.leaderIssueGitlab(result.result.taskId);
+    if (operation === 'readIssue' && result.ok && result.result?.taskId && !isLeaderTaskId(result.result.taskId)) result.result.gitlab = await this.leaderIssueGitlab(result.result.taskId);
     return result;
   },
 
@@ -179,6 +179,7 @@ export const leaderMethods = {
           case 'resetIssueBudget': return await this.resetLeaderIssueBudget(request);
           case 'resolveDelivery': return await this.resolveLeaderDelivery(request);
           case 'resolveCreation': return await this.resolveLeaderCreation(request);
+          case 'resolveTask': return await this.resolveLeaderTask(request);
           case 'readIssue': return await this.readIssueRecord(request);
           case 'renameSession': return await this.renameManagedSession(request);
           case 'archiveSession': return await this.archiveManagedSession(request);
@@ -204,6 +205,11 @@ export const leaderMethods = {
 
   leaderIssueMapping(taskId, sessionId) {
     if (!validId(taskId) || !validId(sessionId) || sessionId === this.leaderState?.sessionId) return null;
+    if (isLeaderTaskId(taskId)) {
+      // Ad-hoc tasks map only through the Leader journal's own registry, never through the Issue list.
+      const task = (this.leaderState?.tasks ?? []).find((entry) => entry.taskId === taskId && entry.status === 'created' && entry.sessionId === sessionId);
+      return task ? { id: task.taskId, sessionId: task.sessionId, title: task.title, url: '', kind: 'task' } : null;
+    }
     const projection = buildIssueProjection(this.state);
     return [...projection.items, ...projection.orphans].find((item) => item.id === taskId && item.sessionId === sessionId && !item.routed) ?? null;
   },
@@ -453,7 +459,7 @@ export const leaderMethods = {
       body: ['[GitLab Issue Leader 非人类启动简报；UI 人类已显式开始本次托管]',
         '本会话是人类查看所有 Issue 进度的主窗口；人类通常不会打开各 worker 会话。请先用中文向人类给出一份简短总览（每个 Issue 一行：状态、进展、是否需要人类），之后每次被唤醒都在本会话里汇报。',
         '只推进下列已纳管 Issue；snapshot 里的 issues 是 Issue tab 全部会话的只读总览，未纳管的只汇报不推进。状态词含义见 snapshot.glossary。',
-        '工具：gitlab_leader_snapshot 总览；gitlab_leader_read_issue 读 worker 进展与 GitLab Issue/MR/流水线（只读）；gitlab_leader_continue 凭 read_issue 返回的 evidenceToken 续办；gitlab_leader_update_issue 记录阶段/下一步/等待项/决定/交付物，needsHuman 表示需要人类；gitlab_leader_relay_reply 把人类在本会话写的回复原样转达给 worker；gitlab_leader_session_create/rename/archive/select_model 管理 Issue worker 会话。',
+        '工具：gitlab_leader_snapshot 总览；gitlab_leader_read_issue 读 worker 进展与 GitLab Issue/MR/流水线（只读）；gitlab_leader_continue 凭 read_issue 返回的 evidenceToken 续办；gitlab_leader_update_issue 记录阶段/下一步/等待项/决定/交付物，needsHuman 表示需要人类；gitlab_leader_relay_reply 把人类在本会话写的回复原样转达给 worker；gitlab_leader_session_create/rename/archive/select_model 管理 worker 会话；session_create 不传 taskId、改传 title + brief 可开不对应 Issue 的临时任务会话（如专题调查），同样纳管。',
         'idle 不是继续理由，turn/end 不是 Issue 关闭；无明确下一步则继续观察。不自授权，不代答原生审批/问答（只能人类在 worker 会话内回答）；不调用阻塞整个 Leader 的 ask_user_question。',
         JSON.stringify(state.items.map((item) => ({ taskId: item.taskId, sessionId: item.sessionId, url: item.url, title: item.title,
           status: item.status, summary: item.summary, error: item.error, actions: item.actions,
@@ -706,7 +712,7 @@ export const leaderMethods = {
     const evidence = request.evidence;
     if (!item.observation || item.observation.truncated || !evidence || evidence.cursor !== item.observation.cursor || evidence.epoch !== this.leaderState.epoch
       || evidence.logCursor !== item.cursor || evidence.logEpoch !== item.logEpoch || Date.now() - item.observation.observedAt > 120000) return failure('推进证据缺失/过期/epoch 或游标不匹配，请重新读取已纳管 Issue。');
-    const body = ['[GitLab Issue Leader 自动续办；不是人类输入，不授予新权限]', `仅限原 Issue：${item.url}`,
+    const body = ['[GitLab Issue Leader 自动续办；不是人类输入，不授予新权限]', this.leaderScopeLine(item),
       '遵守原项目、工作区与任务授权；不代答正式审批/问答，不新增目标、不解除护栏。', `证据理由：${request.reason.trim()}`,
       'Leader 的原范围建议：', request.body.trim()].join('\n');
     const payload = { kind: 'advance', taskId: item.taskId, sessionId: item.sessionId, leaderSessionId: this.leaderState.sessionId,
