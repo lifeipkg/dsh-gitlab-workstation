@@ -1,6 +1,6 @@
 {
   "name": "@lifeipkg/dsh-gitlab-workstation",
-  "version": "2.35.0",
+  "version": "2.36.0",
   "description": "GitLab Workstation for DSH: automate Todo mentions, process assigned issues, optionally supervise Issue sessions with a scoped Leader, and surface human follow-up in a compact workbench.",
   "type": "module",
   "license": "MIT",
@@ -41,7 +41,7 @@
   ],
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "check": "node --check index.js && node --check core.js && node --check client.js && node --check dsh-host.js && node --check host/constants.js && node --check host/util.js && node --check host/gitlab.js && node --check host/precheck.js && node --check host/precheck-jev.js && node --check host/slots.js && node --check host/closures.js && node --check host/followups.js && node --check host/dispatch.js && node --check host/issues.js && node --check host/logs.js && node --check host/session-entries.js && node --check host/leader.js && node --check host/leader-agent.js",
+    "check": "node --check index.js && node --check core.js && node --check client.js && node --check dsh-host.js && node --check host/constants.js && node --check host/util.js && node --check host/gitlab.js && node --check host/precheck.js && node --check host/precheck-jev.js && node --check host/slots.js && node --check host/closures.js && node --check host/followups.js && node --check host/dispatch.js && node --check host/issues.js && node --check host/logs.js && node --check host/session-entries.js && node --check host/leader.js && node --check host/leader-agent.js && node --check host/leader-tools.js",
     "pack:check": "npm pack --dry-run --json"
   },
   "publishConfig": {

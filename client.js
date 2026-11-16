@@ -144,6 +144,12 @@ window.__ModuleLoader__.load({
       leaderMainWindow: 'Leader is your main window: once supervision runs, it posts progress for every Issue session in its own conversation.',
       leaderBudget: 'Actions', leaderResetBudget: 'Reset budget',
       leaderResetBudgetHint: 'Grants this Issue a fresh action budget and lease. A paused Issue still needs an explicit resume.',
+      leaderNoteDecisions: 'Decisions', leaderNoteDeliverables: 'Deliverables',
+      leaderProvenanceUi: 'Added by you', leaderProvenanceCreated: 'Auto-enrolled', leaderProvenanceLeader: 'Opened by Leader',
+      leaderAudit: 'Leader session actions', leaderAuditHint: 'Sessions Leader created, renamed, archived or switched models for, and replies it relayed. Display only.',
+      leaderAuditCreate: 'Created session', leaderAuditEnroll: 'Took over session', leaderAuditRename: 'Renamed', leaderAuditArchive: 'Archived',
+      leaderAuditModel: 'Switched model', leaderAuditRelay: 'Relayed your reply',
+      leaderRelayHint: 'You can also answer in the Leader session; Leader forwards your exact words to the Issue session. Native approvals and questions still need you in the actual session.',
       leaderDeliveries: 'Unconfirmed deliveries',
       leaderDeliveriesHint: 'The Host could not confirm whether these messages arrived. Open the target session, check, then record the result. Nothing is resent automatically.',
       leaderDelivered: 'It arrived', leaderNotDelivered: 'It did not arrive', leaderDeliveryOpen: 'Open target session',
@@ -295,6 +301,12 @@ window.__ModuleLoader__.load({
       leaderMainWindow: 'Leader 会话是你的主窗口：托管运行时，它会在自己的对话里汇报每个 Issue 会话的进度。',
       leaderBudget: '推进次数', leaderResetBudget: '重置预算',
       leaderResetBudgetHint: '为该 Issue 重新发放推进预算和托管时限；已暂停的 Issue 仍需显式恢复。',
+      leaderNoteDecisions: '决定', leaderNoteDeliverables: '产出',
+      leaderProvenanceUi: '你选入', leaderProvenanceCreated: '自动纳管', leaderProvenanceLeader: 'Leader 开启',
+      leaderAudit: 'Leader 会话操作', leaderAuditHint: 'Leader 创建、重命名、归档、换模型的会话，以及它转达的回复。仅供查看。',
+      leaderAuditCreate: '创建会话', leaderAuditEnroll: '接管会话', leaderAuditRename: '重命名', leaderAuditArchive: '归档',
+      leaderAuditModel: '更换模型', leaderAuditRelay: '转达你的回复',
+      leaderRelayHint: '也可以直接在 Leader 会话里回复，Leader 会把你的原话转给对应 Issue 会话；原生审批与问答仍需你在实际会话中处理。',
       leaderDeliveries: '未确认投递',
       leaderDeliveriesHint: 'Host 无法确认这些消息是否已送达。请打开目标会话核对后记录结果；无论选择哪项都不会自动重发。',
       leaderDelivered: '已送达', leaderNotDelivered: '未送达', leaderDeliveryOpen: '打开目标会话',
@@ -709,6 +721,30 @@ window.__ModuleLoader__.load({
       standby: 'leaderStandby', cold: 'leaderCold' };
     const LEADER_RUN_STATES = ['error', 'creation-uncertain', 'not-created', 'setup-incomplete', 'delivery-uncertain', 'running', 'paused', 'never-started'];
 
+    const LEADER_PROVENANCE_LABELS = { ui: 'leaderProvenanceUi', created: 'leaderProvenanceCreated', leader: 'leaderProvenanceLeader' };
+    const LEADER_AUDIT_LABELS = { 'session-create': 'leaderAuditCreate', 'session-enroll': 'leaderAuditEnroll', 'session-rename': 'leaderAuditRename',
+      'session-archive': 'leaderAuditArchive', 'session-model': 'leaderAuditModel', 'relay-reply': 'leaderAuditRelay' };
+
+    /** Leader's structured Issue notes as short display lines (untrusted text, rendered as plain text). */
+    function leaderNoteLines(notes, t) {
+      if (!notes) return [];
+      const colonText = t('colon') || ': ';
+      // stage / next / waitingOn are already folded into the Host-written summary line.
+      return [['leaderNoteDecisions', notes.decisions.join('；')], ['leaderNoteDeliverables', notes.deliverables.join('；')]]
+        .filter(([, value]) => value).map(([key, value]) => `${t(key)}${colonText}${value}`);
+    }
+
+    /** Audit detail is a Host-written JSON string; show only the human-meaningful field. */
+    function leaderAuditDetail(detail) {
+      try {
+        const value = JSON.parse(detail || '{}');
+        if (typeof value.title === 'string') return value.title;
+        if (typeof value.reason === 'string') return value.reason;
+        if (typeof value.provider === 'string' && typeof value.model === 'string') return `${value.provider}/${value.model}`;
+        return '';
+      } catch { return ''; }
+    }
+
     function validLeaderSessionId(value) {
       return typeof value === 'string' && value.length > 0 && value.trim() === value && !/[\u0000-\u001f]/u.test(value);
     }
@@ -732,7 +768,7 @@ window.__ModuleLoader__.load({
         run: { expiresAt: count(value.run?.expiresAt), wakeups: count(value.run?.wakeups), maxWakeups: count(value.run?.maxWakeups),
           lastStartedAt: count(value.run?.lastStartedAt) },
         deliveries: (Array.isArray(value.deliveries) ? value.deliveries : [])
-          .filter((entry) => entry && text(entry.requestId) && ['advance', 'notify'].includes(entry.kind))
+          .filter((entry) => entry && text(entry.requestId) && ['advance', 'notify', 'relay'].includes(entry.kind))
           .map((entry) => ({ requestId: entry.requestId, kind: entry.kind, taskId: text(entry.taskId),
             sessionId: validLeaderSessionId(entry.sessionId) ? entry.sessionId : null, status: text(entry.status),
             error: text(entry.error), createdAt: count(entry.createdAt) })),
@@ -748,7 +784,17 @@ window.__ModuleLoader__.load({
           alerts: (Array.isArray(item.alerts) ? item.alerts : []).filter((alert) => alert && text(alert.question)).map((alert) => ({
             id: text(alert.id), question: alert.question, status: text(alert.status), createdAt: alert.createdAt,
           })),
-        })), events: Array.isArray(value.events) ? value.events : [], error: text(value.error),
+          provenance: ['ui', 'created', 'leader'].includes(item.provenance) ? item.provenance : '',
+          notes: item.notes && typeof item.notes === 'object' ? { stage: text(item.notes.stage), next: text(item.notes.next), waitingOn: text(item.notes.waitingOn),
+            decisions: (Array.isArray(item.notes.decisions) ? item.notes.decisions : []).filter((entry) => typeof entry === 'string'),
+            deliverables: (Array.isArray(item.notes.deliverables) ? item.notes.deliverables : []).filter((entry) => typeof entry === 'string'),
+            updatedAt: count(item.notes.updatedAt) } : null,
+        })),
+        // Display-only Leader session-management trail (create/rename/archive/model/relay), newest last.
+        audit: (Array.isArray(value.audit) ? value.audit : []).filter((entry) => entry && text(entry.action)).map((entry) => ({
+          action: entry.action, taskId: text(entry.taskId), sessionId: text(entry.sessionId), at: count(entry.at), detail: text(entry.detail),
+        })),
+        events: Array.isArray(value.events) ? value.events : [], error: text(value.error),
       };
     }
 
@@ -1473,6 +1519,7 @@ window.__ModuleLoader__.load({
         ? t('enabled') : leaderRunState === 'never-started' ? t('leaderNeverStartedPhase')
           : leaderRunState === 'delivery-uncertain' ? t('leaderDeliveryUncertain') : t(LEADER_PHASE_LABELS[leaderProjection?.phase] || 'leaderUncertain');
       const leaderDeliveries = (leaderProjection?.deliveries ?? []).filter((entry) => entry.status === 'uncertain');
+      const leaderAudit = [...(leaderProjection?.audit ?? [])].reverse().slice(0, 30);
       const leaderCreationUnresolved = leaderFresh && leaderRunState === 'creation-uncertain';
       const leaderBudgetSpent = (item) => item.actions !== null && item.maxActions !== null && item.actions >= item.maxActions
         || (item.expiresAt !== null && item.expiresAt <= Date.now());
@@ -1998,15 +2045,25 @@ window.__ModuleLoader__.load({
                   h('article', { className: 'gta-todo', role: 'listitem', key: `${item.taskId}:${item.sessionId}` },
                     h('div', { className: 'gta-todo-main' },
                       h('div', { className: 'gta-todo-title' }, h('span', null, item.title || item.taskId),
-                        h('span', { className: `gta-tag ${['needs-human', 'unknown', 'missing'].includes(item.status) ? 'gta-tag-attention' : 'gta-tag-neutral'}` }, t(LEADER_STATUS_LABELS[item.status]))),
+                        h('span', { className: `gta-tag ${['needs-human', 'unknown', 'missing'].includes(item.status) ? 'gta-tag-attention' : 'gta-tag-neutral'}` }, t(LEADER_STATUS_LABELS[item.status])),
+                        LEADER_PROVENANCE_LABELS[item.provenance] && h('span', { className: 'gta-tag gta-tag-neutral' }, t(LEADER_PROVENANCE_LABELS[item.provenance]))),
                       item.summary && h('div', { className: 'gta-muted gta-meta gta-leader-summary' }, item.summary),
+                      leaderNoteLines(item.notes, t).map((line) => h('div', { key: line, className: 'gta-muted gta-meta' }, line)),
                       item.actions !== null && item.maxActions !== null && h('div', { className: 'gta-muted gta-meta' },
                         `${t('leaderBudget')} ${item.actions}/${item.maxActions}${item.expiresAt ? ` · ${formatTime(item.expiresAt, '')}` : ''}`),
                       item.error && h('div', { className: 'gta-muted gta-attention gta-meta' }, item.error),
                     ), leaderItemActions(item),
                   ))),
+              leaderAudit.length > 0 && h('details', { className: 'gta-advanced gta-leader-audit' },
+                h('summary', null, `${t('leaderAudit')} · ${leaderAudit.length}`),
+                h('p', { className: 'gta-muted' }, t('leaderAuditHint')),
+                h('div', { className: 'gta-list', role: 'list', 'aria-label': t('leaderAudit') }, leaderAudit.map((entry, index) =>
+                  h('div', { key: `${entry.at}:${index}`, role: 'listitem', className: 'gta-muted gta-meta' },
+                    [entry.at ? formatTime(entry.at, '') : '', LEADER_AUDIT_LABELS[entry.action] ? t(LEADER_AUDIT_LABELS[entry.action]) : entry.action,
+                      entry.taskId, leaderAuditDetail(entry.detail)].filter(Boolean).join(' · '))))),
               h('div', { className: 'gta-section-title gta-subsection-title' }, h('h2', null, t('leaderHuman')), h('span', { className: 'gta-muted' }, leaderHuman.length)),
               h('p', { className: 'gta-muted' }, t('leaderNativeHuman')),
+              h('p', { className: 'gta-muted' }, t('leaderRelayHint')),
               leaderHuman.length === 0 ? h('p', { className: 'gta-muted' }, t('leaderHumanEmpty'))
                 : h('div', { className: 'gta-list gta-leader-list', role: 'list', 'aria-label': t('leaderHuman') }, leaderHuman.map((item) =>
                   h('article', { className: 'gta-todo', role: 'listitem', key: `human:${item.taskId}:${item.sessionId}` },

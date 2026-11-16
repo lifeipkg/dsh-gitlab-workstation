@@ -586,7 +586,7 @@ async function loadLeaderHelpers() {
   const marker = '    function PanelIcon({ size = 20 }) {';
   assert.ok(source.includes(marker));
   const instrumented = source.replace(marker,
-    `    globalThis.__leaderHelpers = { callLeader, LEADER_RPC_OPERATIONS, normalizeLeaderProjection, readLeaderResponse, validLeaderSessionId, leaderItemForSession, canGrantLeaderAccess, canCreateLeader, canRetryLeaderSetup, leaderHumanItems, createSessionEntryGuard, issueModelFromOption, withReasoningEffort, en, zh };\n${marker}`);
+    `    globalThis.__leaderHelpers = { callLeader, LEADER_RPC_OPERATIONS, normalizeLeaderProjection, readLeaderResponse, validLeaderSessionId, leaderItemForSession, canGrantLeaderAccess, canCreateLeader, canRetryLeaderSetup, leaderHumanItems, leaderNoteLines, leaderAuditDetail, createSessionEntryGuard, issueModelFromOption, withReasoningEffort, en, zh };\n${marker}`);
   let definition;
   const context = vm.createContext({ AbortController, AbortSignal,
     fetch() { assert.fail('Leader mutations must never fall back to HTTP'); },
@@ -676,7 +676,7 @@ test('Leader native RPC errors, missing value, absent connection and cancellatio
 test('Leader projections require real settings and phase, keep default off, and sanitize uncertain workers', async () => {
   const { normalizeLeaderProjection, canGrantLeaderAccess, canCreateLeader, validLeaderSessionId } = await loadLeaderHelpers();
   const initial = normalizeLeaderProjection(leaderProjection());
-  assert.deepEqual(plain(initial), { ...leaderProjection(), runState: '', creation: null, deliveries: [],
+  assert.deepEqual(plain(initial), { ...leaderProjection(), runState: '', creation: null, deliveries: [], audit: [],
     run: { expiresAt: null, wakeups: null, maxWakeups: null, lastStartedAt: null } });
   assert.equal(canGrantLeaderAccess(initial), false);
   assert.equal(canCreateLeader(initial, null, false), true);
@@ -883,4 +883,24 @@ test('hardened Leader projection exposes run state, budgets and unconfirmed deli
     assert.ok(en[key] && zh[key], key);
   }
   assert.match(zh.leaderNeverStartedHint, /New Session/);
+});
+
+test('Leader capability projection exposes provenance, notes and a display-only audit trail', async () => {
+  const { normalizeLeaderProjection, leaderNoteLines, leaderAuditDetail, en, zh } = await loadLeaderHelpers();
+  const projection = normalizeLeaderProjection(leaderProjection({ sessionId: 'leader-1', phase: 'ready',
+    deliveries: [{ requestId: 'relay-1', kind: 'relay', taskId: 'issue:7', sessionId: 'worker-7', status: 'uncertain' }],
+    audit: [{ action: 'session-rename', taskId: 'issue:7', sessionId: 'worker-7', at: 5, detail: '{"title":"#7 修复 CI"}' }, { action: '' }, null],
+    items: [{ taskId: 'issue:7', sessionId: 'worker-7', status: 'watching', provenance: 'leader', alerts: [],
+      notes: { stage: '修复中', decisions: ['方案 B', 3], deliverables: ['MR !12'], updatedAt: 9 } },
+    { taskId: 'issue:8', sessionId: 'worker-8', status: 'watching', provenance: 'bogus', notes: 'x', alerts: [] }] }));
+  assert.equal(projection.deliveries[0].kind, 'relay');
+  assert.deepEqual(plain(projection.items.map((item) => item.provenance)), ['leader', '']);
+  assert.deepEqual(plain(projection.items[0].notes.decisions), ['方案 B']); assert.equal(projection.items[1].notes, null);
+  assert.deepEqual(plain(projection.audit.map((entry) => entry.action)), ['session-rename']);
+  const t = (key) => zh[key];
+  assert.deepEqual(plain(leaderNoteLines(projection.items[0].notes, t)), ['决定：方案 B', '产出：MR !12']);
+  assert.equal(leaderNoteLines(null, t).length, 0);
+  assert.equal(leaderAuditDetail('{"title":"#7 修复 CI"}'), '#7 修复 CI'); assert.equal(leaderAuditDetail('{"reason":"完成"}'), '完成');
+  assert.equal(leaderAuditDetail('{"provider":"kiro","model":"deep"}'), 'kiro/deep'); assert.equal(leaderAuditDetail('not json'), '');
+  for (const key of ['leaderAudit', 'leaderAuditCreate', 'leaderAuditRelay', 'leaderProvenanceLeader', 'leaderRelayHint', 'leaderNoteDecisions']) assert.ok(en[key] && zh[key], key);
 });

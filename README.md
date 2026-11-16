@@ -73,13 +73,23 @@
 
 **Log Tab（v2.32）**：显示运行时内存日志——**只进内存环形缓冲、不落盘**，新→旧，打开期间每 3 秒静默刷新。每行 `时间 [级别] 单行消息`，级别可筛「全部 / 警告及以上」，支持「清空日志」（两步确认，清空后留一条审计行）。内存有硬上限防无限增长：条数 ≤ `LOG_MAX_ENTRIES`(500) 与合计字符 ≤ `LOG_MAX_CHARS`(64KB) 双维度，任一超就从头部淘汰最旧（FIFO），单条 ≤ `LOG_MAX_LINE_CHARS`(500 字) 截断标注；被丢的条数记 dropped，面板以 `-N` 显示已丢弃条数，悬停可查看说明。写入入口统一 `this.logger.<level>()`：进缓冲 + 透传宿主日志（自动补 `[gitlab-todo-agent]` 前缀，业务消息不带前缀），消息格式为单行「<对象/动作>：<结果/细节>」。bridge 新增 `logs`（GET 投影 / POST `clear:true`）。
 
-## Issue Leader（v2.34，可选托管）
+## Issue Leader（v2.34 起，可选托管；v2.36 会话管理）
 
 Issue Tab 顶部提供折叠的 **Leader** 区域。创建独立 Leader 会话、选择它的模型，将需要管理的 Issue 会话逐条「托管」，再明确启动。默认关闭，不自动接管存量会话；「新建 Issue 默认托管」是独立的可选授权，仅对开启之后具有真实创建证明的新会话生效。它不把 Issue 改成 Todo 自动任务，不占 Todo 自动并发槽，也不改变 worker 的模型、工作区或项目规则。
 
 - **集中了解进度**：启动时给 Leader 一次当前名册简报，此后根据有界日志增量和状态变化汇总，稳定状态不不断唤醒模型。Leader 能读取已纳管会话，明确下一步时向原会话发送原 Issue 范围内的续办建议；idle 不是继续理由，回合结束也不代表 Issue 已关闭。
-- **拿不准交给你**：问题在 Leader 会话和托管列表汇总，只暂停对应 Issue，其他继续管理。你确认业务判断后，用该 Issue 的明确恢复入口重新允许推进。正式工具审批／原生问答仍由人类在真实会话入口处理，Leader 不代答、不解除权限护栏。
-- **只管理明确选中的会话**：首版限 Issue Tab 当前关联的独立 worker，路由目标与新建人工接手会话不隐式接管。Leader 自身只拥有纳管读取、受控推进和汇报工具，不提供 shell、任意网络／会话操作、权限修改或审批代办。
+- **拿不准交给你**：问题在 Leader 会话和托管列表汇总，只暂停对应 Issue，其他继续管理。你可以直接在 Leader 会话里回答，Leader 用 `relay_reply` 把你的原话转给对应 worker，同时恢复该 Issue；Host 只转达在 Leader 日志中能找到、来源为人类 GUI 输入的文字，不消耗推进预算，worker 正在运行、排队或有原生问答时拒绝转达。也可以用该 Issue 的明确恢复入口重新允许推进。正式工具审批／原生问答仍由人类在真实会话入口处理，Leader 不代答、不解除权限护栏；`read_issue` 会把 worker 待回答问题的原文带给 Leader，方便它在主窗口告诉你。
+- **只管理明确选中的会话**：限 Issue Tab 当前关联的独立 worker，路由目标与新建人工接手会话不隐式接管。Leader 只有 9 个受限工具，不提供 shell、文件、GitLab 写入、权限修改或审批代办：
+  - `gitlab_leader_snapshot`：所有 Issue 会话状态、标题和 Leader 笔记总览。
+  - `gitlab_leader_read_issue`：读取纳管 worker 最近日志、待回答问题原文，以及 GitLab Issue 正文／评论／关联 MR／流水线（只读），返回续办用的 `evidenceToken`。
+  - `gitlab_leader_session_create`：只为 Issue Tab 中的待办 Issue 开 worker，走与「处理」相同的派发逻辑；该 Issue 已有活动 worker 时直接接管，不重复创建；不限制数量，由 Leader 自行调度；新会话自动纳管。
+  - `gitlab_leader_session_rename`：重命名纳管 worker，标题必须保留 `#<iid>` 前缀、最多 80 字。
+  - `gitlab_leader_session_archive`：归档纳管 worker（必须写明理由，运行中／排队／待输入时拒绝），归档后自动解除托管。DSH 没有安全的永久删除接口，因此只归档。
+  - `gitlab_leader_session_select_model`：为空闲的纳管 worker 换成宿主模型目录中的模型；不在目录中时返回可选列表。
+  - `gitlab_leader_continue`：凭 `read_issue` 的 `evidenceToken` 在原 Issue 范围内续办；worker 有新进展、游标移动或授权变化后旧 token 失效。
+  - `gitlab_leader_relay_reply`：原样转达人类在 Leader 会话中的回复（见上）。
+  - `gitlab_leader_update_issue`：记录阶段、下一步、等待项、决定和产出；`needsHuman` 暂停该 Issue 并在面板列为需要你决定。
+  会话创建、重命名、归档、换模型和转达都写入面板的「Leader 会话操作」记录。Leader 不管理自身和你自己的会话，也不接管存量会话。
 - **Leader 会话是主窗口**：人类通常不打开各 Issue 会话。启动简报和每次唤醒都要求 Leader 在自己的对话里用中文汇报逐 Issue 进度；`snapshot` 额外提供 Issue Tab 全部会话的只读概览（含未纳管会话，只读状态，不读日志、不推进）。需要人类时 Leader 给出 Issue 和会话 ID。
 - **可暂停和恢复**：可暂停全部托管或单个 Issue。Leader 未运行（从未启动、已暂停或重启后）时，纳管 Issue 显示为「待命」；重启后默认暂停，需要重新明确启动。冷会话（未加载）只在人类显式「启动托管」「恢复此 Issue」或 Leader 发起一次受校验推进时，经 DSH 会话控制器激活；轮询本身从不激活。忙碌、排队、审批／问答未决、归档、缺失、未知或过期证据都拒绝推进。
 - **创建后先启动**：「创建 Leader」只建立并配置会话；点击「启动托管」之前 Leader 会话是空白的，DSH 会显示为 New Session，这不是创建失败。面板会显示「已创建 · 未启动」和对应提示。
@@ -90,7 +100,7 @@ Leader 续办使用原生 Agent 的非人类消息来源和 idle maintenance 同
 
 正常卸载会先停止托管、取消并清理 Leader 自有自动队列，等其停止执行后再解除工具限制；不会取消 workers。已加载路径在原生 `agent/created` awaited barrier 内先安装限制并清除旧自有通知。新建 Leader 默认使用本插件随附的 `gitlab-issue-leader` preset（只有 persona 与压缩，不挂文件／Shell／网络工具插件），即使插件未加载，Leader 也没有通用工具。`config.leaderAgentPreset` 可显式指定其他 preset（显式值不可用时拒绝创建），设为 `''` 则使用 DSH 默认 preset。既有 Leader 保留创建时的 preset；需要隔离 preset 时，放弃旧 Leader 后重建。使用 DSH 默认 preset 的 Leader 在**插件完全未加载／被禁用时不存在这些 runtime 限制**。崩溃恢复后不要在停用插件或 Leader journal 不可读的状态直接恢复旧 Leader；先重新加载插件并修复可读 journal 建立隔离，或由人类核查并清理旧自动输入。随附 preset 只移除通用工具，不改变宿主的审批与权限模型。
 
-安全预算：每次启动最长 24 小时／最多 100 次唤醒，每个 Issue 最长 72 小时／最多 20 次推进；日志缺口和预算耗尽交人类核查，不无限循环。解除后重新托管不会重置已用推进次数，只有人类在面板上显式「重置预算」才发放新预算（之后仍需显式恢复）。只有回合结束、日志缺口，或状态转为需人工／未知／缺失／归档／出错时才唤醒 Leader，普通日志增量不唤醒模型；Leader 忙碌时唤醒原因持久保存，空闲后再通知。已结束的投递记录会压缩（保留最近 200 条，较早条目丢弃正文），未决投递累计达到 100 条才停止新动作；未变化的 journal 不重写；纳管会话并发观察（最多 4 个），暂停的 Issue 只读状态、不读日志。需要 DSH 已有 Agent、会话控制器与会话投影服务，以及 Cordis 4.1；缺失时明确不可用，不回退成伪人类投递。现成实现复用本插件的会话跟踪／严格创建 journal，以及 DSH 的 `Agent.runMaintenance`、限定工具作用域和日志 API，没有引入新的多 Agent 框架。
+安全预算：每次启动最长 24 小时／最多 100 次唤醒，每个 Issue 最长 72 小时／最多 20 次推进；日志缺口和预算耗尽交人类核查，不无限循环。解除后重新托管不会重置已用推进次数，只有人类在面板上显式「重置预算」才发放新预算（之后仍需显式恢复）。只有回合结束、日志缺口、worker 运行中却 20 分钟没有新日志（每次停滞只提醒一次），或状态转为需人工／未知／缺失／归档／出错时才唤醒 Leader，普通日志增量不唤醒模型；唤醒通知每个 Issue 一行，细节由 Leader 用 `read_issue` 读取；托管因时限或唤醒预算到期停止时，Leader 会话里留一条说明；Leader 忙碌时唤醒原因持久保存，空闲后再通知。已结束的投递记录会压缩（保留最近 200 条，较早条目丢弃正文），未决投递累计达到 100 条才停止新动作；未变化的 journal 不重写；纳管会话并发观察（最多 4 个），暂停的 Issue 只读状态、不读日志。需要 DSH 已有 Agent、会话控制器与会话投影服务，以及 Cordis 4.1；缺失时明确不可用，不回退成伪人类投递。现成实现复用本插件的会话跟踪／严格创建 journal，以及 DSH 的 `Agent.runMaintenance`、限定工具作用域和日志 API，没有引入新的多 Agent 框架。
 
 ## 安全打开与人工接手（v2.33.1）
 
@@ -302,3 +312,4 @@ MIT License。发布到 npm（`npm publish`，scoped 包需公开访问，`publi
 - v2.34.2（状态版本不变）：修复 DSH 0.2.2-rc.3 的 Connection 公共 RPC 包装器在自身 Context 读取未注入的 `webServer`、导致 Leader 路由落入 405 的问题；插件声明 `webServer`，并仅对该确切错误用同一 Connection 注册实现和显式 Context 兼容挂载，不重写认证或 Peer 校验。只有成功的 Host 只读快照明确证明未创建、无会话 ID 且无错误时，才恢复失败后的创建按钮；未知、失败或部分创建状态仍禁止重复创建。
 - v2.33.2（状态版本不变）：新建 Todo 会话前缀由 `[协助]-` 改为 `TODO-`，保留目标类型、编号、note 与续办后缀；Issue 标题、既有路由/复用会话及历史记录不改名。归档永久删除与定时清理因当前宿主缺少安全删除能力而延期，未在本版本实现。
 - v2.35.0（Todo 状态版本与 Leader journal 版本不变，旧 `leader.json` 直接兼容）：Leader 加固。已结束投递压缩、过期创建凭证清理，长期运行不再卡在 500 条上限；只在回合结束和状态转折时唤醒 Leader，并持久保存唤醒原因；启动简报失败自动回退为暂停；显式启动、恢复或受控推进可激活冷 worker；新 Leader 默认使用无通用工具的 `gitlab-issue-leader` preset；重新托管保留已用预算，新增显式重置；未确认投递与不确定创建可人工核对；投影新增运行状态、预算和未确认投递，Issue 新增「待命」「未加载」状态；Leader 作为人类主窗口逐 Issue 汇报，`snapshot` 提供全部 Issue 会话只读概览；面板提示“已创建 · 未启动”。
+- v2.36.0（Todo 状态版本与 Leader journal 版本不变，旧 `leader.json` 直接兼容）：统一 Leader 能力为 9 个受限工具。新增 Issue worker 会话管理（为待办 Issue 创建/接管、重命名、归档、更换模型，均留审计）；`read_issue` 合并 worker 日志、待回答问题原文与 GitLab Issue/MR/流水线只读信息，续办改用 `evidenceToken`；新增 `relay_reply` 原样转达人类在 Leader 会话中的回复；`update_issue` 结构化笔记取代原进度/阻塞上报。worker 运行中 20 分钟无新日志时提醒 Leader 一次；唤醒通知改为每个 Issue 一行；托管到期时在 Leader 会话留言。面板显示 Leader 笔记、纳管来源和会话操作记录。移除旧工具 readManaged/advanceManaged/reportBlocker/reportProgress。既有 Leader 保留旧 persona 文本，新工具说明随启动简报下发。

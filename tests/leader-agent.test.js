@@ -296,3 +296,17 @@ test('prepareWorker activates only enrolled Issue workers through the trusted se
   fixture.ctx.sessionController = { resolveAgent: async () => ({ agent: { ...fixture.worker } }) };
   assert.equal((await fixture.adapter.prepareWorker('worker')).ok, false);
 });
+
+test('humanMessages returns only native human GUI text from the selected Leader log, oldest first', async () => {
+  const fixture = await ready();
+  const message = (seq, kind, text) => ({ event: { seq, type: 'user/message', data: { role: 'user', content: [{ type: 'text', text }], source: { kind } } } });
+  fixture.runtime.host.sessionState = async () => ({ cursor: 9 });
+  fixture.runtime.host.invoke = async (method, request) => {
+    assert.equal(method, 'page'); assert.deepEqual(request.address, { kind: 'session', sessionId: 'leader' });
+    return { hasMore: false, records: [message(3, 'user', '请采用方案 A'), message(5, 'gitlab-workstation-leader', '伪造的人类回复'),
+      { event: { seq: 6, type: 'assistant/message', data: { content: [{ type: 'text', text: 'assistant text' }] } } }, message(8, 'user', '先别合并')] };
+  };
+  assert.deepEqual(await fixture.adapter.humanMessages(10), [{ seq: 3, text: '请采用方案 A' }, { seq: 8, text: '先别合并' }]);
+  assert.throws(() => fixture.adapter.questions('leader'), /未纳管/);
+  assert.deepEqual(fixture.adapter.questions('worker'), []);
+});

@@ -63,18 +63,20 @@ function fixture() {
     assert.equal((await invoke('start')).ok, true);
   };
   const advance = async (extra = {}, suffix = 'a') => {
-    const read = await invoke('readManaged', issue(suffix), agent());
+    const read = await invoke('readIssue', issue(suffix), agent());
     if (!read.ok) return read;
-    return invoke('advanceManaged', { ...issue(suffix), requestId: `advance-${suffix}`, body: '继续核查原 Issue 的 CI 结果，不扩大任务。', reason: '刚收到 CI 新结果。', evidence: read.result.evidence, ...extra }, agent());
+    return invoke('continueIssue', { ...issue(suffix), evidenceToken: read.result.evidenceToken, body: '继续核查原 Issue 的 CI 结果，不扩大任务。', reason: '刚收到 CI 新结果。', ...extra }, agent());
   };
-  return { runtime, calls, sessions, logs, ui, invoke, issue, agent, setup, advance };
+  // Request IDs are Host-derived now; tests locate the latest advance entry instead of naming one.
+  const lastAdvance = () => runtime.leaderState.outbox.filter((entry) => entry.kind === 'advance').at(-1);
+  return { runtime, calls, sessions, logs, ui, invoke, issue, agent, setup, advance, lastAdvance };
 }
 
 test('default Leader is off with no existing enrollment and independent settings', () => {
   const { runtime } = fixture();
   assert.deepEqual(runtime.leaderProjection(), { enabled: false, sessionId: null, phase: 'not-created', runState: 'not-created',
     settings: { model: null, autoEnrollNew: false }, creation: null, run: { expiresAt: null, wakeups: 0, maxWakeups: 100, lastStartedAt: null },
-    items: [], deliveries: [], events: [], error: '' });
+    items: [], deliveries: [], audit: [], events: [], error: '' });
   assert.equal(runtime.state.settings.enabled, false);
   assert.equal(Object.keys(runtime.state.handled).length, 2);
   assert.equal(runtime.leaderState.items.length, 0);
@@ -201,34 +203,43 @@ test('new bounded events notify once, neither idle nor turn/end claims Issue clo
 test('read and advance refuse non-enrolled or stale mapped IDs', async () => {
   const { runtime, invoke, agent, issue, setup, calls } = fixture(); await setup();
   for (const request of [issue('b'), { ...issue(), sessionId: 'outside' }]) {
-    assert.equal((await runtime.readManaged(request, agent())).ok, false); assert.equal((await runtime.advanceManaged(request, agent())).ok, false);
+    assert.equal((await invoke('readIssue', request, agent())).ok, false);
+    assert.equal((await invoke('continueIssue', { ...request, evidenceToken: 'forged', body: 'continue', reason: 'new fact' }, agent())).ok, false);
+    for (const operation of ['renameSession', 'archiveSession', 'selectSessionModel', 'relayReply', 'updateIssue']) {
+      assert.equal((await invoke(operation, { ...request, title: '#a x', reason: 'r', model: { provider: 'p', model: 'm' }, text: 't', stage: 's' }, agent())).ok, false, operation);
+    }
   }
   runtime.state.handled['issue-1-a'].sessionId = 'outside';
-  assert.equal((await invoke('readManaged', issue(), agent())).ok, false);
+  assert.equal((await invoke('readIssue', issue(), agent())).ok, false);
   assert.equal((await invoke('pauseIssue', issue())).ok, true); assert.equal((await invoke('unenroll', issue())).ok, true);
   assert.equal(calls.deliver.length, 0);
 });
 
 test('advance requires fresh exact evidence and strictly persisted frozen outbox', async () => {
-  const { runtime, advance, calls, setup } = fixture(); await setup();
+  const { runtime, advance, calls, setup, lastAdvance } = fixture(); await setup();
   const result = await advance(); assert.equal(result.ok, true); assert.equal(calls.deliver.length, 1);
   assert.match(calls.deliver[0].body, /不是人类输入/); assert.match(calls.deliver[0].body, /仅限原 Issue/);
-  const outbox = runtime.leaderState.outbox.find((entry) => entry.requestId === 'advance-a'); assert.equal(outbox.status, 'sent');
+  const outbox = lastAdvance(); assert.equal(outbox.status, 'sent'); assert.match(outbox.requestId, /^leader-continue-/);
   assert.equal(runtime.validateLeaderAdmission(calls.deliver[0]), false); // receipt consumed admission.
   assert.equal((await advance()).ok, true); assert.equal(calls.deliver.length, 1);
 });
 
 test('missing, expired, wrong epoch/cursor and truncated evidence fail closed', async () => {
   const { runtime, invoke, issue, agent, setup, calls } = fixture(); await setup();
-  const read = await invoke('readManaged', issue(), agent());
-  const request = { ...issue(), requestId: 'test', body: 'continue', reason: 'new fact', evidence: read.result.evidence };
-  for (const evidence of [undefined, {}, { ...request.evidence, cursor: 12 }, { ...request.evidence, epoch: -1 }, { ...request.evidence, logCursor: 20 }]) {
-    assert.equal((await invoke('advanceManaged', { ...request, evidence }, agent())).ok, false);
+  const read = await invoke('readIssue', issue(), agent());
+  assert.match(read.result.evidenceToken, /^[0-9a-f]{32}$/u);
+  const request = { ...issue(), body: 'continue', reason: 'new fact', evidenceToken: read.result.evidenceToken };
+  for (const evidenceToken of [undefined, '', 'forged', read.result.evidenceToken.replace(/.$/u, 'x')]) {
+    assert.equal((await invoke('continueIssue', { ...request, evidenceToken }, agent())).ok, false);
   }
+  // Any Leader epoch change (a new grant/pause/enrollment) invalidates the old token.
+  runtime.leaderState.epoch += 1;
+  assert.equal((await invoke('continueIssue', request, agent())).ok, false);
+  const fresh = (await invoke('readIssue', issue(), agent())).result.evidenceToken;
   runtime.leaderState.items[0].observation.observedAt = Date.now() - 120001;
-  assert.equal((await invoke('advanceManaged', request, agent())).ok, false);
+  assert.equal((await invoke('continueIssue', { ...request, evidenceToken: fresh }, agent())).ok, false);
   runtime.leaderState.items[0].observation.observedAt = Date.now(); runtime.leaderState.items[0].observation.truncated = true;
-  assert.equal((await invoke('advanceManaged', request, agent())).ok, false); assert.equal(calls.deliver.length, 0);
+  assert.equal((await invoke('continueIssue', { ...request, evidenceToken: fresh }, agent())).ok, false); assert.equal(calls.deliver.length, 0);
 });
 
 test('busy, queue, pending native approval/question and cold sessions never advance', async () => {
@@ -289,7 +300,7 @@ test('uncertain delivery freezes only its Issue and new IDs/unenroll-reenroll ca
   runtime.leaderAdapter.deliver = deliver;
   assert.equal((await invoke('resumeIssue', issue())).ok, false);
   assert.equal((await invoke('unenroll', issue())).ok, true); assert.equal((await invoke('enroll', issue())).ok, true);
-  assert.equal((await advance({ requestId: 'new-id' })).ok, false);
+  assert.equal((await advance({ body: '换一种措辞的续办建议，试图生成新 requestId。' })).ok, false);
   assert.equal((await advance({}, 'b')).ok, true); assert.equal(runtime.leaderState.enabled, true);
 });
 
@@ -303,9 +314,9 @@ test('restart preserves sending uncertainty without replay and permits other Iss
 
 test('blocker pauses only one Issue, alerts deduplicate, formal input cannot be answered by tools', async () => {
   const { runtime, invoke, issue, agent, setup, advance, calls } = fixture(); await setup(2);
-  const blocker = { ...issue(), question: '是否采用方案 A？', summary: '业务方案需人类选择' };
-  assert.equal((await runtime.reportBlocker(blocker, agent())).ok, true);
-  assert.equal((await runtime.reportBlocker(blocker, agent())).ok, true);
+  const blocker = { ...issue(), needsHuman: '是否采用方案 A？', stage: '业务方案需人类选择' };
+  assert.equal((await invoke('updateIssue', blocker, agent())).ok, true);
+  assert.equal((await invoke('updateIssue', blocker, agent())).ok, true);
   assert.equal(runtime.leaderState.items[0].alerts.length, 1);
   assert.equal(runtime.leaderState.items[0].status, 'needs-human'); assert.equal(runtime.leaderState.enabled, true);
   assert.equal((await advance({}, 'b')).ok, true);
@@ -316,7 +327,7 @@ test('blocker pauses only one Issue, alerts deduplicate, formal input cannot be 
 test('Leader pause stops automatic observation and advancement but permits exact read-only inspection', async () => {
   const { runtime, invoke, setup, calls, issue, agent, advance } = fixture(); await setup(); await invoke('pause');
   const count = calls.observe.length; await runtime.reconcileLeader(); assert.equal(calls.observe.length, count);
-  assert.equal((await runtime.readManaged(issue(), agent())).ok, true);
+  assert.equal((await invoke('readIssue', issue(), agent())).ok, true);
   assert.equal((await advance()).ok, false); assert.equal(calls.deliver.length, 0); assert.equal(calls.notify.length, 1);
   assert.equal(runtime.state.handled['issue-1-a'].automatic, false);
 });
@@ -327,17 +338,22 @@ test('truncated increment or cursor/epoch rollback never authorize continuation'
     { cursor: 10, highWater: 10, events: [], truncated: true, epoch: 'live-log' }]) {
     const { runtime, invoke, issue, agent, setup, calls } = fixture(); await setup();
     runtime.leaderAdapter.observe = async () => patch;
-    const read = await runtime.readManaged(issue(), agent()); assert.equal(read.ok, true);
-    const request = { ...issue(), requestId: 'gap', body: 'continue', reason: 'new fact', evidence: read.result.evidence };
-    assert.equal((await invoke('advanceManaged', request, agent())).ok, false); assert.equal(calls.deliver.length, 0);
+    const read = await invoke('readIssue', issue(), agent()); assert.equal(read.ok, true);
+    const request = { ...issue(), body: 'continue', reason: 'new fact', evidenceToken: read.result.evidenceToken ?? 'none' };
+    assert.equal((await invoke('continueIssue', request, agent())).ok, false); assert.equal(calls.deliver.length, 0);
   }
 });
 
 test('run expiry and bounded wake/action budgets do not loop forever', async () => {
   const { runtime, setup, calls, advance } = fixture(); await setup();
   runtime.leaderState.items[0].actions = 20; assert.equal((await advance()).ok, false);
+  Object.assign(runtime.leaderState.items[0], { actions: 0, paused: false, alerts: [] });
   runtime.leaderState.expiresAt = Date.now() - 1; await runtime.reconcileLeader();
-  assert.equal(runtime.leaderState.enabled, false); assert.equal(calls.notify.length, 1);
+  // Bootstrap plus exactly one stop note telling the human why automation paused.
+  assert.equal(runtime.leaderState.enabled, false); assert.equal(calls.notify.length, 2);
+  assert.match(calls.notify[1].body, /自动托管即将暂停/); assert.match(calls.notify[1].body, /24 小时/);
+  assert.equal(runtime.leaderState.items[0].status, 'standby');
+  await runtime.reconcileLeader(); assert.equal(calls.notify.length, 2);
 });
 
 test('separate journal normalization does not change Todo/Issue normalization semantics', () => {
@@ -495,14 +511,14 @@ test('cold Leader start prepares and binds before evaluating dynamic native capa
 });
 
 test('supervisor consumption never loses the report inspected by the next Leader read', async () => {
-  const { runtime, setup, sessions, logs, issue, agent, calls } = fixture(); await setup();
+  const { runtime, setup, sessions, logs, issue, agent, calls, invoke } = fixture(); await setup();
   sessions.set('worker-a', sessionState({ cursor: 11 }));
   logs.get('worker-a').push({ seq: 11, type: 'assistant/message', data: { text: 'Current Issue report after CI' } });
   await runtime.reconcileLeader(); assert.equal(runtime.leaderState.items[0].cursor, 11);
-  const read = await runtime.readManaged(issue(), agent()); assert.equal(read.ok, true);
+  const read = await invoke('readIssue', issue(), agent()); assert.equal(read.ok, true);
   assert.ok(read.result.events.some((event) => event.seq === 11 && event.data.includes('Current Issue report after CI')));
-  assert.equal(read.result.recentEvidence.sourceSessionId, 'worker-a'); assert.equal(read.result.recentEvidence.throughSeq, 11);
-  assert.equal(read.result.recentEvidence.truncated, false); assert.ok(read.result.events.every((event) => event.sourceSessionId === 'worker-a' && event.untrusted));
+  assert.equal(read.result.sessionId, 'worker-a'); assert.equal(read.result.untrusted, true); assert.ok(read.result.evidenceToken);
+  assert.equal(read.result.eventsTruncated, false); assert.ok(read.result.events.every((event) => event.sourceSessionId === 'worker-a' && event.untrusted));
   assert.doesNotMatch(JSON.stringify(read.result.events), /HISTORICAL SECRET/); assert.equal(calls.deliver.length, 0);
   const restored = normalizeLeaderState(calls.persist.at(-1));
   assert.ok(restored.items[0].recentEvents.some((event) => event.data.includes('Current Issue report after CI')));
@@ -510,20 +526,20 @@ test('supervisor consumption never loses the report inspected by the next Leader
 });
 
 test('needs-human and explicitly paused Issues remain readable without continuation authority', async () => {
-  const { runtime, setup, sessions, logs, issue, agent, advance, calls } = fixture(); await setup();
+  const { runtime, setup, sessions, logs, issue, agent, advance, calls, invoke } = fixture(); await setup();
   sessions.set('worker-a', sessionState({ cursor: 11, pendingInput: ['question'] }));
   logs.get('worker-a').push({ seq: 11, type: 'assistant/message', data: { text: 'Need a business decision' } });
   await runtime.reconcileLeader(); assert.equal(runtime.leaderState.items[0].status, 'needs-human');
-  const read = await runtime.readManaged(issue(), agent()); assert.equal(read.ok, true);
+  const read = await invoke('readIssue', issue(), agent()); assert.equal(read.ok, true);
   assert.ok(read.result.events.some((event) => event.data.includes('Need a business decision')));
   assert.equal((await advance()).ok, false); assert.equal(calls.deliver.length, 0);
-  assert.equal((await runtime.readManaged({ ...issue(), sessionId: 'outside' }, agent())).ok, false);
+  assert.equal((await invoke('readIssue', { ...issue(), sessionId: 'outside' }, agent())).ok, false);
 });
 
 test('continued native questions fence start and advancement despite an empty raw pending queue', async () => {
   const { runtime, setup, sessions, issue, agent, advance, calls, invoke } = fixture(); await setup();
   runtime.leaderAdapter.state = async (id) => ({ ...copy(sessions.get(id)), pendingInput: id === 'worker-a' ? ['question'] : [] });
-  const read = await runtime.readManaged(issue(), agent()); assert.equal(read.ok, true);
+  const read = await invoke('readIssue', issue(), agent()); assert.equal(read.ok, true);
   assert.equal(read.result.status, 'needs-human'); assert.equal((await advance()).ok, false); assert.equal(calls.deliver.length, 0);
   await invoke('pause');
   runtime.leaderAdapter.state = async (id) => ({ ...copy(sessions.get(id)), pendingInput: id === 'leader' ? ['question'] : [] });
@@ -531,13 +547,15 @@ test('continued native questions fence start and advancement despite an empty ra
 });
 
 test('recent report cache is bounded and marks context truncation independently of admission evidence', async () => {
-  const { runtime, setup, sessions, logs, issue, agent } = fixture(); await setup();
+  const { runtime, setup, sessions, logs, issue, agent, invoke } = fixture(); await setup();
   sessions.set('worker-a', sessionState({ cursor: 71 }));
   logs.set('worker-a', Array.from({ length: 60 }, (_, index) => ({ seq: index + 11, type: 'assistant/message', data: { text: 'x'.repeat(1000) } })));
   await runtime.reconcileLeader(); const item = runtime.leaderState.items[0];
   assert.ok(item.recentEvents.length <= 40); assert.ok(JSON.stringify(item.recentEvents).length <= 20100);
-  const read = await runtime.readManaged(issue(), agent()); assert.equal(read.result.recentEvidence.truncated, true);
-  assert.equal(read.result.evidence.truncated, false); assert.doesNotThrow(() => normalizeLeaderState(runtime.leaderState));
+  const read = await invoke('readIssue', issue(), agent()); assert.equal(read.result.eventsTruncated, true);
+  // Cache trimming is context-only: the admission observation itself is complete, so the token stays valid.
+  assert.equal(runtime.leaderState.items[0].observation.truncated, false); assert.ok(read.result.evidenceToken);
+  assert.doesNotThrow(() => normalizeLeaderState(runtime.leaderState));
 });
 
 test('malformed/unknown journal is Leader-only read-only failure and never overwritten', async () => {
@@ -574,7 +592,7 @@ test('terminal outbox is compacted so a long-running Leader never wedges at the 
   const outbox = runtime.leaderState.outbox;
   assert.ok(outbox.length <= 202, `outbox ${outbox.length}`);
   assert.ok(outbox.filter((entry) => entry.compacted === true && entry.body === '').length > 0);
-  assert.equal(outbox.at(-1).requestId, 'advance-a'); assert.equal(outbox.at(-1).status, 'sent');
+  assert.equal(outbox.at(-1).kind, 'advance'); assert.equal(outbox.at(-1).status, 'sent');
   assert.doesNotThrow(() => normalizeLeaderState(runtime.leaderState));
 });
 
@@ -678,18 +696,19 @@ test('unenroll + re-enroll keeps the spent budget; only an explicit reset grants
 });
 
 test('human can resolve an uncertain advance; nothing is resent automatically', async () => {
-  const { runtime, setup, invoke, issue, advance, calls } = fixture(); await setup();
+  const { runtime, setup, invoke, issue, advance, calls, lastAdvance } = fixture(); await setup();
   runtime.leaderAdapter.deliver = async () => { throw new Error('socket closed'); };
   assert.equal((await advance()).ok, false);
+  const requestId = lastAdvance().requestId;
   assert.equal(runtime.leaderState.outbox.at(-1).status, 'uncertain'); assert.equal(runtime.leaderState.items[0].status, 'unknown');
   assert.equal((await invoke('resolveDelivery', { requestId: 'nope', resolution: 'delivered' })).ok, false);
-  assert.equal((await invoke('resolveDelivery', { requestId: 'advance-a', resolution: 'maybe' })).ok, false);
-  assert.equal((await invoke('resolveDelivery', { requestId: 'advance-a', resolution: 'not-delivered' })).ok, true);
-  assert.equal(runtime.leaderState.outbox.find((entry) => entry.requestId === 'advance-a').status, 'rejected');
-  assert.equal((await invoke('resolveDelivery', { requestId: 'advance-a', resolution: 'delivered' })).ok, false);
+  assert.equal((await invoke('resolveDelivery', { requestId, resolution: 'maybe' })).ok, false);
+  assert.equal((await invoke('resolveDelivery', { requestId, resolution: 'not-delivered' })).ok, true);
+  assert.equal(runtime.leaderState.outbox.find((entry) => entry.requestId === requestId).status, 'rejected');
+  assert.equal((await invoke('resolveDelivery', { requestId, resolution: 'delivered' })).ok, false);
   assert.equal((await invoke('resumeIssue', issue())).ok, true);
   runtime.leaderAdapter.deliver = async (request) => { calls.deliver.push(copy(request)); return { ok: true, status: 'delivered', requestId: request.requestId }; };
-  const result = await advance({ requestId: 'advance-a-retry' }); assert.equal(result.ok, true, result.error);
+  const result = await advance({ body: '重新核查后再次续办，措辞不同。' }); assert.equal(result.ok, true, result.error);
   assert.equal(calls.deliver.length, 1);
 });
 
@@ -770,4 +789,150 @@ test('unchanged Leader journal is not rewritten', async () => {
     runtime.leaderState.settings = { ...runtime.leaderState.settings }; runtime.leaderState.epoch += 1;
     await runtime.persistLeader(); assert.equal(JSON.parse(await readFile(file, 'utf8')).epoch, runtime.leaderState.epoch);
   } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+// ---- Leader capabilities (v2.36: session management, evidence token, relay, notes, stall) ----
+
+const withIssueLookup = (runtime) => { runtime.itemById = (id) => runtime.state.issues.find((item) => item.id === id) ?? null; };
+
+test('Leader-only capability operations are rejected for UI callers and for non-Leader agents', async () => {
+  const { setup, invoke, issue } = fixture(); await setup();
+  const stranger = createLeaderAgentCaller({ sessionId: 'worker-a', agentId: 'verified-agent' });
+  for (const operation of ['createSession', 'renameSession', 'archiveSession', 'selectSessionModel', 'continueIssue', 'relayReply', 'updateIssue', 'readIssue']) {
+    assert.equal((await invoke(operation, issue())).ok, false, `ui ${operation}`);
+    assert.equal((await invoke(operation, issue(), stranger)).ok, false, `stranger ${operation}`);
+  }
+});
+
+test('session_create enrolls an existing live worker instead of creating a duplicate', async () => {
+  const { runtime, setup, invoke, agent } = fixture(); await setup();
+  let dispatched = 0; runtime.dispatch = async () => { dispatched += 1; return { ok: true, sessionId: 'never' }; };
+  const result = await invoke('createSession', { taskId: 'issue-1-b' }, agent()); assert.equal(result.ok, true, result.error);
+  assert.equal(result.result.existing, true); assert.equal(result.result.sessionId, 'worker-b'); assert.equal(dispatched, 0);
+  const item = runtime.leaderState.items.find((entry) => entry.taskId === 'issue-1-b');
+  assert.equal(item.provenance.kind, 'leader'); assert.equal(runtime.leaderProjection().audit.at(-1).action, 'session-enroll');
+  assert.equal((await invoke('createSession', { taskId: 'not-listed' }, agent())).ok, false);
+  assert.equal((await invoke('createSession', { taskId: '' }, agent())).ok, false);
+});
+
+test('session_create dispatches through the Issue path once the old worker is archived and replaces the roster entry', async () => {
+  const { runtime, setup, invoke, agent, sessions } = fixture(); await setup();
+  runtime.ctx.workspaceRegistry.archivedSessionIds = ['worker-a'];
+  const forced = [];
+  runtime.dispatch = async (todo, force) => {
+    forced.push([todo.id, force]); sessions.set('worker-new', sessionState());
+    runtime.state.handled[todo.id] = { ...runtime.state.handled[todo.id], sessionId: 'worker-new', acceptedAt: Date.now() };
+    return { ok: true, sessionId: 'worker-new', duplicate: false };
+  };
+  const result = await invoke('createSession', { taskId: 'issue-1-a' }, agent()); assert.equal(result.ok, true, result.error);
+  assert.deepEqual(forced, [['issue-1-a', true]]); assert.equal(result.result.existing, false);
+  const items = runtime.leaderState.items.filter((entry) => entry.taskId === 'issue-1-a');
+  assert.deepEqual(items.map((entry) => entry.sessionId), ['worker-new']); assert.equal(items[0].status, 'watching');
+  assert.equal(runtime.leaderProjection().audit.at(-1).action, 'session-create');
+  runtime.dispatch = async () => ({ ok: false, error: 'GitLab unavailable' });
+  runtime.ctx.workspaceRegistry.archivedSessionIds = ['worker-a', 'worker-b'];
+  const failed = await invoke('createSession', { taskId: 'issue-1-b' }, agent()); assert.equal(failed.ok, false); assert.match(failed.error, /GitLab unavailable/);
+});
+
+test('session_rename keeps the Issue prefix, updates the Issue record and is audited', async () => {
+  const { runtime, setup, invoke, issue, agent, calls } = fixture(); await setup(); withIssueLookup(runtime);
+  for (const title of ['修复 CI', '#b 错误 Issue', `#a ${'x'.repeat(80)}`, '']) assert.equal((await invoke('renameSession', { ...issue(), title }, agent())).ok, false, title);
+  assert.equal((await invoke('renameSession', { taskId: 'issue-1-a', sessionId: 'leader', title: '#a x' }, agent())).ok, false);
+  const result = await invoke('renameSession', { ...issue(), title: '#a 修复 CI 流水线' }, agent()); assert.equal(result.ok, true, result.error);
+  assert.deepEqual(calls.rename.at(-1), ['worker-a', '#a 修复 CI 流水线']);
+  assert.equal(runtime.state.handled['issue-1-a'].sessionTitle, '#a 修复 CI 流水线');
+  assert.equal(runtime.leaderProjection().audit.at(-1).action, 'session-rename');
+});
+
+test('session_archive requires a reason, refuses busy workers and unenrolls the archived one', async () => {
+  const { runtime, setup, invoke, issue, agent, sessions } = fixture(); await setup();
+  const archived = []; runtime.setSessionArchived = async (sessionId, value) => { archived.push([sessionId, value]); return { ok: true }; };
+  assert.equal((await invoke('archiveSession', { ...issue(), reason: '' }, agent())).ok, false);
+  for (const patch of [{ running: true }, { queue: [{}] }, { pendingInput: ['approval'] }]) {
+    sessions.set('worker-a', sessionState(patch));
+    assert.equal((await invoke('archiveSession', { ...issue(), reason: '任务已完成' }, agent())).ok, false);
+  }
+  assert.equal(archived.length, 0); sessions.set('worker-a', sessionState());
+  const result = await invoke('archiveSession', { ...issue(), reason: '任务已完成，MR 已合并' }, agent()); assert.equal(result.ok, true, result.error);
+  assert.deepEqual(archived, [['worker-a', true]]); assert.equal(runtime.leaderState.items.length, 0);
+  const audit = runtime.leaderProjection().audit.at(-1); assert.equal(audit.action, 'session-archive'); assert.match(audit.detail, /MR 已合并/);
+  assert.equal((await invoke('archiveSession', { ...issue(), reason: 'again' }, agent())).ok, false);
+});
+
+test('session_select_model only accepts catalog models on a quiet worker and lists choices on refusal', async () => {
+  const { runtime, setup, invoke, issue, agent, calls, sessions } = fixture(); await setup();
+  runtime.host.modelCatalog = async () => ({ groups: [{ id: 'kiro', models: [{ id: 'fast' }, { id: 'deep' }] }] });
+  const unknown = await invoke('selectSessionModel', { ...issue(), model: { provider: 'kiro', model: 'ghost' } }, agent());
+  assert.equal(unknown.ok, false); assert.deepEqual(unknown.result.available, [{ provider: 'kiro', model: 'fast' }, { provider: 'kiro', model: 'deep' }]);
+  sessions.set('worker-a', sessionState({ running: true }));
+  assert.equal((await invoke('selectSessionModel', { ...issue(), model: { provider: 'kiro', model: 'deep' } }, agent())).ok, false);
+  sessions.set('worker-a', sessionState());
+  const result = await invoke('selectSessionModel', { ...issue(), model: { provider: 'kiro', model: 'deep' } }, agent()); assert.equal(result.ok, true, result.error);
+  assert.equal(calls.model.at(-1).sessionId, 'worker-a'); assert.equal(calls.model.at(-1).model, 'deep');
+  assert.equal(runtime.leaderProjection().audit.at(-1).action, 'session-model');
+});
+
+test('update_issue stores structured notes; needsHuman pauses only that Issue', async () => {
+  const { runtime, setup, invoke, issue, agent, advance } = fixture(); await setup(2);
+  assert.equal((await invoke('updateIssue', { ...issue(), stage: 'x'.repeat(201) }, agent())).ok, false);
+  const updated = await invoke('updateIssue', { ...issue(), stage: '修复中', next: '等 CI', decisions: ['采用方案 B'] }, agent());
+  assert.equal(updated.ok, true, updated.error); assert.equal(updated.result.alertId, null);
+  const item = runtime.leaderProjection().items[0];
+  assert.equal(item.notes.stage, '修复中'); assert.deepEqual(item.notes.decisions, ['采用方案 B']); assert.match(item.summary, /下一步：等 CI/);
+  const merged = await invoke('updateIssue', { ...issue(), waitingOn: '人类确认' }, agent());
+  assert.equal(merged.result.notes.stage, '修复中'); assert.equal(merged.result.notes.waitingOn, '人类确认');
+  const asked = await invoke('updateIssue', { ...issue(), needsHuman: '是否发布到生产？' }, agent()); assert.ok(asked.result.alertId);
+  assert.equal(runtime.leaderState.items[0].status, 'needs-human'); assert.equal(runtime.leaderState.items[0].paused, true);
+  assert.equal((await advance()).ok, false); assert.equal((await advance({}, 'b')).ok, true);
+});
+
+test('relay_reply forwards only verified human text, unpauses the asked Issue and works while paused', async () => {
+  const { runtime, setup, invoke, issue, agent } = fixture(); await setup();
+  const relayed = [];
+  runtime.leaderAdapter.humanMessages = async () => [{ seq: 40, text: '关于 #a：请采用方案 A，然后继续。' }];
+  runtime.leaderAdapter.relay = async (request) => {
+    assert.equal(Object.isFrozen(request), true); assert.equal(runtime.validateLeaderAdmission(request), true);
+    relayed.push(copy(request)); return { ok: true, status: 'delivered', requestId: request.requestId };
+  };
+  await invoke('updateIssue', { ...issue(), needsHuman: '采用方案 A 还是 B？' }, agent());
+  assert.equal((await invoke('relayReply', { ...issue(), text: '请采用方案 B' }, agent())).ok, false); assert.equal(relayed.length, 0);
+  const result = await invoke('relayReply', { ...issue(), text: '请采用方案 A，然后继续。' }, agent()); assert.equal(result.ok, true, result.error);
+  assert.equal(relayed.length, 1); assert.match(relayed[0].body, /人类原话/); assert.match(relayed[0].body, /请采用方案 A/);
+  assert.equal(runtime.leaderState.items[0].paused, false); assert.equal(runtime.leaderState.items[0].alerts[0].status, 'acknowledged');
+  assert.equal(runtime.leaderState.items[0].actions, 0); // relays never spend the continuation budget.
+  assert.equal((await invoke('relayReply', { ...issue(), text: '请采用方案 A，然后继续。' }, agent())).ok, true); assert.equal(relayed.length, 1);
+  assert.equal(runtime.leaderProjection().audit.at(-1).action, 'relay-reply');
+  assert.equal((await invoke('pause')).ok, true);
+  runtime.leaderAdapter.humanMessages = async () => [{ seq: 41, text: '先别合并' }];
+  assert.equal((await invoke('relayReply', { ...issue(), text: '先别合并' }, agent())).ok, true); assert.equal(relayed.length, 2);
+});
+
+test('relay_reply never answers native questions and waits for an idle worker', async () => {
+  const { runtime, setup, invoke, issue, agent, sessions } = fixture(); await setup();
+  const relayed = []; runtime.leaderAdapter.humanMessages = async () => [{ seq: 40, text: '选 A' }];
+  runtime.leaderAdapter.relay = async (request) => { relayed.push(request); return { ok: true, status: 'delivered', requestId: request.requestId }; };
+  for (const patch of [{ pendingInput: ['question'] }, { running: true }, { queue: [{}] }]) {
+    sessions.set('worker-a', sessionState(patch));
+    assert.equal((await invoke('relayReply', { ...issue(), text: '选 A' }, agent())).ok, false);
+  }
+  assert.equal(relayed.length, 0);
+});
+
+test('read_issue exposes pending native question text for the human, and wake lines stay short', async () => {
+  const { runtime, setup, invoke, issue, agent, sessions, logs, calls } = fixture(); await setup();
+  runtime.leaderAdapter.questions = async () => ['要不要删除旧分支？ 选项：是 / 否'];
+  sessions.set('worker-a', sessionState({ cursor: 11, pendingInput: ['question'] }));
+  logs.get('worker-a').push({ seq: 11, type: 'assistant/message', data: { text: 'x'.repeat(5000) } });
+  const read = await invoke('readIssue', issue(), agent()); assert.deepEqual(read.result.pendingQuestions, ['要不要删除旧分支？ 选项：是 / 否']);
+  await runtime.reconcileLeader(); const body = calls.notify.at(-1).body;
+  assert.ok(body.length < 2000, `wake body ${body.length}`); assert.doesNotMatch(body, /xxxxxxxxxx/); assert.match(body, /taskId=issue-1-a/);
+});
+
+test('a running worker silent for 20 minutes wakes the Leader once per stall', async () => {
+  const { runtime, setup, sessions, calls } = fixture(); await setup();
+  sessions.set('worker-a', sessionState({ running: true })); await runtime.reconcileLeader();
+  const count = calls.notify.length;
+  runtime.leaderState.items[0].lastActivityAt = Date.now() - 21 * 60 * 1000; await runtime.reconcileLeader();
+  assert.equal(calls.notify.length, count + 1); assert.match(calls.notify.at(-1).body, /stalled/);
+  await runtime.reconcileLeader(); assert.equal(calls.notify.length, count + 1);
 });
