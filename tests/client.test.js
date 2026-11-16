@@ -454,7 +454,7 @@ test('grouped workstation tabs navigate across groups, wrap, and ignore unrelate
   assert.equal(nextWorkstationTab('missing', 'ArrowRight'), null);
 
   const source = await clientSource();
-  assert.match(source, /const \[activeTab, setActiveTab\] = React\.useState\('todos'\)/);
+  assert.match(source, /const \[activeTab, setActiveTab\] = React\.useState\('issues'\)/);
   assert.match(source, /tabIndex: activeTab === tab\.id \? 0 : -1/);
   assert.match(source, /tabRefs\.current\.get\(next\)\?\.focus\(\)/);
   for (const tab of tabs) {
@@ -631,7 +631,7 @@ test('all Leader mutations use authenticated native RPC and unwrap ConnectionRpc
   } };
   const ctx = { connection: { rpc } };
   const operations = ['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue',
-    'resetIssueBudget', 'resolveDelivery', 'resolveCreation'];
+    'resetIssueBudget', 'resolveDelivery', 'resolveCreation', 'resolveTask'];
   assert.deepEqual(Array.from(LEADER_RPC_OPERATIONS), operations);
   for (const operation of operations) {
     const payload = operation === 'configure' ? { settings: { model: { provider: 'p', model: 'm', reasoningEffort: 'high' }, autoEnrollNew: false } }
@@ -676,7 +676,7 @@ test('Leader native RPC errors, missing value, absent connection and cancellatio
 test('Leader projections require real settings and phase, keep default off, and sanitize uncertain workers', async () => {
   const { normalizeLeaderProjection, canGrantLeaderAccess, canCreateLeader, validLeaderSessionId } = await loadLeaderHelpers();
   const initial = normalizeLeaderProjection(leaderProjection());
-  assert.deepEqual(plain(initial), { ...leaderProjection(), runState: '', creation: null, deliveries: [], audit: [],
+  assert.deepEqual(plain(initial), { ...leaderProjection(), runState: '', creation: null, deliveries: [], audit: [], tasks: [],
     run: { expiresAt: null, wakeups: null, maxWakeups: null, lastStartedAt: null } });
   assert.equal(canGrantLeaderAccess(initial), false);
   assert.equal(canCreateLeader(initial, null, false), true);
@@ -903,4 +903,16 @@ test('Leader capability projection exposes provenance, notes and a display-only 
   assert.equal(leaderAuditDetail('{"title":"#7 修复 CI"}'), '#7 修复 CI'); assert.equal(leaderAuditDetail('{"reason":"完成"}'), '完成');
   assert.equal(leaderAuditDetail('{"provider":"kiro","model":"deep"}'), 'kiro/deep'); assert.equal(leaderAuditDetail('not json'), '');
   for (const key of ['leaderAudit', 'leaderAuditCreate', 'leaderAuditRelay', 'leaderProvenanceLeader', 'leaderRelayHint', 'leaderNoteDecisions']) assert.ok(en[key] && zh[key], key);
+});
+
+test('Leader projection marks ad-hoc task items and keeps uncertain tasks for the human', async () => {
+  const { normalizeLeaderProjection, en, zh } = await loadLeaderHelpers();
+  const projection = normalizeLeaderProjection(leaderProjection({ sessionId: 'leader-1', phase: 'ready',
+    tasks: [{ taskId: 'leader-task-0123456789ab', sessionId: null, title: '调查 IAM', status: 'uncertain', createdAt: 3, error: 'timeout' }, { taskId: '' }, null],
+    items: [{ taskId: 'leader-task-aaaaaaaaaaaa', sessionId: 'task-s', status: 'watching', kind: 'task', alerts: [] },
+      { taskId: 'issue:8', sessionId: 'worker-8', status: 'watching', kind: 'bogus', alerts: [] }] }));
+  assert.deepEqual(plain(projection.items.map((item) => item.kind)), ['task', 'issue']);
+  assert.deepEqual(plain(projection.tasks.map((task) => [task.taskId, task.status, task.error])), [['leader-task-0123456789ab', 'uncertain', 'timeout']]);
+  for (const key of ['leaderTaskTag', 'leaderTasksUncertain', 'leaderTasksUncertainHint', 'leaderTaskDismiss', 'leaderAuditTaskCreate', 'leaderAuditTaskDismiss']) assert.ok(en[key] && zh[key], key);
+  assert.equal(zh.leaderTaskTag, '临时任务');
 });

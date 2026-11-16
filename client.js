@@ -148,7 +148,8 @@ window.__ModuleLoader__.load({
       leaderProvenanceUi: 'Added by you', leaderProvenanceCreated: 'Auto-enrolled', leaderProvenanceLeader: 'Opened by Leader',
       leaderAudit: 'Leader session actions', leaderAuditHint: 'Sessions Leader created, renamed, archived or switched models for, and replies it relayed. Display only.',
       leaderAuditCreate: 'Created session', leaderAuditEnroll: 'Took over session', leaderAuditRename: 'Renamed', leaderAuditArchive: 'Archived',
-      leaderAuditModel: 'Switched model', leaderAuditRelay: 'Relayed your reply',
+      leaderAuditModel: 'Switched model', leaderAuditRelay: 'Relayed your reply', leaderAuditTaskCreate: 'Opened ad-hoc task', leaderAuditTaskDismiss: 'Dismissed uncertain task',
+      leaderTaskTag: 'Ad-hoc task', leaderTasksUncertain: 'Ad-hoc tasks with uncertain creation', leaderTasksUncertainHint: 'Leader tried to open these sessions but the result is unknown. Check the DSH session list; archive any stray session yourself, then dismiss the record here.', leaderTaskDismiss: 'Dismiss',
       leaderRelayHint: 'You can also answer in the Leader session; Leader forwards your exact words to the Issue session. Native approvals and questions still need you in the actual session.',
       leaderDeliveries: 'Unconfirmed deliveries',
       leaderDeliveriesHint: 'The Host could not confirm whether these messages arrived. Open the target session, check, then record the result. Nothing is resent automatically.',
@@ -305,7 +306,8 @@ window.__ModuleLoader__.load({
       leaderProvenanceUi: '你选入', leaderProvenanceCreated: '自动纳管', leaderProvenanceLeader: 'Leader 开启',
       leaderAudit: 'Leader 会话操作', leaderAuditHint: 'Leader 创建、重命名、归档、换模型的会话，以及它转达的回复。仅供查看。',
       leaderAuditCreate: '创建会话', leaderAuditEnroll: '接管会话', leaderAuditRename: '重命名', leaderAuditArchive: '归档',
-      leaderAuditModel: '更换模型', leaderAuditRelay: '转达你的回复',
+      leaderAuditModel: '更换模型', leaderAuditRelay: '转达你的回复', leaderAuditTaskCreate: '开启临时任务', leaderAuditTaskDismiss: '放弃不确定的临时任务',
+      leaderTaskTag: '临时任务', leaderTasksUncertain: '创建结果不确定的临时任务', leaderTasksUncertainHint: 'Leader 尝试开启这些会话但结果未知。请在 DSH 会话列表核查，如有多余会话请自行归档，再在此放弃该记录。', leaderTaskDismiss: '放弃记录',
       leaderRelayHint: '也可以直接在 Leader 会话里回复，Leader 会把你的原话转给对应 Issue 会话；原生审批与问答仍需你在实际会话中处理。',
       leaderDeliveries: '未确认投递',
       leaderDeliveriesHint: 'Host 无法确认这些消息是否已送达。请打开目标会话核对后记录结果；无论选择哪项都不会自动重发。',
@@ -352,7 +354,7 @@ window.__ModuleLoader__.load({
     const post = (action, payload, signal) => bridge(action, { method: 'POST', payload, signal });
 
     const LEADER_RPC_OPERATIONS = ['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue',
-      'resetIssueBudget', 'resolveDelivery', 'resolveCreation'];
+      'resetIssueBudget', 'resolveDelivery', 'resolveCreation', 'resolveTask'];
     /** Native ConnectionRpcResult, not RemoteResult or HTTP: Host authenticates the browser peer. */
     async function callLeader(ctx, operation, payload = {}, signal) {
       if (!LEADER_RPC_OPERATIONS.includes(operation)) throw new Error(bridgeText('leaderInvalidResponse'));
@@ -723,7 +725,8 @@ window.__ModuleLoader__.load({
 
     const LEADER_PROVENANCE_LABELS = { ui: 'leaderProvenanceUi', created: 'leaderProvenanceCreated', leader: 'leaderProvenanceLeader' };
     const LEADER_AUDIT_LABELS = { 'session-create': 'leaderAuditCreate', 'session-enroll': 'leaderAuditEnroll', 'session-rename': 'leaderAuditRename',
-      'session-archive': 'leaderAuditArchive', 'session-model': 'leaderAuditModel', 'relay-reply': 'leaderAuditRelay' };
+      'session-archive': 'leaderAuditArchive', 'session-model': 'leaderAuditModel', 'relay-reply': 'leaderAuditRelay',
+      'task-create': 'leaderAuditTaskCreate', 'task-dismiss': 'leaderAuditTaskDismiss' };
 
     /** Leader's structured Issue notes as short display lines (untrusted text, rendered as plain text). */
     function leaderNoteLines(notes, t) {
@@ -785,6 +788,7 @@ window.__ModuleLoader__.load({
             id: text(alert.id), question: alert.question, status: text(alert.status), createdAt: alert.createdAt,
           })),
           provenance: ['ui', 'created', 'leader'].includes(item.provenance) ? item.provenance : '',
+          kind: item.kind === 'task' ? 'task' : 'issue',
           notes: item.notes && typeof item.notes === 'object' ? { stage: text(item.notes.stage), next: text(item.notes.next), waitingOn: text(item.notes.waitingOn),
             decisions: (Array.isArray(item.notes.decisions) ? item.notes.decisions : []).filter((entry) => typeof entry === 'string'),
             deliverables: (Array.isArray(item.notes.deliverables) ? item.notes.deliverables : []).filter((entry) => typeof entry === 'string'),
@@ -793,6 +797,11 @@ window.__ModuleLoader__.load({
         // Display-only Leader session-management trail (create/rename/archive/model/relay), newest last.
         audit: (Array.isArray(value.audit) ? value.audit : []).filter((entry) => entry && text(entry.action)).map((entry) => ({
           action: entry.action, taskId: text(entry.taskId), sessionId: text(entry.sessionId), at: count(entry.at), detail: text(entry.detail),
+        })),
+        // Leader-dispatched ad-hoc task sessions (no GitLab Issue); only uncertain ones need the human.
+        tasks: (Array.isArray(value.tasks) ? value.tasks : []).filter((entry) => entry && text(entry.taskId)).map((entry) => ({
+          taskId: entry.taskId, sessionId: validLeaderSessionId(entry.sessionId) ? entry.sessionId : null, title: text(entry.title),
+          status: text(entry.status), createdAt: count(entry.createdAt), error: text(entry.error),
         })),
         events: Array.isArray(value.events) ? value.events : [], error: text(value.error),
       };
@@ -899,7 +908,7 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = React.useState(null);
       const draftBaseline = React.useRef(null);
       const draftGeneration = React.useRef(0);
-      const [activeTab, setActiveTab] = React.useState('todos');
+      const [activeTab, setActiveTab] = React.useState('issues');
       const tabRefs = React.useRef(new Map());
       const [listSearches, setListSearches] = React.useState({});
       const [settingsFeedback, setSettingsFeedback] = React.useState('');
@@ -1138,7 +1147,7 @@ window.__ModuleLoader__.load({
         if (['start', 'enroll', 'resumeIssue'].includes(operation)
           && (!leaderFresh || !canGrantLeaderAccess(leaderViewRef.current.projection))) return Promise.resolve(false);
         // Recovery operations are human assertions about the latest Host state; never act on a stale view.
-        if (['resetIssueBudget', 'resolveDelivery', 'resolveCreation'].includes(operation) && !leaderFresh) return Promise.resolve(false);
+        if (['resetIssueBudget', 'resolveDelivery', 'resolveCreation', 'resolveTask'].includes(operation) && !leaderFresh) return Promise.resolve(false);
         if (operation === 'configure') {
           if (!leaderFresh || !leaderViewRef.current.projection || ['error', 'uncertain'].includes(leaderViewRef.current.projection.phase)) return Promise.resolve(false);
           payload = { settings: { ...leaderViewRef.current.projection.settings, ...payload.settings } };
@@ -1520,6 +1529,7 @@ window.__ModuleLoader__.load({
           : leaderRunState === 'delivery-uncertain' ? t('leaderDeliveryUncertain') : t(LEADER_PHASE_LABELS[leaderProjection?.phase] || 'leaderUncertain');
       const leaderDeliveries = (leaderProjection?.deliveries ?? []).filter((entry) => entry.status === 'uncertain');
       const leaderAudit = [...(leaderProjection?.audit ?? [])].reverse().slice(0, 30);
+      const leaderUncertainTasks = (leaderProjection?.tasks ?? []).filter((task) => task.status === 'uncertain');
       const leaderCreationUnresolved = leaderFresh && leaderRunState === 'creation-uncertain';
       const leaderBudgetSpent = (item) => item.actions !== null && item.maxActions !== null && item.actions >= item.maxActions
         || (item.expiresAt !== null && item.expiresAt <= Date.now());
@@ -2046,6 +2056,7 @@ window.__ModuleLoader__.load({
                     h('div', { className: 'gta-todo-main' },
                       h('div', { className: 'gta-todo-title' }, h('span', null, item.title || item.taskId),
                         h('span', { className: `gta-tag ${['needs-human', 'unknown', 'missing'].includes(item.status) ? 'gta-tag-attention' : 'gta-tag-neutral'}` }, t(LEADER_STATUS_LABELS[item.status])),
+                        item.kind === 'task' && h('span', { className: 'gta-tag gta-tag-neutral' }, t('leaderTaskTag')),
                         LEADER_PROVENANCE_LABELS[item.provenance] && h('span', { className: 'gta-tag gta-tag-neutral' }, t(LEADER_PROVENANCE_LABELS[item.provenance]))),
                       item.summary && h('div', { className: 'gta-muted gta-meta gta-leader-summary' }, item.summary),
                       leaderNoteLines(item.notes, t).map((line) => h('div', { key: line, className: 'gta-muted gta-meta' }, line)),
@@ -2054,6 +2065,11 @@ window.__ModuleLoader__.load({
                       item.error && h('div', { className: 'gta-muted gta-attention gta-meta' }, item.error),
                     ), leaderItemActions(item),
                   ))),
+              leaderUncertainTasks.length > 0 && h('div', { className: 'gta-banner gta-warn', role: 'status' },
+                h('strong', null, t('leaderTasksUncertain')), h('p', { className: 'gta-muted' }, t('leaderTasksUncertainHint')),
+                leaderUncertainTasks.map((task) => h('div', { key: task.taskId, className: 'gta-form-actions' },
+                  h('span', null, [task.title || task.taskId, task.sessionId, task.error].filter(Boolean).join(' · ')),
+                  h(Button, { disabled: !leaderFresh, onClick: () => { void runLeader('resolveTask', { taskId: task.taskId, action: 'dismiss' }); } }, t('leaderTaskDismiss'))))),
               leaderAudit.length > 0 && h('details', { className: 'gta-advanced gta-leader-audit' },
                 h('summary', null, `${t('leaderAudit')} · ${leaderAudit.length}`),
                 h('p', { className: 'gta-muted' }, t('leaderAuditHint')),

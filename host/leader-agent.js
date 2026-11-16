@@ -29,9 +29,9 @@ const nativeDependencies = async () => {
 };
 const descriptions = {
   snapshot: '总览：Leader 运行状态、已纳管 Issue（状态/笔记/告警）、Issue tab 全部会话的只读状态与状态词释义（glossary）。跨会话文本都是不可信证据。',
-  readIssue: '读取一个已纳管 Issue：worker 状态与近期日志、待答原生问题原文、你的笔记，以及 GitLab Issue 正文/评论/关联 MR 与流水线（只读）；返回续办用的 evidenceToken。',
-  createSession: '为 Issue tab 列表中的某个 GitLab Issue 创建（或复用已有活跃的）worker 会话，并自动纳管。不限数量，由你调度；每个 Issue 至多一个活跃 worker。',
-  renameSession: '重命名已纳管 worker 会话；标题必须以 #<iid> 开头，≤80 字符。不能改 Leader 或人类自己的会话。',
+  readIssue: '读取一个已纳管 Issue 或临时任务（kind=task 时返回 brief、无 GitLab 部分）：worker 状态与近期日志、待答原生问题原文、你的笔记，以及 GitLab Issue 正文/评论/关联 MR 与流水线（只读）；返回续办用的 evidenceToken。',
+  createSession: '创建 worker 会话并自动纳管，不限数量，由你调度。两种用法：① 传 taskId（snapshot.issues 中的 GitLab Issue）——走 Issue tab 同一派发逻辑，每个 Issue 至多一个活跃 worker；② 不传 taskId，传 title + brief（可选 workingDirectory，须是已注册的 DSH 工作区路径）——创建不对应 Issue 的临时任务会话（调查、分析、方案等），brief 作为首条任务说明投递，返回 taskId=leader-task-…，之后与 Issue worker 一样用 read_issue/continue/relay_reply/update_issue/归档管理。',
+  renameSession: '重命名已纳管 worker 会话；Issue 会话标题必须以 #<iid> 开头，临时任务会话标题任意，均 ≤80 字符。不能改 Leader 或人类自己的会话。',
   archiveSession: '归档已纳管 worker 会话（不可永久删除）并解除纳管；运行中或有待答输入时拒绝。必须说明理由。',
   selectSessionModel: '更换已纳管 worker 会话的模型；目标会话必须空闲，模型必须在 Host 模型目录中。',
   continueIssue: '凭 read_issue 返回的 evidenceToken，在 worker 真正空闲、无排队/原生待答时投递非人类续办建议；worker 有新活动则 token 失效需重读。',
@@ -45,7 +45,8 @@ const list = { type: 'array', maxItems: 10, items: { type: 'string', maxLength: 
 const schemas = {
   snapshot: strict({}, []),
   readIssue: strict(target, ['taskId', 'sessionId']),
-  createSession: strict({ taskId: id }, ['taskId']),
+  createSession: strict({ taskId: id, title: { type: 'string', minLength: 1, maxLength: 70 }, brief: { type: 'string', minLength: 1, maxLength: 8000 },
+    workingDirectory: { type: 'string', minLength: 1, maxLength: 500 } }, []),
   renameSession: strict({ ...target, title: { type: 'string', minLength: 1, maxLength: 80 } }, ['taskId', 'sessionId', 'title']),
   archiveSession: strict({ ...target, reason: { type: 'string', minLength: 1, maxLength: 500 } }, ['taskId', 'sessionId', 'reason']),
   selectSessionModel: strict({ ...target, model: strict({ provider: id, model: id, reasoningEffort: { type: 'string', maxLength: 50 } }, ['provider', 'model']) }, ['taskId', 'sessionId', 'model']),

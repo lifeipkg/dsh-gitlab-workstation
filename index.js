@@ -66,7 +66,7 @@ async function pathExists(path) {
 }
 const LEADER_RPC_CHANNEL = '/gitlab-workstation-leader';
 const LEADER_UI_OPERATIONS = new Set(['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue',
-  'resetIssueBudget', 'resolveDelivery', 'resolveCreation']);
+  'resetIssueBudget', 'resolveDelivery', 'resolveCreation', 'resolveTask']);
 
 /**
  * 运行时骨架：状态生命周期（加载/迁移/持久化）、轮询与对账定时器、bridge 入口。

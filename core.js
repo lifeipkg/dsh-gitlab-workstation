@@ -7,16 +7,19 @@ export const LEADER_LIMITS = Object.freeze({
   maxActions: 20, maxWakeups: 100, leaseMs: 24 * 60 * 60 * 1000, issueLeaseMs: 72 * 60 * 60 * 1000,
   maxEvents: 100, maxOutbox: 500, maxOpenOutbox: 100, keepTerminalOutbox: 200, keepTerminalBodies: 20,
   maxItems: 200, maxCreatedEnrollments: 1000, maxBudgetLedger: 200, maxAbandonedCreations: 20,
-  maxRelays: 200, stallMs: 20 * 60 * 1000,
+  maxRelays: 200, stallMs: 20 * 60 * 1000, maxTasks: 200,
 });
 export const DEFAULT_LEADER_AGENT_PRESET = 'gitlab-issue-leader';
+// Leader-dispatched ad-hoc tasks (no GitLab Issue): namespaced taskIds plus their own journal registry.
+export const LEADER_TASK_STATUSES = Object.freeze(['creating', 'created', 'uncertain', 'archived']);
+export const isLeaderTaskId = (value) => typeof value === 'string' && /^leader-task-[0-9a-f]{12}$/u.test(value);
 const TERMINAL_OUTBOX = new Set(['sent', 'rejected', 'cancelled']);
 const OPEN_DELIVERY = new Set(['sending', 'uncertain']);
 export function initialLeaderState() {
   return { version: LEADER_STATE_VERSION, enabled: false, sessionId: null, phase: 'not-created',
     settings: { model: null, autoEnrollNew: false }, items: [], events: [], outbox: [], creation: null, createdEnrollments: [],
     epoch: 0, creationPolicyEpoch: 0, expiresAt: null, wakeups: 0, configuredModel: null, error: '',
-    lastStartedAt: null, budgetLedger: [], abandonedCreations: [], relays: [], audit: [] };
+    lastStartedAt: null, budgetLedger: [], abandonedCreations: [], relays: [], audit: [], tasks: [] };
 }
 
 /**
@@ -168,6 +171,18 @@ export function normalizeLeaderState(value) {
     .filter((entry) => isRecord(entry) && typeof entry.action === 'string' && timestamp(entry.at) !== null)
     .map((entry) => ({ action: entry.action.slice(0, 50), taskId: id(entry.taskId) ? entry.taskId : null, sessionId: id(entry.sessionId) ? entry.sessionId : null,
       at: timestamp(entry.at), detail: text(entry.detail).slice(0, 1000) })).slice(-200);
+  // Ad-hoc task registry: only "created" binds a session; a restart mid-creation is uncertain, never retried.
+  const seenTasks = new Set();
+  result.tasks = (Array.isArray(value.tasks) ? value.tasks : [])
+    .filter((entry) => isRecord(entry) && isLeaderTaskId(entry.taskId) && !seenTasks.has(entry.taskId) && Boolean(seenTasks.add(entry.taskId))
+      && LEADER_TASK_STATUSES.includes(entry.status) && (entry.sessionId === null || entry.sessionId === undefined || id(entry.sessionId)))
+    .map((entry) => {
+      const sessionId = id(entry.sessionId) ? entry.sessionId : null;
+      const status = entry.status === 'creating' || (entry.status === 'created' && !sessionId) ? 'uncertain' : entry.status;
+      return { taskId: entry.taskId, sessionId, title: text(entry.title).slice(0, 80), brief: text(entry.brief).slice(0, 1000),
+        workspace: text(entry.workspace).slice(0, 500), status, createdAt: timestamp(entry.createdAt),
+        error: entry.status === 'creating' ? '重启时临时任务创建结果不确定，禁止自动重建；请人工核查宿主会话列表。' : text(entry.error).slice(0, 1000) };
+    }).slice(-LEADER_LIMITS.maxTasks);
   result.epoch = Number.isSafeInteger(value.epoch) && value.epoch >= 0 ? value.epoch + 1 : 1;
   // Policy provenance survives mapping/run changes, but never a process restart.
   // Legacy global-epoch proof fields are never promoted into the new policy domain.
@@ -193,7 +208,7 @@ export function buildLeaderProjection(state = initialLeaderState()) {
     creation,
     run: { expiresAt: state.enabled === true ? timestamp(state.expiresAt) : null, wakeups: Number.isSafeInteger(state.wakeups) ? state.wakeups : 0,
       maxWakeups: LEADER_LIMITS.maxWakeups, lastStartedAt: timestamp(state.lastStartedAt) },
-    items: state.items.map((item) => ({ taskId: item.taskId, sessionId: item.sessionId, title: item.title, url: item.url,
+    items: state.items.map((item) => ({ taskId: item.taskId, kind: isLeaderTaskId(item.taskId) ? 'task' : 'issue', sessionId: item.sessionId, title: item.title, url: item.url,
       status: item.status, summary: item.summary || '', error: item.error || '', alerts: item.alerts.map((alert) => ({ ...alert })),
       paused: item.paused === true, actions: Number.isSafeInteger(item.actions) ? item.actions : 0, maxActions: LEADER_LIMITS.maxActions,
       expiresAt: timestamp(item.expiresAt), enrolledAt: timestamp(item.enrolledAt), provenance: ['created', 'leader'].includes(item.provenance?.kind) ? item.provenance.kind : 'ui',
@@ -204,6 +219,10 @@ export function buildLeaderProjection(state = initialLeaderState()) {
       kind: entry.kind, taskId: entry.taskId ?? null, sessionId: entry.sessionId, status: entry.status, error: entry.error || '',
       createdAt: timestamp(entry.createdAt) })),
     audit: (Array.isArray(state.audit) ? state.audit : []).slice(-30).map((entry) => ({ ...entry })),
+    // Ad-hoc tasks the Leader dispatched; uncertain ones need a human to check the Host session list.
+    tasks: (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => task.status !== 'archived').slice(-50).map((task) => ({
+      taskId: task.taskId, sessionId: task.sessionId ?? null, title: task.title, status: task.status,
+      createdAt: timestamp(task.createdAt), error: task.error || '' })),
     events: state.events.map((event) => ({ ...event })), error: state.error || '' };
 }
 
