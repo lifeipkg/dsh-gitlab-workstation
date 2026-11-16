@@ -628,8 +628,8 @@ test('all Leader mutations use authenticated native RPC and unwrap ConnectionRpc
     assert.equal(this, rpc); calls.push({ channel, operation, payload, signal }); return { ok: true, value };
   } };
   const ctx = { connection: { rpc } };
-  const operations = ['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue',
-    'resetIssueBudget', 'resolveDelivery', 'resolveCreation', 'resolveTask', 'cancelQueued', 'handoff'];
+  const operations = ['create', 'configure', 'start', 'pause', 'enroll', 'unenroll',
+    'resolveDelivery', 'resolveCreation', 'resolveTask', 'cancelQueued', 'handoff'];
   assert.deepEqual(Array.from(LEADER_RPC_OPERATIONS), operations);
   for (const operation of operations) {
     const payload = operation === 'configure' ? { settings: { model: { provider: 'p', model: 'm', reasoningEffort: 'high' }, autoEnrollNew: false } }
@@ -676,8 +676,8 @@ test('Leader projections require real settings and phase, keep default off, and 
   const initial = normalizeLeaderProjection(leaderProjection());
   assert.deepEqual(plain(initial), { ...leaderProjection(), runState: '', creation: null, deliveries: [], audit: [], tasks: [],
     queue: [], completed: [], previousSessions: [], comments: [], reports: [],
-    settings: { model: null, autoEnrollNew: false, maxRunningWorkers: 3, archiveOnComplete: true, issueComments: false, commentSignature: '—— 由 AI Leader 代发' },
-    run: { expiresAt: null, wakeups: null, maxWakeups: null, lastStartedAt: null } });
+    settings: { model: null, autoEnrollNew: false, maxRunningWorkers: 3, archiveOnComplete: true, gitlabWrite: false, commentSignature: '—— 由 AI Leader 代发' },
+    run: { wakeups: null, lastStartedAt: null } });
   assert.equal(canGrantLeaderAccess(initial), false);
   assert.equal(canCreateLeader(initial, null, false), true);
   assert.equal(canCreateLeader(initial, 'known-id', false), false);
@@ -847,7 +847,7 @@ test('Leader controls are optional and compact, enrollment is one click in activ
   assert.doesNotMatch(issues, /t\('leaderManaged'\)\)\)|t\('leaderHuman'\)|gta-needs-human/);
   assert.match(leader, /confirmLeaderAccess\('configure', \{ settings: \{ autoEnrollNew: true \} \}/);
   assert.match(leader, /t\('leaderScope'\)/);
-  assert.match(leader, /t\('leaderResumeHint'\)/);
+  assert.doesNotMatch(source, /leaderResumeHint|resumeIssue|pauseIssue|resetIssueBudget/);
   assert.match(leader, /role: 'region', 'aria-label': t\('leaderConfirm'\)/);
   assert.doesNotMatch(leader, /role: 'dialog'|aria-modal|prompt\(|post\('answer'|post\('approval'|question\/answer|approval\/answer/);
   assert.equal((issues.match(/issueLeaderControl\(issue\)/g) || []).length, 2);
@@ -858,10 +858,10 @@ test('Leader controls are optional and compact, enrollment is one click in activ
   assert.match(source, /\.gta-leader-settings select\{min-height:28px\}/);
 });
 
-test('hardened Leader projection exposes run state, budgets and unconfirmed deliveries; abandon releases the create latch', async () => {
+test('hardened Leader projection exposes run state and unconfirmed deliveries, drops removed budget fields; abandon releases the create latch', async () => {
   const { normalizeLeaderProjection, readLeaderResponse, en, zh } = await loadLeaderHelpers();
   const projection = normalizeLeaderProjection(leaderProjection({ sessionId: 'leader-1', phase: 'paused', runState: 'never-started',
-    creation: { status: 'ready', createdAt: 5, agentPreset: 'gitlab-issue-leader' }, run: { expiresAt: null, wakeups: 0, maxWakeups: 100, lastStartedAt: null },
+    creation: { status: 'ready', createdAt: 5, agentPreset: 'gitlab-issue-leader' }, run: { expiresAt: 7, wakeups: 0, maxWakeups: 100, lastStartedAt: null },
     deliveries: [{ requestId: 'r1', kind: 'advance', taskId: 'issue:7', sessionId: 'worker-7', status: 'uncertain', error: 'lost', createdAt: 9 },
       { requestId: 'r2', kind: 'bogus' }, null],
     items: [{ taskId: 'issue:7', sessionId: 'worker-7', status: 'standby', paused: false, actions: 20, maxActions: 20, expiresAt: -1, alerts: [] },
@@ -869,7 +869,8 @@ test('hardened Leader projection exposes run state, budgets and unconfirmed deli
   assert.equal(projection.runState, 'never-started'); assert.equal(projection.creation.agentPreset, 'gitlab-issue-leader');
   assert.equal(projection.deliveries.length, 1); assert.equal(projection.deliveries[0].requestId, 'r1');
   assert.deepEqual(projection.items.map((item) => [item.status, item.paused, item.actions, item.maxActions, item.expiresAt]),
-    [['standby', false, 20, 20, null], ['cold', false, null, null, null]]);
+    [['standby', undefined, undefined, undefined, undefined], ['cold', undefined, undefined, undefined, undefined]]);
+  assert.deepEqual(plain(projection.run), { wakeups: 0, lastStartedAt: null });
   assert.equal(normalizeLeaderProjection(leaderProjection({ runState: 'bogus' })).runState, '');
   const t = (key) => en[key];
   const abandoned = readLeaderResponse({ ok: true, result: { ok: true }, projection: leaderProjection({ runState: 'not-created' }) }, 'resolveCreation', null, t);

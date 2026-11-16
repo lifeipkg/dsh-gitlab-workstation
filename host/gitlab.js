@@ -109,26 +109,25 @@ export const gitlabMethods = {
   },
 
   /**
-   * 在 Issue 下发一条评论（note）。正文先落成 UTF-8 JSON 文件，经 `glab api --input <file>` 作为
-   * application/json 请求体发送：不经命令行参数传中文，也不触发 --field 的类型转换/@文件/占位符解析。
-   * target 为 issueApiPath 结果（projects/<enc>/issues/<iid>）或可交给 issueApiPath 的 Issue 对象。
-   * 请求前的本地失败抛出带 `beforeRequest: true` 的错误（未发出，可视为确定未发送）；其余错误由调用方按不确定处理。
+   * Leader 通用 REST 调用：`glab api -X <method> <path>`；有 body 时落成 UTF-8 JSON 文件经 --input 发送。
+   * 请求前的本地失败抛出带 `beforeRequest: true` 的错误。返回解析后的 JSON（解析失败则原文）。
    */
-  async postIssueNote(target, body) {
-    const api = typeof target === 'string' ? target : issueApiPath(target);
+  async apiRequest(method, path, body) {
     const prepare = (message) => Object.assign(new Error(message), { beforeRequest: true });
-    if (!/^projects\/[^/\s]+\/issues\/\d+$/u.test(api ?? '')) throw prepare('无法定位该 Issue 的 GitLab API 路径。');
-    if (typeof body !== 'string' || !body.trim()) throw prepare('评论正文不能为空。');
+    if (!['GET', 'POST', 'PUT', 'DELETE'].includes(method)) throw prepare('method 必须是 GET/POST/PUT/DELETE。');
+    if (typeof path !== 'string' || !/^[A-Za-z0-9_%./?=&,:~+@-]+$/u.test(path) || path.startsWith('-') || path.includes('..')) throw prepare('path 无效。');
     let directory = null;
     try {
-      try {
-        directory = await mkdtemp(join(tmpdir(), 'dsh-gitlab-note-'));
-        await writeFile(join(directory, 'body.json'), JSON.stringify({ body }), 'utf8');
-      } catch (error) { throw prepare(`评论正文落盘失败：${errorMessage(error)}`); }
-      const stdout = await this.runGlab(['api', '-X', 'POST', `${api}/notes`, '--input', join(directory, 'body.json')]);
-      let note = null;
-      try { note = JSON.parse(stdout); } catch {}
-      return { id: Number.isSafeInteger(note?.id) ? note.id : null, createdAt: typeof note?.created_at === 'string' ? note.created_at : null };
+      const args = ['api', '-X', method, path];
+      if (body !== undefined) {
+        try {
+          directory = await mkdtemp(join(tmpdir(), 'dsh-gitlab-api-'));
+          await writeFile(join(directory, 'body.json'), JSON.stringify(body), 'utf8');
+        } catch (error) { throw prepare(`请求体落盘失败：${errorMessage(error)}`); }
+        args.push('--input', join(directory, 'body.json'), '-H', 'Content-Type: application/json');
+      }
+      const stdout = await this.runGlab(args);
+      try { return JSON.parse(stdout); } catch { return stdout; }
     } finally {
       if (directory) await rm(directory, { recursive: true, force: true }).catch(() => {});
     }

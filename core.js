@@ -2,25 +2,25 @@ export const STATE_VERSION = 6;
 
 // Leader has its own journal/version; Issue automatic:false and STATE_VERSION stay unchanged.
 export const LEADER_STATE_VERSION = 1;
-// Shared by Host enforcement and the UI projection so both always show the same budgets.
+// Journal/size bounds shared by Host enforcement and the UI projection. There are no action budgets or run leases.
 export const LEADER_LIMITS = Object.freeze({
-  maxActions: 20, maxWakeups: 100, leaseMs: 24 * 60 * 60 * 1000, issueLeaseMs: 72 * 60 * 60 * 1000,
   maxEvents: 100, maxOutbox: 500, maxOpenOutbox: 100, keepTerminalOutbox: 200, keepTerminalBodies: 20,
-  maxItems: 200, maxCreatedEnrollments: 1000, maxBudgetLedger: 200, maxAbandonedCreations: 20,
-  maxRelays: 200, stallMs: 20 * 60 * 1000, maxTasks: 200,
+  maxItems: 200, maxCreatedEnrollments: 1000, maxAbandonedCreations: 20,
+  stallMs: 20 * 60 * 1000, maxTasks: 200,
   // Orchestration: concurrent running workers (setting range/default), FIFO queue, completion history, dependencies.
   minRunningWorkers: 1, maxRunningWorkers: 10, defaultRunningWorkers: 3, maxQueue: 50, maxCompleted: 100, maxDependsOn: 10,
-  // Worker → Leader reports (gitlab_leader_report): journal size, per-item interval and per-budget-cycle cap.
-  maxReports: 200, maxReportText: 2000, reportIntervalMs: 2 * 60 * 1000, maxReportsPerItem: 30,
+  // Worker → Leader reports (gitlab_leader_report): journal size and text size.
+  maxReports: 200, maxReportText: 2000,
+  // Leader text inputs (prompts sent to workers, GitLab API bodies).
+  maxPromptText: 8000, maxApiBody: 100000,
 });
 export const LEADER_REPORT_KINDS = Object.freeze(['progress', 'blocked', 'done', 'question', 'message']);
-// Issue progress comments are off by default; when on, every comment ends with this signature line.
+// GitLab writes are off by default; when on, every Issue/MR note the Leader posts ends with this signature line.
 export const DEFAULT_LEADER_COMMENT_SIGNATURE = '—— 由 AI Leader 代发';
-// Leader ops (steer / Issue comment / handoff) rate limits, shared by Host enforcement and the UI projection.
-export const LEADER_OPS_LIMITS = Object.freeze({ steerIntervalMs: 10 * 60 * 1000, commentIntervalMs: 30 * 60 * 1000,
-  maxCommentsPerItem: 10, maxPreviousSessions: 20, maxComments: 200 });
+// Journal bounds for handoff history and the GitLab write ledger.
+export const LEADER_OPS_LIMITS = Object.freeze({ maxPreviousSessions: 20, maxComments: 200 });
 const DEFAULT_LEADER_SETTINGS = Object.freeze({ model: null, autoEnrollNew: false, maxRunningWorkers: 3, archiveOnComplete: true,
-  issueComments: false, commentSignature: DEFAULT_LEADER_COMMENT_SIGNATURE });
+  gitlabWrite: false, commentSignature: DEFAULT_LEADER_COMMENT_SIGNATURE });
 const LEADER_QUEUE_KINDS = new Set(['create', 'continue']);
 export const DEFAULT_LEADER_AGENT_PRESET = 'gitlab-issue-leader';
 // Leader-dispatched ad-hoc tasks (no GitLab Issue): namespaced taskIds plus their own journal registry.
@@ -31,8 +31,8 @@ const OPEN_DELIVERY = new Set(['sending', 'uncertain']);
 export function initialLeaderState() {
   return { version: LEADER_STATE_VERSION, enabled: false, sessionId: null, phase: 'not-created',
     settings: { ...DEFAULT_LEADER_SETTINGS }, items: [], events: [], outbox: [], creation: null, createdEnrollments: [],
-    epoch: 0, creationPolicyEpoch: 0, expiresAt: null, wakeups: 0, configuredModel: null, error: '',
-    lastStartedAt: null, budgetLedger: [], abandonedCreations: [], relays: [], audit: [], tasks: [], queue: [], completed: [], queueNotices: [],
+    epoch: 0, creationPolicyEpoch: 0, wakeups: 0, configuredModel: null, error: '',
+    lastStartedAt: null, abandonedCreations: [], audit: [], tasks: [], queue: [], completed: [], queueNotices: [],
     previousSessions: [], comments: [], reports: [] };
 }
 
@@ -121,11 +121,11 @@ export function leaderRunState(state) {
 
 export function validateLeaderSettings(input, current = DEFAULT_LEADER_SETTINGS) {
   if (!isRecord(input)) throw new Error('Leader 设置必须是对象。');
-  if (Object.keys(input).some((key) => !['model', 'autoEnrollNew', 'maxRunningWorkers', 'archiveOnComplete', 'issueComments', 'commentSignature'].includes(key))) throw new Error('未知 Leader 设置；不得扩大工具权限或重置预算。');
+  if (Object.keys(input).some((key) => !['model', 'autoEnrollNew', 'maxRunningWorkers', 'archiveOnComplete', 'gitlabWrite', 'commentSignature'].includes(key))) throw new Error('未知 Leader 设置；不得扩大工具权限。');
   const next = { ...DEFAULT_LEADER_SETTINGS, ...current };
-  if ('issueComments' in input) {
-    if (typeof input.issueComments !== 'boolean') throw new Error('issueComments 必须是布尔值。');
-    next.issueComments = input.issueComments;
+  if ('gitlabWrite' in input) {
+    if (typeof input.gitlabWrite !== 'boolean') throw new Error('gitlabWrite 必须是布尔值。');
+    next.gitlabWrite = input.gitlabWrite;
   }
   if ('commentSignature' in input) {
     const signature = input.commentSignature;
@@ -169,7 +169,13 @@ export function normalizeLeaderState(value) {
   if (value.sessionId !== null && !id(value.sessionId)) throw new Error('Leader journal 会话 ID 无效，禁止重复创建。');
   if (!Array.isArray(value.items) || value.items.length > 200 || !Array.isArray(value.outbox) || value.outbox.length > 500) throw new Error('Leader journal items/outbox 无效。');
   const result = { ...initialLeaderState(), ...JSON.parse(JSON.stringify(value)) };
-  result.settings = validateLeaderSettings(value.settings, initialLeaderState().settings);
+  // v2.42 and older journals carry issueComments; it becomes gitlabWrite (same meaning: Leader may write GitLab).
+  const settings = isRecord(value.settings) ? { ...value.settings } : value.settings;
+  if (isRecord(settings) && 'issueComments' in settings) {
+    if (!('gitlabWrite' in settings)) settings.gitlabWrite = settings.issueComments === true;
+    delete settings.issueComments;
+  }
+  result.settings = validateLeaderSettings(settings, initialLeaderState().settings);
   result.configuredModel = validateLeaderSettings({ model: value.configuredModel ?? null }).model;
   result.createdEnrollments = value.createdEnrollments ?? [];
   if (!Array.isArray(result.createdEnrollments) || result.createdEnrollments.length > 1000
@@ -179,9 +185,13 @@ export function normalizeLeaderState(value) {
     if (!isRecord(item) || !id(item.taskId) || !id(item.sessionId) || item.sessionId === result.sessionId
       || taskIds.has(item.taskId) || sessionIds.has(item.sessionId) || !Array.isArray(item.alerts) || item.alerts.length > 50
       || !isRecord(item.provenance) || !['ui', 'created', 'leader'].includes(item.provenance.kind)
-      || !Number.isSafeInteger(item.actions) || item.actions < 0 || timestamp(item.expiresAt) === null
-      || (item.cursor !== null && timestamp(item.cursor) === null)) throw new Error('Leader journal 显式映射/预算/来源无效。');
+      || (item.cursor !== undefined && item.cursor !== null && timestamp(item.cursor) === null)) throw new Error('Leader journal 显式映射/来源无效。');
     taskIds.add(item.taskId); sessionIds.add(item.sessionId);
+    // Removed mechanisms (v2.43): action budget, Issue lease, per-Issue pause, comment/report counters. Old fields load and drop silently.
+    for (const key of ['actions', 'maxActions', 'expiresAt', 'paused', 'commentCount', 'reportCount', 'lastSteerAt', 'lastCommentAt', 'lastReportAt']) delete item[key];
+    // Steer idempotency survives restart; an in-flight steer is uncertain, never resent.
+    if (item.lastSteerStatus === 'sending') item.lastSteerStatus = 'uncertain';
+    item.cursor = item.cursor ?? null;
     item.observation = null; // Restart invalidates read evidence; never reuse old idle authorization.
     item.recentEvents = item.recentEvents ?? [];
     if (!Array.isArray(item.recentEvents) || item.recentEvents.length > 40
@@ -192,7 +202,7 @@ export function normalizeLeaderState(value) {
     item.pendingWake = Array.isArray(item.pendingWake)
       ? item.pendingWake.filter((reason) => typeof reason === 'string' && reason.length <= 100).slice(-10) : [];
     // Restart always pauses the Leader, so nothing is being watched until an explicit start.
-    item.status = item.paused ? (Array.isArray(item.alerts) && item.alerts.some((alert) => alert?.status === 'pending') ? 'needs-human' : 'paused') : 'standby';
+    item.status = item.alerts.some((alert) => alert?.status === 'pending') ? 'needs-human' : 'standby';
     item.notes = normalizeLeaderNotes(item.notes, { strict: false });
     item.lastActivityAt = timestamp(item.lastActivityAt); item.stallNotifiedAt = timestamp(item.stallNotifiedAt);
     item.title = text(item.title).slice(0, 1000); item.url = safeUrl(item.url); item.summary = text(item.summary).slice(0, 2000); item.error = text(item.error).slice(0, 1000);
@@ -216,34 +226,28 @@ export function normalizeLeaderState(value) {
     if (result.creation.agentPreset !== undefined && result.creation.agentPreset !== null && !id(result.creation.agentPreset)) delete result.creation.agentPreset;
   }
   result.lastStartedAt = timestamp(value.lastStartedAt);
-  result.budgetLedger = (Array.isArray(value.budgetLedger) ? value.budgetLedger : [])
-    .filter((entry) => isRecord(entry) && id(entry.taskId) && id(entry.sessionId) && Number.isSafeInteger(entry.actions)
-      && entry.actions >= 0 && timestamp(entry.expiresAt) !== null).slice(-LEADER_LIMITS.maxBudgetLedger);
+  // Removed mechanisms: run lease (expiresAt), Issue budget ledger, relay human-message ledger.
+  for (const key of ['expiresAt', 'budgetLedger', 'relays']) delete result[key];
+  result.wakeups = Number.isSafeInteger(value.wakeups) && value.wakeups >= 0 ? value.wakeups : 0;
   result.abandonedCreations = (Array.isArray(value.abandonedCreations) ? value.abandonedCreations : [])
     .filter((entry) => isRecord(entry) && id(entry.requestId)).slice(-LEADER_LIMITS.maxAbandonedCreations);
-  result.relays = (Array.isArray(value.relays) ? value.relays : [])
-    .filter((entry) => isRecord(entry) && typeof entry.key === 'string' && entry.key.length <= 100).slice(-LEADER_LIMITS.maxRelays);
-  // Leader session-management audit trail (create/rename/archive/model/relay); bounded, display-only.
+  // Leader action audit trail (every Leader tool action); bounded, display-only.
   result.audit = (Array.isArray(value.audit) ? value.audit : [])
     .filter((entry) => isRecord(entry) && typeof entry.action === 'string' && timestamp(entry.at) !== null)
     .map((entry) => ({ action: entry.action.slice(0, 50), taskId: id(entry.taskId) ? entry.taskId : null, sessionId: id(entry.sessionId) ? entry.sessionId : null,
       at: timestamp(entry.at), detail: text(entry.detail).slice(0, 1000) })).slice(-200);
-  // Leader ops: handoff history, per-item steer/comment rate state, Issue comment ledger (pending at restart is uncertain, never retried).
+  // Leader ops: handoff history (pending at restart is uncertain, never retried).
   result.previousSessions = (Array.isArray(value.previousSessions) ? value.previousSessions : [])
     .filter((entry) => isRecord(entry) && id(entry.sessionId) && timestamp(entry.handedOffAt) !== null)
     .map((entry) => ({ sessionId: entry.sessionId, handedOffAt: timestamp(entry.handedOffAt), archived: entry.archived === true })).slice(-20);
-  for (const item of result.items) {
-    item.lastSteerAt = timestamp(item.lastSteerAt); item.lastSteerRequestId = id(item.lastSteerRequestId) ? item.lastSteerRequestId : null;
-    // A steer still 'sending' at restart is uncertain: never resent automatically.
-    item.lastSteerStatus = item.lastSteerStatus === 'sending' ? 'uncertain' : ['sent', 'uncertain', 'rejected'].includes(item.lastSteerStatus) ? item.lastSteerStatus : null;
-    item.commentCount = Number.isSafeInteger(item.commentCount) && item.commentCount >= 0 ? item.commentCount : 0;
-    item.lastCommentAt = timestamp(item.lastCommentAt);
-  }
+  // GitLab write ledger (gitlab_leader_gitlab_api non-GET calls); a write still pending at restart is uncertain, never retried.
   result.comments = (Array.isArray(value.comments) ? value.comments : [])
-    .filter((entry) => isRecord(entry) && id(entry.requestId) && id(entry.taskId) && ['pending', 'posted', 'uncertain', 'rejected'].includes(entry.status))
-    .map((entry) => ({ requestId: entry.requestId, taskId: entry.taskId, status: entry.status === 'pending' ? 'uncertain' : entry.status,
+    .filter((entry) => isRecord(entry) && id(entry.requestId) && ['pending', 'posted', 'uncertain', 'rejected'].includes(entry.status))
+    .map((entry) => ({ requestId: entry.requestId, taskId: id(entry.taskId) ? entry.taskId : null, method: text(entry.method).slice(0, 10),
+      path: text(entry.path).slice(0, 500), status: entry.status === 'pending' ? 'uncertain' : entry.status,
       noteId: Number.isSafeInteger(entry.noteId) ? entry.noteId : null, url: safeUrl(entry.url), at: timestamp(entry.at),
-      error: entry.status === 'pending' ? '重启时评论结果不确定，禁止自动重发；请人工核查 Issue。' : text(entry.error).slice(0, 500) })).slice(-200);
+      error: entry.status === 'pending' ? '重启时 GitLab 写入结果不确定，禁止自动重发；请人工核查 GitLab。' : text(entry.error).slice(0, 500) }))
+    .slice(-LEADER_OPS_LIMITS.maxComments);
   // Ad-hoc task registry: only "created" binds a session; a restart mid-creation is uncertain, never retried.
   const seenTasks = new Set();
   result.tasks = (Array.isArray(value.tasks) ? value.tasks : [])
@@ -266,7 +270,7 @@ export function normalizeLeaderState(value) {
       request: entry.kind === 'create'
         ? { title: text(entry.request.title).slice(0, 200), brief: text(entry.request.brief).slice(0, 8000), workingDirectory: text(entry.request.workingDirectory).slice(0, 1000),
           taskId: id(entry.request.taskId) ? entry.request.taskId : null }
-        : { body: text(entry.request.body).slice(0, 8000), reason: text(entry.request.reason).slice(0, 1000) },
+        : { text: text(entry.request.text ?? entry.request.body).slice(0, 8000), ...(id(entry.request.requestId) ? { requestId: entry.request.requestId } : {}) },
       fingerprint: text(entry.fingerprint).slice(0, 100), queuedAt: timestamp(entry.queuedAt), requestedBy: 'leader' }))
     .slice(0, LEADER_LIMITS.maxQueue);
   result.completed = (Array.isArray(value.completed) ? value.completed : [])
@@ -278,9 +282,6 @@ export function normalizeLeaderState(value) {
   for (const item of result.items) {
     item.lastTodo = normalizeLeaderTodo(item.lastTodo);
     item.kickedAt = Number.isSafeInteger(item.kickedAt) ? item.kickedAt : null;
-    // Worker report rate state (older journals lack it): per-budget-cycle count and last accepted report time.
-    item.reportCount = Number.isSafeInteger(item.reportCount) && item.reportCount >= 0 ? item.reportCount : 0;
-    item.lastReportAt = timestamp(item.lastReportAt);
   }
   // Worker → Leader reports journal (older journals lack it and start empty). Content is untrusted worker output.
   const seenReports = new Set();
@@ -336,23 +337,18 @@ export function buildLeaderProjection(state = initialLeaderState()) {
     runState: leaderRunState(state),
     settings: JSON.parse(JSON.stringify(state.settings)),
     creation,
-    run: { expiresAt: state.enabled === true ? timestamp(state.expiresAt) : null, wakeups: Number.isSafeInteger(state.wakeups) ? state.wakeups : 0,
-      maxWakeups: LEADER_LIMITS.maxWakeups, lastStartedAt: timestamp(state.lastStartedAt) },
+    run: { wakeups: Number.isSafeInteger(state.wakeups) ? state.wakeups : 0, lastStartedAt: timestamp(state.lastStartedAt) },
     items: state.items.map((item) => ({ taskId: item.taskId, kind: isLeaderTaskId(item.taskId) ? 'task' : 'issue', sessionId: item.sessionId, title: item.title, url: item.url,
       status: item.status, summary: item.summary || '', error: item.error || '', alerts: item.alerts.map((alert) => ({ ...alert })),
-      paused: item.paused === true, actions: Number.isSafeInteger(item.actions) ? item.actions : 0, maxActions: LEADER_LIMITS.maxActions,
-      expiresAt: timestamp(item.expiresAt), enrolledAt: timestamp(item.enrolledAt), provenance: ['created', 'leader'].includes(item.provenance?.kind) ? item.provenance.kind : 'ui',
+      enrolledAt: timestamp(item.enrolledAt), provenance: ['created', 'leader'].includes(item.provenance?.kind) ? item.provenance.kind : 'ui',
       notes: normalizeLeaderNotes(item.notes, { strict: false }), lastActivityAt: timestamp(item.lastActivityAt),
       pendingWake: Array.isArray(item.pendingWake) ? [...item.pendingWake] : [],
       blockedBy: leaderBlockedBy(item, state.completed), lastTodo: normalizeLeaderTodo(item.lastTodo),
-      lastSteerAt: timestamp(item.lastSteerAt), commentCount: Number.isSafeInteger(item.commentCount) ? item.commentCount : 0,
-      maxComments: LEADER_OPS_LIMITS.maxCommentsPerItem, lastCommentAt: timestamp(item.lastCommentAt),
-      reportCount: Number.isSafeInteger(item.reportCount) ? item.reportCount : 0, maxReports: LEADER_LIMITS.maxReportsPerItem,
       lastReport: leaderReportSummary([...(Array.isArray(state.reports) ? state.reports : [])].reverse().find((entry) => entry?.taskId === item.taskId)) })),
     // Leader sessions retired by a human handoff (newest last); comment ledger shows uncertain posts a human must check.
     previousSessions: (Array.isArray(state.previousSessions) ? state.previousSessions : []).slice(-20).map((entry) => ({ ...entry })),
-    comments: (Array.isArray(state.comments) ? state.comments : []).slice(-20).map((entry) => ({ requestId: entry.requestId, taskId: entry.taskId,
-      status: entry.status, noteId: entry.noteId ?? null, url: entry.url || '', at: timestamp(entry.at), error: entry.error || '' })),
+    comments: (Array.isArray(state.comments) ? state.comments : []).slice(-20).map((entry) => ({ requestId: entry.requestId, taskId: entry.taskId ?? null,
+      method: entry.method || 'POST', path: entry.path || '', status: entry.status, noteId: entry.noteId ?? null, url: entry.url || '', at: timestamp(entry.at), error: entry.error || '' })),
     // FIFO queue of Leader create/continue requests waiting for a running-worker slot (position is 1-based).
     queue: (Array.isArray(state.queue) ? state.queue : []).slice(0, LEADER_LIMITS.maxQueue).map((entry, index) => ({ id: entry.id, kind: entry.kind,
       taskId: entry.taskId ?? null, sessionId: entry.sessionId ?? null, position: index + 1,

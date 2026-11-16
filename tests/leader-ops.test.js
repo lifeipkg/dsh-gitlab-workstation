@@ -13,7 +13,7 @@ const missing = (sessionId) => Object.assign(remote('not found', 'session/not-fo
 const copy = (value) => JSON.parse(JSON.stringify(value));
 
 function fixture() {
-  const calls = { create: [], rename: [], prompt: [], notify: [], archive: [], glab: [], refresh: 0, humanReads: [] };
+  const calls = { create: [], rename: [], prompt: [], notify: [], archive: [], glab: [], inputs: [], refresh: 0, humanReads: [] };
   const sessions = new Map([['leader', sessionState()], ['worker-a', sessionState()], ['worker-b', sessionState()]]);
   const ui = createLeaderUiCaller();
   let created = 0;
@@ -40,12 +40,13 @@ function fixture() {
     async persistLeader() {},
     async runGlab(args) {
       calls.glab.push(args);
-      const file = args[args.indexOf('--input') + 1];
-      const body = file ? JSON.parse(await readFile(file, 'utf8')).body : null;
-      if (behaviour.glab) return behaviour.glab(args, body);
-      return JSON.stringify({ id: 900 + calls.glab.length, body });
+      const file = args.includes('--input') ? args[args.indexOf('--input') + 1] : null;
+      const input = file ? JSON.parse(await readFile(file, 'utf8')) : null;
+      calls.inputs.push(input);
+      if (behaviour.glab) return behaviour.glab(args, input?.body ?? null, input);
+      return JSON.stringify({ id: 900 + calls.glab.length, body: input?.body ?? null });
     },
-  }, { postIssueNote: gitlabMethods.postIssueNote });
+  }, { apiRequest: gitlabMethods.apiRequest });
   runtime.leaderAdapter = {
     capabilities: { atomicIdleDelivery: true, nonHumanSource: true },
     async prepare(sessionId) { return { ok: true, status: 'prepared', sessionId }; },
@@ -65,16 +66,17 @@ function fixture() {
   const invoke = (operation, request = {}, caller = ui) => runtime.leaderOperation(operation, request, caller);
   const issue = (suffix = 'a') => ({ taskId: `issue-1-${suffix}`, sessionId: `worker-${suffix}` });
   const agent = (sessionId = runtime.leaderState.sessionId) => createLeaderAgentCaller({ sessionId, agentId: 'verified-agent' });
-  const setup = async ({ start = true, comments = false } = {}) => {
+  const setup = async ({ start = true, write = false } = {}) => {
     assert.equal((await invoke('create')).ok, true);
-    if (comments) assert.equal((await invoke('configure', { settings: { issueComments: true } })).ok, true);
+    if (write) assert.equal((await invoke('configure', { settings: { gitlabWrite: true } })).ok, true);
     assert.equal((await invoke('enroll', issue('a'))).ok, true);
     assert.equal((await invoke('enroll', issue('b'))).ok, true);
     if (start) { const started = await invoke('start'); assert.equal(started.ok, true, started.error); }
   };
   const item = (suffix = 'a') => runtime.leaderState.items.find((entry) => entry.taskId === `issue-1-${suffix}`);
-  const steer = (extra = {}, suffix = 'a') => invoke('steerIssue', { ...issue(suffix), text: '先修复失败的单测，不要再改文档。', reason: 'worker 在改无关文件。', ...extra }, agent());
-  return { runtime, calls, sessions, ui, invoke, issue, agent, setup, item, steer, behaviour };
+  const steer = (extra = {}, suffix = 'a') => invoke('session', { action: 'steer', ...issue(suffix), text: '先修复失败的单测，不要再改文档。', reason: 'worker 在改无关文件。', ...extra }, agent());
+  const api = (request, caller = agent()) => invoke('gitlabApi', request, caller);
+  return { runtime, calls, sessions, ui, invoke, issue, agent, setup, item, steer, api, behaviour };
 }
 
 const withClock = async (offsetMs, body) => {
@@ -84,56 +86,63 @@ const withClock = async (offsetMs, body) => {
 
 // ------------------------------------------------------------------ registration
 
-test('ops tools are registered as Leader-only and handoff as UI-only', async () => {
-  const names = new Map(LEADER_TOOLS.map(([name, operation]) => [operation, name]));
-  assert.equal(names.get('steerIssue'), 'gitlab_leader_steer');
-  assert.equal(names.get('commentIssue'), 'gitlab_leader_issue_comment');
-  assert.equal(names.has('handoff'), false);
+test('the six Leader tools are registered as Leader-only and handoff/cancelQueued as UI-only', async () => {
+  assert.deepEqual(LEADER_TOOLS.map(([name, operation]) => [name, operation]), [
+    ['gitlab_leader_overview', 'overview'], ['gitlab_leader_read', 'read'], ['gitlab_leader_session', 'session'],
+    ['gitlab_leader_note', 'note'], ['gitlab_leader_gitlab_api', 'gitlabApi'], ['gitlab_leader_run', 'run']]);
   const { invoke, setup, issue, agent } = fixture();
-  await setup({ comments: true });
-  for (const operation of ['steerIssue', 'commentIssue']) {
-    const result = await invoke(operation, { ...issue(), text: 'x', reason: 'y', body: 'z' });
+  await setup({ write: true });
+  for (const [operation, request] of [['session', { action: 'steer', ...issue(), text: 'x' }], ['gitlabApi', { method: 'GET', path: 'projects/1/issues/7' }]]) {
+    const result = await invoke(operation, request);
     assert.equal(result.ok, false); assert.match(result.error, /仅限 Leader Agent/u);
   }
   const handoff = await invoke('handoff', {}, agent());
-  assert.equal(handoff.ok, false); assert.match(handoff.error, /不能自授/u);
+  assert.equal(handoff.ok, false); assert.match(handoff.error, /不能修改 Leader 设置、创建 Leader 或交接/u);
   const index = await readFile(new URL('../index.js', import.meta.url), 'utf8');
   assert.match(index, /LEADER_UI_OPERATIONS = new Set\([^)]*'handoff'/su);
+  assert.match(index, /LEADER_UI_OPERATIONS = new Set\([^)]*'cancelQueued'/su);
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.match(pkg.scripts.check, /node --check host\/leader-ops\.js/u);
+  assert.match(pkg.scripts.check, /node --check host\/leader-tools\.js/u);
+  assert.doesNotMatch(pkg.scripts.check, /leader-autonomy/u);
 });
 
-test('ops settings default off, validate strictly and survive normalization/projection', () => {
+test('gitlabWrite defaults off, validates strictly, migrates issueComments and survives normalization/projection', () => {
   const initial = initialLeaderState();
-  assert.equal(initial.settings.issueComments, false);
+  assert.equal(initial.settings.gitlabWrite, false); assert.equal('issueComments' in initial.settings, false);
   assert.equal(initial.settings.commentSignature, DEFAULT_LEADER_COMMENT_SIGNATURE);
   assert.deepEqual(initial.previousSessions, []);
-  const next = validateLeaderSettings({ issueComments: true, commentSignature: '—— Leader' }, initial.settings);
-  assert.equal(next.issueComments, true); assert.equal(next.commentSignature, '—— Leader');
-  assert.throws(() => validateLeaderSettings({ issueComments: 'yes' }, initial.settings), /issueComments/u);
+  const next = validateLeaderSettings({ gitlabWrite: true, commentSignature: '—— Leader' }, initial.settings);
+  assert.equal(next.gitlabWrite, true); assert.equal(next.commentSignature, '—— Leader');
+  assert.throws(() => validateLeaderSettings({ gitlabWrite: 'yes' }, initial.settings), /gitlabWrite/u);
+  assert.throws(() => validateLeaderSettings({ issueComments: true }, initial.settings), /未知 Leader 设置/u);
   assert.throws(() => validateLeaderSettings({ commentSignature: 'x'.repeat(101) }, initial.settings), /commentSignature/u);
   assert.throws(() => validateLeaderSettings({ commentSignature: 'a\nb' }, initial.settings), /commentSignature/u);
-  const legacy = copy(initial); delete legacy.settings.issueComments; delete legacy.settings.commentSignature; delete legacy.previousSessions; delete legacy.comments;
-  const normalized = normalizeLeaderState(legacy);
-  assert.equal(normalized.settings.issueComments, false);
-  assert.deepEqual(normalized.previousSessions, []);
+  for (const [old, expected] of [[true, true], [false, false]]) {
+    const legacy = copy(initial); delete legacy.settings.gitlabWrite; legacy.settings.issueComments = old;
+    const migrated = normalizeLeaderState(legacy);
+    assert.equal(migrated.settings.gitlabWrite, expected); assert.equal('issueComments' in migrated.settings, false);
+  }
+  const bare = copy(initial); delete bare.settings.gitlabWrite; delete bare.settings.commentSignature; delete bare.previousSessions; delete bare.comments;
+  const normalized = normalizeLeaderState(bare);
+  assert.equal(normalized.settings.gitlabWrite, false); assert.deepEqual(normalized.previousSessions, []);
   const withHistory = { ...copy(initial), previousSessions: [{ sessionId: 'old', handedOffAt: 5, archived: true }],
-    comments: [{ requestId: 'leader-comment-x', taskId: 'issue-1-a', status: 'pending', noteId: null, url: '', at: 9, error: '' }] };
+    comments: [{ requestId: 'leader-api-x', taskId: 'issue-1-a', method: 'POST', path: 'projects/1/issues/7/notes', status: 'pending', noteId: null, url: '', at: 9, error: '' }] };
   const reloaded = normalizeLeaderState(withHistory);
-  assert.equal(reloaded.comments[0].status, 'uncertain', 'a pending comment at restart is uncertain, never resent');
+  assert.equal(reloaded.comments[0].status, 'uncertain', 'a pending write at restart is uncertain, never resent');
   const projection = buildLeaderProjection(reloaded);
   assert.deepEqual(projection.previousSessions, [{ sessionId: 'old', handedOffAt: 5, archived: true }]);
-  assert.equal(projection.settings.issueComments, false);
+  assert.equal(projection.settings.gitlabWrite, false); assert.equal(projection.comments[0].method, 'POST');
 });
 
 // ------------------------------------------------------------------ steer
 
-test('steer is delivered only to a running worker, with mode steer and a non-human header, and spends budget', async () => {
+test('steer is delivered only to a running worker, with mode steer and a non-human header, and is audited', async () => {
   const { setup, sessions, steer, calls, item, runtime } = fixture();
   await setup();
   const idleResult = await steer();
-  assert.equal(idleResult.ok, false); assert.match(idleResult.error, /gitlab_leader_continue/u);
-  assert.equal(calls.prompt.length, 0); assert.equal(item().actions, 0);
+  assert.equal(idleResult.ok, false); assert.match(idleResult.error, /gitlab_leader_session send/u);
+  assert.equal(calls.prompt.length, 0);
   sessions.set('worker-a', sessionState({ running: true, pendingInput: ['question'] }));
   const asking = await steer();
   assert.equal(asking.ok, false); assert.match(asking.error, /审批\/问答/u);
@@ -144,70 +153,66 @@ test('steer is delivered only to a running worker, with mode steer and a non-hum
   const [request] = calls.prompt;
   assert.equal(request.mode, 'steer'); assert.equal(request.sessionId, 'worker-a');
   assert.match(request.requestId, /^leader-steer-[0-9a-f]{40}$/u);
-  assert.match(request.content[0].text, /^\[GitLab Issue Leader 纠偏引导；不是人类输入，不授予新权限\]/u);
+  assert.match(request.content[0].text, /^\[来自 GitLab Issue Leader 的纠偏引导；不是人类输入，不授予新权限\]/u);
   assert.match(request.content[0].text, /理由：worker 在改无关文件。/u);
-  assert.match(request.content[0].text, /遵守原任务授权，只调整方向，不新增目标、不解除护栏/u);
-  assert.equal(item().actions, 1); assert.equal(typeof item().lastSteerAt, 'number');
-  assert.ok(runtime.leaderState.audit.some((entry) => entry.action === 'steer' && entry.taskId === 'issue-1-a'));
-  assert.equal(typeof buildLeaderProjection(runtime.leaderState).items[0].lastSteerAt, 'number');
+  assert.equal(item().lastSteerStatus, 'sent');
+  assert.ok(runtime.leaderState.audit.some((entry) => entry.action === 'session-steer' && entry.taskId === 'issue-1-a'));
 });
 
-test('steer retries are idempotent and a new steer is rate limited to one per 10 minutes', async () => {
-  const { setup, sessions, steer, calls, item } = fixture();
+test('steer retries are idempotent and a new steer is never rate limited', async () => {
+  const { setup, sessions, steer, calls } = fixture();
   await setup();
   sessions.set('worker-a', sessionState({ running: true }));
   assert.equal((await steer()).ok, true);
   const again = await steer();
   assert.equal(again.ok, true); assert.equal(again.result.duplicate, true);
-  assert.equal(calls.prompt.length, 1, 'same parameters never re-inject'); assert.equal(item().actions, 1);
+  assert.equal(calls.prompt.length, 1, 'same parameters never re-inject');
   const other = await steer({ text: '换一个方向：先跑 lint。' });
-  assert.equal(other.ok, false); assert.match(other.error, /10 分钟内至多纠偏 1 次/u);
-  const later = await withClock(11 * 60 * 1000, () => steer({ text: '换一个方向：先跑 lint。' }));
-  assert.equal(later.ok, true, later.error);
+  assert.equal(other.ok, true, other.error);
   assert.equal(calls.prompt.length, 2); assert.notEqual(calls.prompt[0].requestId, calls.prompt[1].requestId);
-  assert.equal(item().actions, 2);
 });
 
-test('steer refunds a clear Host rejection and latches an uncertain send without retry', async () => {
+test('steer retry after a restart (journal reload) is still deduplicated', async () => {
+  const { setup, sessions, steer, calls, item, runtime } = fixture();
+  await setup();
+  sessions.set('worker-a', sessionState({ running: true }));
+  assert.equal((await steer()).ok, true);
+  runtime.leaderState = normalizeLeaderState(JSON.parse(JSON.stringify(runtime.leaderState)));
+  assert.equal(item().lastSteerStatus, 'sent'); assert.match(item().lastSteerRequestId, /^leader-steer-/u);
+  const again = await steer();
+  assert.equal(again.ok, true, again.error); assert.equal(again.result.duplicate, true);
+  assert.equal(calls.prompt.length, 1, 'the reloaded journal never re-injects the same steer');
+});
+
+test('steer rolls back a clear Host rejection and latches an uncertain send without retry', async () => {
   const { setup, sessions, steer, calls, item, behaviour, runtime } = fixture();
   await setup();
   sessions.set('worker-a', sessionState({ running: true }));
   behaviour.prompt = () => { throw remote('session busy with approval'); };
   const rejected = await steer();
-  assert.equal(rejected.ok, false); assert.match(rejected.error, /未扣预算/u);
-  assert.equal(item().actions, 0); assert.equal(item().lastSteerAt ?? null, null);
+  assert.equal(rejected.ok, false); assert.match(rejected.error, /宿主拒绝/u);
+  assert.equal(item().lastSteerStatus ?? null, null);
   behaviour.prompt = () => { throw new Error('timeout'); };
   const uncertain = await steer();
   assert.equal(uncertain.ok, false); assert.match(uncertain.error, /不会自动重发/u);
-  assert.equal(item().actions, 1);
-  assert.ok(runtime.leaderState.audit.some((entry) => entry.action === 'steer-uncertain'));
+  assert.equal(item().lastSteerStatus, 'uncertain');
+  assert.ok(runtime.leaderState.audit.some((entry) => entry.action === 'session-steer' && /uncertain/u.test(entry.detail)));
   behaviour.prompt = null;
-  const retry = await withClock(11 * 60 * 1000, () => steer());
+  const retry = await steer();
   assert.equal(retry.ok, false, 'the same uncertain request is never re-sent'); assert.match(retry.error, /不确定/u);
   assert.equal(calls.prompt.length, 2);
 });
 
-test('steer respects paused items, pending alerts, dependencies and a paused Leader', async () => {
-  const { setup, sessions, steer, invoke, issue, item, runtime } = fixture();
+test('steer works while the Leader is paused and never targets the Leader or human sessions', async () => {
+  const { setup, sessions, steer, invoke, agent, calls } = fixture();
   await setup();
   sessions.set('worker-a', sessionState({ running: true }));
-  assert.equal((await invoke('pauseIssue', issue())).ok, true);
-  assert.equal((await steer()).ok, false);
-  sessions.set('worker-a', sessionState());
-  assert.equal((await invoke('resumeIssue', issue())).ok, true);
-  sessions.set('worker-a', sessionState({ running: true }));
-  item().alerts.push({ id: 'alert-1', question: '需要人类？', status: 'pending' });
-  assert.equal((await steer()).ok, false);
-  item().alerts = [];
-  item().notes = { ...(item().notes ?? {}), dependsOn: ['issue-1-b'] };
-  const blocked = await steer();
-  assert.equal(blocked.ok, false); assert.match(blocked.error, /依赖|issue-1-b/u);
-  item().notes = { ...item().notes, dependsOn: [] };
   assert.equal((await invoke('pause')).ok, true);
-  assert.equal((await steer()).ok, false);
-  assert.equal(runtime.leaderState.items.every((entry) => entry.actions === 0), true);
+  assert.equal((await steer()).ok, true, 'a paused Leader only stops automatic wakes');
+  sessions.set('outside', sessionState({ running: true }));
+  for (const sessionId of ['leader', 'outside']) assert.equal((await invoke('session', { action: 'steer', taskId: 'issue-1-a', sessionId, text: 'x' }, agent())).ok, false, sessionId);
+  assert.equal(calls.prompt.length, 1);
 });
-
 // ------------------------------------------------------------------ handoff
 
 test('handoff of a running Leader switches sessions, keeps the journal, archives the old one and sends a handoff brief', async () => {
@@ -222,8 +227,8 @@ test('handoff of a running Leader switches sessions, keeps the journal, archives
   assert.equal(runtime.leaderState.sessionId, 'leader-2');
   assert.equal(result.result.handoff.from, 'leader'); assert.equal(result.result.handoff.resumed, true);
   assert.equal(runtime.leaderState.enabled, true);
-  assert.deepEqual(runtime.leaderState.items.map((entry) => [entry.taskId, entry.sessionId, entry.actions, entry.notes?.stage]),
-    before.map((entry) => [entry.taskId, entry.sessionId, entry.actions, entry.notes?.stage]));
+  assert.deepEqual(runtime.leaderState.items.map((entry) => [entry.taskId, entry.sessionId, entry.notes?.stage]),
+    before.map((entry) => [entry.taskId, entry.sessionId, entry.notes?.stage]));
   assert.equal(runtime.leaderState.previousSessions.length, 1);
   assert.equal(runtime.leaderState.previousSessions[0].sessionId, 'leader');
   assert.equal(runtime.leaderState.previousSessions[0].archived, true);
@@ -234,13 +239,13 @@ test('handoff of a running Leader switches sessions, keeps the journal, archives
   assert.match(brief.body, /非人类交接简报/u);
   assert.match(brief.body, /issue-1-a \| Issue a .*阶段 实现中 \| 下一步 补测试 \| 等待 CI/u);
   assert.match(brief.body, /人类：b 不急/u);
-  assert.match(brief.body, /gitlab_leader_steer/u);
+  assert.match(brief.body, /gitlab_leader_overview/u);
   assert.ok(runtime.leaderState.audit.some((entry) => entry.action === 'handoff' && /switched/u.test(entry.detail)));
   assert.deepEqual(buildLeaderProjection(runtime.leaderState).previousSessions.map((entry) => entry.sessionId), ['leader']);
   // The retired Leader can no longer use Leader tools; the new one can.
-  const stale = await invoke('snapshot', {}, agent('leader'));
+  const stale = await invoke('overview', {}, agent('leader'));
   assert.equal(stale.ok, false); assert.match(stale.error, /不属于当前 Leader/u);
-  assert.equal((await invoke('snapshot', {}, agent('leader-2'))).ok, true);
+  assert.equal((await invoke('overview', {}, agent('leader-2'))).ok, true);
 });
 
 test('handoff of a paused Leader stays paused and sends no brief; archive failure does not roll back', async () => {
@@ -273,7 +278,7 @@ test('handoff preconditions: created Leader, quiet session, no open delivery, no
   sessions.set('leader', sessionState());
   runtime.leaderState.outbox.push({ requestId: 'r1', kind: 'notify', sessionId: 'leader', status: 'uncertain', epoch: 1, body: 'x', fingerprint: 'f', createdAt: 1, error: '' });
   const open = await invoke('handoff');
-  assert.equal(open.ok, false); assert.match(open.error, /resolveDelivery/u);
+  assert.equal(open.ok, false); assert.match(open.error, /resolve_delivery/u);
   runtime.leaderState.outbox = [];
   assert.equal((await invoke('handoff', { foo: 1 })).ok, false);
   assert.equal(calls.create.length, 1); assert.equal(runtime.leaderState.sessionId, 'leader');
@@ -307,103 +312,79 @@ test('handoff brief ignores human-message read failures', async () => {
   assert.doesNotMatch(calls.notify.at(-1).body, /最近的人类消息/u);
 });
 
-// ------------------------------------------------------------------ Issue comments
 
-test('issue comments are off by default and need the human to enable them', async () => {
-  const { setup, invoke, agent, calls } = fixture();
+// ------------------------------------------------------------------ GitLab REST API
+
+test('GET runs through glab api without gitlabWrite and the response is untrusted', async () => {
+  const { setup, api, calls, behaviour, runtime } = fixture();
   await setup();
-  const result = await invoke('commentIssue', { taskId: 'issue-1-a', body: '进度：单测已修复。' }, agent());
-  assert.equal(result.ok, false); assert.match(result.error, /需要人类在面板/u);
+  behaviour.glab = () => JSON.stringify([{ iid: 3, title: 'MR' }]);
+  const result = await api({ method: 'GET', path: '/api/v4/projects/1/merge_requests?state=opened' });
+  assert.equal(result.ok, true, result.error);
+  assert.deepEqual(calls.glab[0], ['api', '-X', 'GET', 'projects/1/merge_requests?state=opened']);
+  assert.deepEqual(result.result.response, [{ iid: 3, title: 'MR' }]); assert.equal(result.result.untrusted, true);
+  assert.ok(runtime.leaderState.audit.some((entry) => entry.action === 'gitlab-api' && /GET/u.test(entry.detail)));
+  for (const bad of [{ method: 'PATCH', path: 'x' }, { method: 'GET', path: '../etc' }, { method: 'GET', path: '-X' }, { method: 'GET', path: 'a b' },
+    { method: 'GET', path: 'projects/1', body: {} }, { method: 'GET', path: 'projects/1', extra: 1 }]) {
+    assert.equal((await api(bad)).ok, false, JSON.stringify(bad));
+  }
+  assert.equal(calls.glab.length, 1);
+});
+
+test('non-GET calls are refused without gitlabWrite before any request', async () => {
+  const { setup, api, calls } = fixture();
+  await setup();
+  for (const method of ['POST', 'PUT', 'DELETE']) {
+    const result = await api({ method, path: 'projects/1/issues/7/notes', body: { body: 'x' } });
+    assert.equal(result.ok, false); assert.match(result.error, /gitlabWrite/u);
+  }
   assert.equal(calls.glab.length, 0);
 });
 
-test('enabled comments post once with signature via --input JSON, rate limit and dedupe', async () => {
-  const { setup, invoke, agent, calls, runtime, item } = fixture();
-  await setup({ comments: true });
-  const body = '进度：单测已修复，等待 CI。';
-  const result = await invoke('commentIssue', { taskId: 'issue-1-a', body }, agent());
+test('with gitlabWrite a note POST is signed, sent once via --input JSON, recorded and audited', async () => {
+  const { setup, api, calls, runtime, invoke } = fixture();
+  await setup({ write: true });
+  const result = await api({ method: 'POST', path: 'projects/1/issues/7/notes', body: { body: '进度：单测已修复，等待 CI。' } });
   assert.equal(result.ok, true, result.error);
   assert.equal(calls.glab.length, 1);
-  const args = calls.glab[0];
-  assert.deepEqual(args.slice(0, 4), ['api', '-X', 'POST', 'projects/1/issues/7/notes']);
-  assert.equal(args[4], '--input');
-  assert.equal(result.result.noteId, 901);
+  assert.deepEqual(calls.glab[0].slice(0, 5), ['api', '-X', 'POST', 'projects/1/issues/7/notes', '--input']);
+  assert.equal(calls.inputs[0].body, `进度：单测已修复，等待 CI。\n\n${DEFAULT_LEADER_COMMENT_SIGNATURE}`);
   assert.equal(result.result.url, 'https://gitlab.test/group/project/-/issues/7#note_901');
-  assert.equal(item().commentCount, 1); assert.equal(typeof item().lastCommentAt, 'number');
-  assert.ok(runtime.leaderState.audit.some((entry) => entry.action === 'comment'));
-  const posted = runtime.leaderState.comments.at(-1);
-  assert.equal(posted.status, 'posted'); assert.equal(posted.noteId, 901);
-  const duplicate = await invoke('commentIssue', { taskId: 'issue-1-a', body }, agent());
-  assert.equal(duplicate.ok, true); assert.equal(duplicate.result.duplicate, true);
-  assert.equal(calls.glab.length, 1);
-  const tooSoon = await invoke('commentIssue', { taskId: 'issue-1-a', body: '新的进度。' }, agent());
-  assert.equal(tooSoon.ok, false); assert.match(tooSoon.error, /30 分钟内至多 1 条/u);
-  const otherIssue = await invoke('commentIssue', { taskId: 'issue-1-b', body: '另一个 Issue 的进度。' }, agent());
-  assert.equal(otherIssue.ok, true, otherIssue.error);
-  const projection = buildLeaderProjection(runtime.leaderState);
-  assert.equal(projection.items.find((entry) => entry.taskId === 'issue-1-a').commentCount, 1);
+  const ledger = runtime.leaderState.comments.at(-1);
+  assert.equal(ledger.status, 'posted'); assert.equal(ledger.noteId, 901); assert.equal(ledger.taskId, 'issue-1-a');
+  assert.ok(runtime.leaderState.audit.some((entry) => entry.action === 'gitlab-api' && entry.taskId === 'issue-1-a' && /done/u.test(entry.detail)));
+  // A custom signature; a body already carrying the signature is not signed twice; non-note writes are unsigned.
+  assert.equal((await invoke('configure', { settings: { commentSignature: '—— Leader 机器人' } })).ok, true);
+  assert.equal((await api({ method: 'POST', path: 'projects/1/issues/8/notes', body: { body: '进度 2' } })).ok, true);
+  assert.equal(calls.inputs[1].body, '进度 2\n\n—— Leader 机器人');
+  assert.equal((await api({ method: 'POST', path: 'projects/1/issues/8/notes', body: { body: '已签 —— Leader 机器人' } })).ok, true);
+  assert.equal(calls.inputs[2].body, '已签 —— Leader 机器人');
+  assert.equal((await api({ method: 'PUT', path: 'projects/1/issues/8', body: { labels: 'doing' } })).ok, true);
+  assert.deepEqual(calls.inputs[3], { labels: 'doing' });
+  // No count or interval limit.
+  for (let index = 0; index < 12; index += 1) assert.equal((await api({ method: 'POST', path: 'projects/1/issues/7/notes', body: { body: `进度 ${index}` } })).ok, true);
 });
 
-test('the signature line is appended to the posted body', async () => {
-  const { setup, invoke, agent, behaviour } = fixture();
-  await setup({ comments: true });
-  let posted = null;
-  behaviour.glab = (args, body) => { posted = body; return JSON.stringify({ id: 5 }); };
-  assert.equal((await invoke('commentIssue', { taskId: 'issue-1-a', body: '进度 OK' }, agent())).ok, true);
-  assert.equal(posted, `进度 OK\n\n${DEFAULT_LEADER_COMMENT_SIGNATURE}`);
-  const custom = fixture();
-  await custom.setup({ comments: true });
-  assert.equal((await custom.invoke('configure', { settings: { commentSignature: '—— Leader 机器人' } })).ok, true);
-  custom.behaviour.glab = (args, body) => { posted = body; return JSON.stringify({ id: 6 }); };
-  assert.equal((await custom.invoke('commentIssue', { taskId: 'issue-1-a', body: '进度 2' }, custom.agent())).ok, true);
-  assert.equal(posted, '进度 2\n\n—— Leader 机器人');
-});
-
-test('at most 10 comments per item per run', async () => {
-  const { setup, invoke, agent, item } = fixture();
-  await setup({ comments: true });
-  for (let index = 0; index < 10; index += 1) {
-    const result = await withClock(index * 31 * 60 * 1000, () => invoke('commentIssue', { taskId: 'issue-1-a', body: `进度 ${index}` }, agent()));
-    assert.equal(result.ok, true, result.error);
-  }
-  assert.equal(item().commentCount, 10);
-  const over = await withClock(11 * 31 * 60 * 1000, () => invoke('commentIssue', { taskId: 'issue-1-a', body: '进度 11' }, agent()));
-  assert.equal(over.ok, false); assert.match(over.error, /上限 10/u);
-  // A human budget reset starts a fresh managed run for that Issue, comments included.
-  assert.equal((await invoke('resetIssueBudget', { taskId: 'issue-1-a', sessionId: 'worker-a' })).ok, true);
-  assert.equal(item().commentCount, 0);
-});
-
-test('comments are rejected for ad-hoc tasks and unmanaged Issues', async () => {
-  const { setup, invoke, agent, calls } = fixture();
-  await setup({ comments: true });
-  assert.equal((await invoke('commentIssue', { taskId: 'leader-task-0123456789ab', body: 'x' }, agent())).ok, false);
-  assert.equal((await invoke('commentIssue', { taskId: 'issue-9-z', body: 'x' }, agent())).ok, false);
-  assert.equal(calls.glab.length, 0);
-});
-
-test('an uncertain comment is counted and never re-posted; a GitLab rejection is refunded', async () => {
-  const { setup, invoke, agent, calls, behaviour, runtime, item } = fixture();
-  await setup({ comments: true });
+test('an uncertain write is never re-sent automatically; a GitLab rejection is reported as not applied', async () => {
+  const { setup, api, calls, behaviour, runtime } = fixture();
+  await setup({ write: true });
   behaviour.glab = () => { throw new Error('GitLab 请求超过 90000ms，已终止。'); };
-  const uncertain = await invoke('commentIssue', { taskId: 'issue-1-a', body: '进度 A' }, agent());
+  const uncertain = await api({ method: 'POST', path: 'projects/1/issues/7/notes', body: { body: '进度 A' } });
   assert.equal(uncertain.ok, false); assert.match(uncertain.error, /不会自动重发/u);
-  assert.equal(item().commentCount, 1);
-  assert.ok(runtime.leaderState.audit.some((entry) => entry.action === 'comment-uncertain'));
-  behaviour.glab = null;
-  const retry = await withClock(31 * 60 * 1000, () => invoke('commentIssue', { taskId: 'issue-1-a', body: '进度 A' }, agent()));
-  assert.equal(retry.ok, false); assert.match(retry.error, /不确定/u);
+  assert.equal(runtime.leaderState.comments.at(-1).status, 'uncertain');
   assert.equal(calls.glab.length, 1);
   behaviour.glab = () => { throw new Error('glab 退出码 1：HTTP 403 Forbidden'); };
-  const rejected = await invoke('commentIssue', { taskId: 'issue-1-b', body: '进度 B' }, agent());
-  assert.equal(rejected.ok, false); assert.match(rejected.error, /未计数/u);
-  assert.equal(item('b').commentCount, 0); assert.equal(item('b').lastCommentAt ?? null, null);
+  const rejected = await api({ method: 'DELETE', path: 'projects/1/issues/8/notes/5' });
+  assert.equal(rejected.ok, false); assert.match(rejected.error, /拒绝/u);
+  assert.ok(runtime.leaderState.audit.some((entry) => entry.action === 'gitlab-api' && /rejected/u.test(entry.detail)));
 });
 
-test('postIssueNote rejects bad targets before any request', async () => {
+test('apiRequest rejects bad input before any request', async () => {
   const calls = [];
   const runtime = { ...gitlabMethods, async runGlab(args) { calls.push(args); return '{}'; } };
-  await assert.rejects(runtime.postIssueNote('projects/1/merge_requests/2', 'x'), (error) => error.beforeRequest === true);
-  await assert.rejects(runtime.postIssueNote('projects/1/issues/2', '   '), (error) => error.beforeRequest === true);
+  await assert.rejects(runtime.apiRequest('PATCH', 'projects/1'), (error) => error.beforeRequest === true);
+  await assert.rejects(runtime.apiRequest('GET', '../x'), (error) => error.beforeRequest === true);
+  await assert.rejects(runtime.apiRequest('GET', '-X'), (error) => error.beforeRequest === true);
   assert.equal(calls.length, 0);
+  assert.deepEqual(await runtime.apiRequest('GET', 'projects/1'), {});
 });

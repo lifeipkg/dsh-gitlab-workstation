@@ -20,7 +20,7 @@ const quiet = (state) => validState(state) && !state.running
 const squash = (value) => String(value ?? '').replace(/\s+/gu, ' ').trim();
 const clip = (value, limit) => squash(value).slice(0, limit);
 const wakeReason = (value) => String(value).slice(0, 100);
-// Worker report kinds that bypass the 2-minute interval (same-kind same-text is deduplicated instead).
+// Worker report kinds where a repeat of the same kind with the same text is deduplicated.
 const URGENT_REPORT_KINDS = new Set(['blocked', 'done', 'question']);
 const REPORT_KIND_LABELS = Object.freeze({ progress: '进展', blocked: '卡住', done: '完成', question: '提问', message: '跨 Issue 消息' });
 const MAX_NOTICES = 10;
@@ -104,7 +104,7 @@ export const leaderOrchestrationMethods = {
     const iid = item ? this.leaderIssueIid(item) : null;
     return entry.kind === 'create'
       ? `创建 ${entry.taskId ? `${entry.taskId} ` : '[临时] '}${clip(entry.request?.title, 60)}`
-      : `续办 ${iid ? `#${iid} ` : ''}${clip(item?.title ?? entry.taskId, 60)}`;
+      : `发送 ${iid ? `#${iid} ` : ''}${clip(item?.title ?? entry.taskId, 60)}`;
   },
 
   leaderDropQueued(entry, error) {
@@ -150,23 +150,17 @@ export const leaderOrchestrationMethods = {
     return head;
   },
 
-  /** Re-validates a queued continue (enrolled, active, unblocked, quiet, no native approval); the evidence token was checked at enqueue. */
+  /** Re-validates a queued send (enrolled, active, unblocked, quiet, no native approval) before delivering it. */
   async leaderRunQueuedContinue(entry) {
     const state = this.leaderState;
     const item = state.items.find((candidate) => candidate.taskId === entry.taskId && candidate.sessionId === entry.sessionId);
     if (!item) return failure('该 Issue 已不再纳管（可能已完成、归档或解除纳管）。');
     this.leaderManagedItem(entry, true);
     const blocked = leaderBlockedBy(item, state.completed);
-    if (blocked.length) return failure(`依赖 ${blocked.join('、')} 未完成；如需绕过请先用 update_issue 调整 dependsOn。`);
-    const inspection = await this.inspectLeaderSession(item.sessionId);
-    if (inspection.status !== 'active') return failure(`worker 会话不可用（${inspection.status}）。`);
-    if (inspection.state.pendingInput.length) return failure('worker 有原生审批/问答等待人类。');
-    if (!quiet(inspection.state)) return failure('worker 不空闲（运行中或有排队输入）。');
-    item.observation = { ...(item.observation ?? {}), state: clone(inspection.state), cursor: inspection.state.cursor, epoch: state.epoch,
-      observedAt: Date.now(), logCursor: item.cursor, logEpoch: item.logEpoch, truncated: item.observation?.truncated === true };
-    const result = await this.advanceManagedRecord({ taskId: item.taskId, sessionId: item.sessionId, body: entry.request.body, reason: entry.request.reason,
-      requestId: `leader-queued-${digest([entry.id, entry.request.body]).slice(0, 40)}`,
-      evidence: { cursor: inspection.state.cursor, epoch: state.epoch, logCursor: item.cursor, logEpoch: item.logEpoch } });
+    if (blocked.length) return failure(`依赖 ${blocked.join('、')} 未完成；如需绕过请先用 gitlab_leader_note 调整 dependsOn。`);
+    const text = entry.request.text ?? entry.request.body;
+    const result = await this.advanceManagedRecord({ taskId: item.taskId, sessionId: item.sessionId, text,
+      requestId: entry.request.requestId ?? `leader-queued-${digest([entry.id]).slice(0, 40)}` });
     if (result.ok) item.kickedAt = Date.now();
     return result;
   },
@@ -240,7 +234,6 @@ export const leaderOrchestrationMethods = {
     const reason = request.reason === undefined ? '' : typeof request.reason === 'string' ? request.reason.trim() : null;
     if (reason === null || reason.length > 500) return failure('reason 必须是至多 500 字符的文本。');
     if (this.leaderStorageFault) return failure('Leader journal 不可写，未完成。');
-    if (item.alerts.some((alert) => alert.status === 'pending')) return failure('该 Issue 有待人类处理的问题，人类回复前不能收尾。');
     if (state.outbox.some((entry) => (entry.taskId === item.taskId || entry.sessionId === item.sessionId) && OPEN_DELIVERY.has(entry.status))) return failure('该 Issue 有未确认投递，先人工核对再收尾。');
     const inspection = await this.inspectLeaderSession(item.sessionId);
     if (inspection.status === 'active') {
@@ -277,7 +270,6 @@ export const leaderOrchestrationMethods = {
     const record = normalizeLeaderCompletion({ taskId: item.taskId, sessionId: item.sessionId, title: item.title, url: item.url, kind, summary,
       completedAt: Date.now(), acceptWithoutMr: request.acceptWithoutMr === true, reason, verification });
     state.completed = [...(Array.isArray(state.completed) ? state.completed : []).filter((entry) => entry.taskId !== item.taskId), record].slice(-LEADER_LIMITS.maxCompleted);
-    this.retireLeaderBudget(item);
     state.items = state.items.filter((entry) => entry !== item);
     for (const entry of state.outbox) if (entry.sessionId === item.sessionId && entry.status === 'prepared') entry.status = 'cancelled';
     state.queue = (Array.isArray(state.queue) ? state.queue : []).filter((entry) => entry.taskId !== item.taskId);
@@ -297,7 +289,7 @@ export const leaderOrchestrationMethods = {
     const key = targetKey(url);
     if (!key) return null;
     const item = state.items.find((candidate) => !isLeaderTaskId(candidate.taskId) && targetKey(candidate.url) === key);
-    if (!item || item.paused || item.alerts.some((alert) => alert.status === 'pending')) return null;
+    if (!item || item.alerts.some((alert) => alert.status === 'pending')) return null;
     if (['archived', 'missing', 'unknown'].includes(item.status)) return null;
     if (leaderBlockedBy(item, state.completed).length) return null;
     if (!this.leaderIssueMapping(item.taskId, item.sessionId)) return null;
@@ -326,7 +318,7 @@ export const leaderOrchestrationMethods = {
 
   /**
    * gitlab_leader_report: an enrolled worker (caller identity already authorized) reports to the Leader.
-   * Recorded even while the Leader is paused; pendingWake is durable. Never spends Leader action budget.
+   * Recorded even while the Leader is paused; pendingWake is durable.
    */
   async workerReportRecord(request, identity) {
     const state = this.leaderState;
@@ -352,22 +344,15 @@ export const leaderOrchestrationMethods = {
       const previous = [...reports].reverse().find((entry) => entry.taskId === item.taskId && entry.kind === kind);
       if (previous && squash(previous.text) === squash(text)) return success({ recorded: false, duplicate: true, reportId: previous.id, taskId: item.taskId });
     }
-    const count = Number.isSafeInteger(item.reportCount) ? item.reportCount : 0;
-    if (count >= LEADER_LIMITS.maxReportsPerItem) return failure(`本预算周期报告已达上限 ${LEADER_LIMITS.maxReportsPerItem} 条；等待人类在面板重置预算后再报告。`);
-    if (!URGENT_REPORT_KINDS.has(kind) && Number.isSafeInteger(item.lastReportAt) && now - item.lastReportAt < LEADER_LIMITS.reportIntervalMs) {
-      const wait = Math.ceil((LEADER_LIMITS.reportIntervalMs - (now - item.lastReportAt)) / 1000);
-      return failure(`报告过于频繁：progress/message 每 2 分钟至多 1 条，请 ${wait} 秒后再报（blocked/done/question 不受此限）。`);
-    }
     const entry = { id: `report-${randomBytes(6).toString('hex')}`, taskId: item.taskId, sessionId: item.sessionId, kind, text, toTaskId, at: now };
+    // The journal keeps a bounded history of the newest reports; there is no per-worker count or interval limit.
     state.reports = [...reports, entry].slice(-LEADER_LIMITS.maxReports);
-    item.reportCount = count + 1; item.lastReportAt = now;
     const reason = wakeReason(`report:${kind}`);
     item.pendingWake = Array.isArray(item.pendingWake) ? item.pendingWake : [];
     if (!item.pendingWake.includes(reason)) item.pendingWake.push(reason);
     item.pendingWake = item.pendingWake.slice(-10);
     await this.saveLeaderStrict();
     return success({ recorded: true, reportId: entry.id, taskId: item.taskId, leaderEnabled: state.enabled === true,
-      remaining: LEADER_LIMITS.maxReportsPerItem - item.reportCount,
       note: state.enabled === true ? '已记录，Leader 会在下次空闲时收到通知。' : 'Leader 当前暂停：已记录，Leader 启动后会收到通知。' });
   },
 
@@ -387,7 +372,7 @@ export const leaderOrchestrationMethods = {
       }
       if (reason.startsWith('todo:')) details.push(`有新的 @我 Todo，已排入该 worker：${clip(item.lastTodo?.title, 80) || reason.slice(5)}`);
       else if (reason.startsWith('dependency:')) details.push(`依赖 ${reason.slice(11)} 已完成（仍有其他依赖未完成）`);
-      else if (reason === 'unblocked') details.push('全部依赖已完成，可按需 continue');
+      else if (reason === 'unblocked') details.push('全部依赖已完成，可按需 gitlab_leader_session send');
     }
     return details;
   },
