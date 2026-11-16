@@ -221,7 +221,7 @@ test('read and send refuse non-enrolled or stale mapped IDs', async () => {
 test('send delivers a non-human Leader message through a strictly persisted frozen outbox and dedupes requestId', async () => {
   const { runtime, advance, calls, setup, lastAdvance } = fixture(); await setup();
   const result = await advance({ requestId: 'send-1' }); assert.equal(result.ok, true); assert.equal(calls.deliver.length, 1);
-  assert.match(calls.deliver[0].body, /来自 GitLab Issue Leader/); assert.match(calls.deliver[0].body, /不是人类输入/); assert.match(calls.deliver[0].body, /仅限原 Issue/);
+  assert.match(calls.deliver[0].body, /来自 WorkStation Leader/); assert.match(calls.deliver[0].body, /不是人类输入/); assert.match(calls.deliver[0].body, /仅限原 Issue/);
   const outbox = lastAdvance(); assert.equal(outbox.status, 'sent'); assert.equal(outbox.requestId, 'send-1');
   assert.equal(runtime.validateLeaderAdmission(calls.deliver[0]), false); // receipt consumed admission.
   assert.equal((await advance({ requestId: 'send-1' })).ok, true); assert.equal(calls.deliver.length, 1);
@@ -705,7 +705,7 @@ test('uncertain Leader creation can be abandoned or claimed, never silently recr
       assert.equal((await invoke('resolveCreation', { resolution: 'claim', sessionId: 'ghost' })).ok, false);
       const claimed = await invoke('resolveCreation', { resolution: 'claim', sessionId: 'outside' }); assert.equal(claimed.ok, true, claimed.error);
       assert.equal(runtime.leaderState.sessionId, 'outside'); assert.equal(runtime.leaderState.creation.status, 'ready');
-      assert.equal(calls.create.length, 0); assert.deepEqual(calls.rename.at(-1), ['outside', 'GitLab Issue Leader']);
+      assert.equal(calls.create.length, 0); assert.deepEqual(calls.rename.at(-1), ['outside', 'WorkStation Leader']);
     }
   }
 });
@@ -849,7 +849,7 @@ test('send relays a human answer as a Leader message without verifying human tex
   const { runtime, setup, invoke, issue, agent, advance, calls } = fixture(); await setup();
   await invoke('note', { ...issue(), needsHuman: '采用方案 A 还是 B？' }, agent());
   assert.equal((await advance({ text: '人类回复：请采用方案 B' })).ok, true);
-  assert.match(calls.deliver.at(-1).body, /来自 GitLab Issue Leader/); assert.match(calls.deliver.at(-1).body, /方案 B/);
+  assert.match(calls.deliver.at(-1).body, /来自 WorkStation Leader/); assert.match(calls.deliver.at(-1).body, /方案 B/);
   assert.equal(runtime.leaderState.items[0].alerts[0].status, 'acknowledged');
   assert.equal((await invoke('pause')).ok, true);
   assert.equal((await advance({ text: '先别合并' })).ok, true); assert.equal(calls.deliver.length, 2);

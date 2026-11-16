@@ -23,7 +23,7 @@ const gitlabRejected = (error) => error?.beforeRequest === true || /\b(?:HTTP\s*
 const API_METHODS = ['GET', 'POST', 'PUT', 'DELETE'];
 const API_KEYS = ['method', 'path', 'body'];
 
-export const STEER_HEADER = '[来自 GitLab Issue Leader 的纠偏引导；不是人类输入，不授予新权限]';
+export const STEER_HEADER = '[来自 WorkStation Leader 的纠偏引导；不是人类输入，不授予新权限]';
 
 /** Normalizes a GitLab REST path: optional leading slash and `api/v4/` prefix are dropped. */
 const normalizeApiPath = (value) => {

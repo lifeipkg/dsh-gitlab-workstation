@@ -473,7 +473,7 @@ export function apply(ctx, config = {}) {
   // browser fall through to the static-resource route and report a misleading 405.
   ctx.effect(() => {
     const rpc = ctx.connection?.rpc;
-    if (typeof rpc?.handle !== 'function') throw new Error('当前 Host 不提供原生 Connection RPC，无法启用 Issue Leader。');
+    if (typeof rpc?.handle !== 'function') throw new Error('当前 Host 不提供原生 Connection RPC，无法启用 WorkStation Leader。');
     const handler = (endpoint, payload, signal, peer) => runtime.handleLeaderUiRpc(endpoint, payload, signal, peer);
     let unregister;
     try {

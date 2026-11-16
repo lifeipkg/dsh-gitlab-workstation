@@ -823,7 +823,7 @@ test('Leader entry points reuse safeSessionOpener, keep worker task identity, an
   const source = await clientSource();
   const entries = source.slice(source.indexOf('      const safeSessionOpener ='), source.indexOf('      const createHandoff ='));
   assert.match(entries, /const safeSessionOpener = openSession/);
-  assert.match(entries, /safeSessionOpener\(\{ sessionId, title: 'Issue Leader' \}, trigger\)/);
+  assert.match(entries, /safeSessionOpener\(\{ sessionId, title: 'WorkStation Leader' \}, trigger\)/);
   assert.match(entries, /safeSessionOpener\(\{ sessionId: item\.sessionId, taskId: item\.taskId/);
   assert.doesNotMatch(entries, /uiWorkspace|createHandoff|post\(/);
   assert.equal((source.match(/ctx\.uiWorkspace\.openSession\(sessionId\)/g) || []).length, 1);

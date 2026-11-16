@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { isLeaderTaskId, LEADER_LIMITS, LEADER_REPORT_KINDS, leaderBlockedBy, normalizeLeaderCompletion, normalizeLeaderTodo, targetKey } from '../core.js';
+import { LEADER_LIMITS, leaderItemKind, LEADER_REPORT_KINDS, leaderBlockedBy, normalizeLeaderCompletion, normalizeLeaderTodo, targetKey } from '../core.js';
 import { errorMessage } from './util.js';
 
 // Leader orchestration (v2.39): running-worker cap + durable FIFO queue, Issue dependencies,
@@ -240,7 +240,7 @@ export const leaderOrchestrationMethods = {
       if (inspection.state.pendingInput.length) return failure('worker 有原生审批/问答等待人类，不能收尾。');
       if (!quiet(inspection.state)) return failure('worker 正在运行或有排队输入；等它静默后再收尾。');
     } else if (inspection.status === 'unknown') return failure('worker 会话状态不可验证，未收尾。');
-    const kind = isLeaderTaskId(item.taskId) ? 'task' : 'issue';
+    const kind = leaderItemKind(item);
     if (context.stage === 'check') return success({ taskId: item.taskId, sessionId: item.sessionId, kind });
     let verification = { issueState: null, mergedMrs: [], pipeline: null };
     if (kind === 'issue') {
@@ -288,7 +288,7 @@ export const leaderOrchestrationMethods = {
     if (!state?.enabled || this.stopping || this.leaderStorageFault || this.leaderJournalUnreadable || this.leaderDurableEpoch !== state.epoch) return null;
     const key = targetKey(url);
     if (!key) return null;
-    const item = state.items.find((candidate) => !isLeaderTaskId(candidate.taskId) && targetKey(candidate.url) === key);
+    const item = state.items.find((candidate) => leaderItemKind(candidate) === 'issue' && targetKey(candidate.url) === key);
     if (!item || item.alerts.some((alert) => alert.status === 'pending')) return null;
     if (['archived', 'missing', 'unknown'].includes(item.status)) return null;
     if (leaderBlockedBy(item, state.completed).length) return null;

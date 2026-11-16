@@ -86,9 +86,9 @@ const withClock = async (offsetMs, body) => {
 
 // ------------------------------------------------------------------ registration
 
-test('the six Leader tools are registered as Leader-only and handoff/cancelQueued as UI-only', async () => {
+test('the seven Leader tools are registered as Leader-only and handoff/cancelQueued as UI-only', async () => {
   assert.deepEqual(LEADER_TOOLS.map(([name, operation]) => [name, operation]), [
-    ['gitlab_leader_overview', 'overview'], ['gitlab_leader_read', 'read'], ['gitlab_leader_session', 'session'],
+    ['gitlab_leader_overview', 'overview'], ['gitlab_leader_inbox', 'inbox'], ['gitlab_leader_read', 'read'], ['gitlab_leader_session', 'session'],
     ['gitlab_leader_note', 'note'], ['gitlab_leader_gitlab_api', 'gitlabApi'], ['gitlab_leader_run', 'run']]);
   const { invoke, setup, issue, agent } = fixture();
   await setup({ write: true });
@@ -153,7 +153,7 @@ test('steer is delivered only to a running worker, with mode steer and a non-hum
   const [request] = calls.prompt;
   assert.equal(request.mode, 'steer'); assert.equal(request.sessionId, 'worker-a');
   assert.match(request.requestId, /^leader-steer-[0-9a-f]{40}$/u);
-  assert.match(request.content[0].text, /^\[来自 GitLab Issue Leader 的纠偏引导；不是人类输入，不授予新权限\]/u);
+  assert.match(request.content[0].text, /^\[来自 WorkStation Leader 的纠偏引导；不是人类输入，不授予新权限\]/u);
   assert.match(request.content[0].text, /理由：worker 在改无关文件。/u);
   assert.equal(item().lastSteerStatus, 'sent');
   assert.ok(runtime.leaderState.audit.some((entry) => entry.action === 'session-steer' && entry.taskId === 'issue-1-a'));
@@ -387,4 +387,91 @@ test('apiRequest rejects bad input before any request', async () => {
   await assert.rejects(runtime.apiRequest('GET', '-X'), (error) => error.beforeRequest === true);
   assert.equal(calls.length, 0);
   assert.deepEqual(await runtime.apiRequest('GET', 'projects/1'), {});
+});
+
+// ------------------------------------------------------------------ WorkStation Leader: Todo sessions + inbox
+const addTodo = (runtime, id, patch = {}) => {
+  const todo = { id, title: `Todo ${id}`, url: `https://gitlab.test/group/project/-/merge_requests/3#note_${id}`, project: 'group/project',
+    targetType: 'MergeRequest', action: 'mentioned', author: 'alice', body: '@me 帮忙看下这个 MR', state: 'pending', createdAt: '2026-11-16T00:00:00Z' };
+  runtime.state.todos.push(todo);
+  if (patch.handled !== false) runtime.state.handled[id] = { id, sessionId: `todo-${id}`, item: todo, automatic: true, acceptedAt: Date.now(),
+    outcome: 'session-accepted', title: todo.title, url: todo.url, executionStatus: 'completed', routed: false, ...patch.handled };
+  return todo;
+};
+
+test('gitlab_leader_inbox lists the Todo inbox with processing state and the needs-human list', async () => {
+  const { runtime, invoke, setup, agent, sessions } = fixture();
+  await setup({ start: false });
+  addTodo(runtime, '501', { handled: { closure: 'needs-human', closureNote: '需要人类确认合并', completedAt: Date.now() } });
+  addTodo(runtime, '502', { handled: false });
+  sessions.set('todo-501', sessionState());
+  let polls = 0; runtime.poll = async (source) => { polls += 1; assert.equal(source, 'leader'); };
+  const ui = await invoke('inbox', {});
+  assert.equal(ui.ok, false);
+  const plain = await invoke('inbox', {}, agent());
+  assert.equal(plain.ok, true, plain.error); assert.equal(polls, 0);
+  const byId = Object.fromEntries(plain.result.todos.map((todo) => [todo.taskId, todo]));
+  assert.equal(byId['501'].status, 'handled'); assert.equal(byId['501'].sessionId, 'todo-501'); assert.equal(byId['501'].managed, false);
+  assert.equal(byId['502'].status, 'new'); assert.equal(byId['502'].sessionId, null);
+  assert.deepEqual(plain.result.needsHuman.map((entry) => entry.todoId), ['501']);
+  assert.equal(plain.result.untrusted, true);
+  assert.equal((await invoke('inbox', { refresh: true }, agent())).ok, true); assert.equal(polls, 1);
+  runtime.poll = async () => { throw new Error('glab down'); };
+  const failed = await invoke('inbox', { refresh: true }, agent());
+  assert.equal(failed.ok, true); assert.match(failed.result.refreshError, /glab down/u);
+});
+
+test('Leader manages plugin-created Todo sessions: enroll, read, rename, overview, wake prefix, archive', async () => {
+  const { runtime, invoke, setup, agent, sessions, calls } = fixture();
+  await setup({ start: false });
+  addTodo(runtime, '601');
+  sessions.set('todo-601', sessionState());
+  const archived = []; runtime.setSessionArchived = async (id, value) => { archived.push([id, value]); return { ok: true }; };
+  const forged = await invoke('session', { action: 'enroll', taskId: '601', sessionId: 'worker-a' }, agent());
+  assert.equal(forged.ok, false);
+  const enrolled = await invoke('session', { action: 'enroll', taskId: '601' }, agent());
+  assert.equal(enrolled.ok, true, enrolled.error);
+  const item = runtime.leaderState.items.find((entry) => entry.taskId === '601');
+  assert.equal(item.kind, 'todo'); assert.equal(item.sessionId, 'todo-601');
+  const read = await invoke('read', { taskId: '601' }, agent());
+  assert.equal(read.ok, true, read.error); assert.equal(read.result.kind, 'todo');
+  assert.equal(read.result.gitlab, undefined); assert.equal(read.result.todo.author, 'alice');
+  const renamed = await invoke('session', { action: 'rename', taskId: '601', title: 'MR !3 评审' }, agent());
+  assert.equal(renamed.ok, true, renamed.error);
+  assert.deepEqual(calls.rename.at(-1), ['todo-601', 'MR !3 评审']);
+  assert.equal(runtime.state.handled['601'].sessionTitle, 'MR !3 评审');
+  const overview = await invoke('overview', {}, agent());
+  assert.deepEqual(overview.result.todos.map((todo) => todo.taskId), ['601']);
+  assert.equal(runtime.leaderProjection().items.find((entry) => entry.taskId === '601').kind, 'todo');
+  item.pendingWake = ['turn-end'];
+  assert.match(runtime.leaderWakeLine(item), /^- \[Todo\] /u);
+  const gone = await invoke('session', { action: 'archive', taskId: '601', reason: '已处理' }, agent());
+  assert.equal(gone.ok, true, gone.error);
+  assert.deepEqual(archived, [['todo-601', true]]);
+  assert.equal(runtime.leaderState.items.some((entry) => entry.taskId === '601'), false);
+});
+
+test('Leader create for an inbox Todo dispatches it; a routed result is reported, not enrolled', async () => {
+  const { runtime, invoke, setup, agent, sessions } = fixture();
+  await setup({ start: false });
+  addTodo(runtime, '701', { handled: false });
+  addTodo(runtime, '702', { handled: false });
+  const dispatched = [];
+  runtime.dispatch = async (todo, force) => {
+    dispatched.push([todo.id, force]);
+    if (todo.id === '702') { runtime.state.handled[todo.id] = { id: todo.id, sessionId: 'worker-b', routed: true, title: todo.title, url: todo.url };
+      return { ok: true, sessionId: 'worker-b', duplicate: false, routed: true, routeMode: 'reuse' }; }
+    runtime.state.handled[todo.id] = { id: todo.id, sessionId: 'todo-701', routed: false, title: todo.title, url: todo.url, outcome: 'session-accepted' };
+    sessions.set('todo-701', sessionState());
+    return { ok: true, sessionId: 'todo-701', duplicate: false, routed: false };
+  };
+  const created = await invoke('session', { action: 'create', taskId: '701' }, agent());
+  assert.equal(created.ok, true, created.error);
+  assert.deepEqual(dispatched[0], ['701', false]);
+  assert.equal(runtime.leaderState.items.find((entry) => entry.taskId === '701')?.kind, 'todo');
+  const routed = await invoke('session', { action: 'create', taskId: '702' }, agent());
+  assert.equal(routed.ok, true, routed.error); assert.equal(routed.result.routed, true);
+  assert.equal(runtime.leaderState.items.some((entry) => entry.taskId === '702'), false);
+  const unknown = await invoke('session', { action: 'create', taskId: '799' }, agent());
+  assert.equal(unknown.ok, false); assert.match(unknown.error, /gitlab_leader_inbox/u);
 });
