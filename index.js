@@ -32,10 +32,14 @@ import { closuresMethods } from './host/closures.js';
 import { followupsMethods } from './host/followups.js';
 import { dispatchMethods } from './host/dispatch.js';
 import { sessionEntryMethods } from './host/session-entries.js';
+import { leaderMethods, createLeaderUiCaller } from './host/leader.js';
+import { createLeaderAgentAdapter } from './host/leader-agent.js';
 
 const PACKAGE_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_DIRECTORY = join(homedir(), '.dsh-plugins', 'gitlabtodo');
 const LEGACY_STATE_FILE = join(PACKAGE_DIR, '.runtime', 'state.json');
+const LEADER_RPC_CHANNEL = '/gitlab-workstation-leader';
+const LEADER_UI_OPERATIONS = new Set(['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue']);
 
 /**
  * 运行时骨架：状态生命周期（加载/迁移/持久化）、轮询与对账定时器、bridge 入口。
@@ -139,12 +143,17 @@ export class GitlabTodoRuntime {
       this.state ??= initialState();
     }
     if (migrated) await this.persistQuietly('迁移');
+    await (this.leaderLoadPromise ??= this.loadLeader());
+    this.leaderAdapter ??= createLeaderAgentAdapter(this);
+    await this.leaderAdapter.refreshBindings();
     this.unregisterRoute = this.ctx.connection.fetch.register({
       path: BRIDGE_PATH,
       methods: ['GET', 'POST'],
       requestBody: 'buffered',
       fetch: (request) => this.handleFetch(request),
     });
+    this.unregisterLeaderRpc = this.ctx.connection.rpc?.handle?.(LEADER_RPC_CHANNEL,
+      (endpoint, payload, signal, peer) => this.handleLeaderUiRpc(endpoint, payload, signal, peer)) ?? null;
     await this.reconcileSessions();
     this.resetTimer();
     this.logger.info(`运行时已启动：${this.state.settings.enabled ? `自动轮询开启（间隔 ${this.state.settings.intervalSeconds}s）` : '自动轮询关闭（仅手动动作）'}。`);
@@ -152,6 +161,8 @@ export class GitlabTodoRuntime {
 
   async stop() {
     this.stopping = true;
+    this.stopLeader();
+    await this.leaderAdapter?.dispose?.();
     this.dispatchQueue = [];
     this.wakeWaiters();
     clearInterval(this.timer);
@@ -159,6 +170,8 @@ export class GitlabTodoRuntime {
     clearTimeout(this.initialTimer);
     if (this.unregisterRoute) await this.unregisterRoute();
     this.unregisterRoute = null;
+    if (this.unregisterLeaderRpc) await this.unregisterLeaderRpc();
+    this.unregisterLeaderRpc = null;
     // 逐个终止所有在飞的 glab 子进程（poll 与核对可能并发，单槽引用会漏杀先前的进程）。
     for (const child of this.activeChildren) child.kill();
     this.activeChildren.clear();
@@ -167,6 +180,8 @@ export class GitlabTodoRuntime {
       this.pumpPromise?.catch(() => {}),
       this.pollPromise?.catch(() => {}),
       this.writeChain.catch(() => {}),
+      this.leaderOperationChain?.catch(() => {}),
+      this.leaderWriteChain?.catch(() => {}),
     ]);
     await this.host.dispose();
   }
@@ -233,6 +248,27 @@ export class GitlabTodoRuntime {
     this.initialTimer.unref?.();
   }
 
+  async handleLeaderUiRpc(operation, payload, signal, peer) {
+    const failure = (code, message) => ({ ok: false, error: { code, message, details: {} } });
+    // Preserve Connection's real browser Peer, not a model-provided principal or owner shim.
+    if (this.stopping || signal?.aborted || !peer || peer !== this.ctx.connection.browserPeer
+      || peer.principal?.kind !== 'owner' || peer.signal?.aborted) {
+      return failure('leader/forbidden', '只有当前原生浏览器 UI 可变更 Leader 托管权限。');
+    }
+    if (!LEADER_UI_OPERATIONS.has(operation) || !payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return failure('leader/invalid-request', '无效 Leader UI 操作或参数。');
+    }
+    try {
+      if (Buffer.byteLength(JSON.stringify(payload), 'utf8') > MAX_REQUEST_BYTES) {
+        return failure('leader/invalid-request', 'Leader 参数超过请求体上限。');
+      }
+      const result = await this.leaderOperation(operation, payload, createLeaderUiCaller());
+      return { ok: true, value: { ok: true, result, projection: this.leaderProjection(), state: this.snapshot() } };
+    } catch (error) {
+      return failure('leader/operation-failed', errorMessage(error));
+    }
+  }
+
   async updateSettings(patch) {
     // 分类器 apiKey 不回传面板：补丁里缺该字段时保留已存密钥，显式传 '' 才清除。
     const merged = { ...(patch ?? {}) };
@@ -282,6 +318,13 @@ export class GitlabTodoRuntime {
         return jsonResponse(413, { ok: false, error: `请求体超过 ${MAX_REQUEST_BYTES} 字节上限。` });
       }
       const body = JSON.parse(raw || '{}');
+      if (body.action === 'leader') {
+        if (body.operation !== undefined && body.operation !== 'snapshot') {
+          return jsonResponse(403, { ok: false, error: 'Leader 托管权限变更必须通过原生浏览器 UI RPC，HTTP 请求不能自报人类授权。' });
+        }
+        const result = await this.leaderOperation('snapshot', {}, createLeaderUiCaller());
+        return jsonResponse(200, { ok: true, result, projection: this.leaderProjection(), state: this.snapshot() });
+      }
       if (body.action === 'inspectSession') {
         if (typeof body.sessionId !== 'string' || !body.sessionId.trim() || body.sessionId.trim() !== body.sessionId || body.sessionId.length > 200 || /[\u0000-\u001f]/u.test(body.sessionId)) {
           return jsonResponse(400, { ok: false, error: '无效会话 ID。' });
@@ -362,12 +405,42 @@ attachRuntimeMethods(GitlabTodoRuntime, [
   followupsMethods,
   dispatchMethods,
   sessionEntryMethods,
+  leaderMethods,
 ]);
 
 export const inject = ['connection', 'typertGateway', 'workspaceRegistry'];
 
 export function apply(ctx, config = {}) {
   const runtime = new GitlabTodoRuntime(ctx, config);
+  // Install the awaited creation barrier before any startup I/O or optional-service arrival.
+  runtime.leaderAdapter = createLeaderAgentAdapter(runtime);
+  // Leader capabilities are optional; profiles without them keep the existing Todo/Issue workbench.
+  ctx.inject?.(['agents', 'agentPresets', 'sessionController', 'sessionProjections'], (leaderCtx) => {
+    runtime.leaderServicesContext = leaderCtx;
+    if (!runtime.stopping) {
+      runtime.leaderAdapter ??= createLeaderAgentAdapter(runtime);
+      void runtime.leaderAdapter.refreshBindings().catch((error) => runtime.logger.warn(`Leader 绑定失败：${errorMessage(error)}`));
+    }
+    return async () => {
+      runtime.stopLeader();
+      if (runtime.leaderState) {
+        runtime.leaderState.enabled = false;
+        runtime.leaderState.epoch += 1;
+        runtime.leaderState.phase = runtime.leaderState.sessionId ? 'paused' : 'not-created';
+      }
+      const adapter = runtime.leaderAdapter;
+      runtime.leaderAdapter = null;
+      await adapter?.dispose?.();
+      // Optional services can reload while the old adapter awaits quiescence.
+      // An old lifetime may revoke its own grant, but must not erase the new context.
+      if (runtime.leaderServicesContext === leaderCtx) {
+        runtime.leaderServicesContext = null;
+        if (runtime.leaderState && !runtime.leaderJournalUnreadable) {
+          await runtime.saveLeaderStrict().catch((error) => runtime.logger.warn(errorMessage(error)));
+        }
+      }
+    };
+  });
   return ctx.effect(async () => {
     await runtime.start();
     return () => runtime.stop();

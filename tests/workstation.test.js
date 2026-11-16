@@ -63,7 +63,7 @@ test('safe entry declares the verified runtime baseline and its actual client se
   const client = await read('client.js');
   const declaration = client.match(/inject:\s*\[([^\]]+)\]/)?.[1] ?? '';
   const services = [...declaration.matchAll(/'([^']+)'/g)].map((match) => match[1]);
-  assert.deepEqual(services.sort(), ['locale', 'sessions', 'slots', 'uiWorkspace', 'workspaces'].sort());
+  assert.deepEqual(services.sort(), ['connection', 'locale', 'sessions', 'slots', 'uiWorkspace', 'workspaces'].sort());
   assert.match(await read('README.md'), /最低 DSH 版本为 `0\.2\.2-rc\.3`/);
 });
 

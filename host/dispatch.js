@@ -607,6 +607,8 @@ export const dispatchMethods = {
           loadOf: (id) => this.countSessionLoad(id),
           maxQueue: this.state.settings.maxQueuePerSession,
         })) {
+          // Leader supervises this worker's original Issue; do not append unrelated automatic Todo work.
+          if (this.isLeaderManagedSession?.(candidate.sessionId)) continue;
           route = await this.resolveRouteTarget(todo, candidate, false);
           if (route) {
             sessionId = route.sessionId;
@@ -687,6 +689,9 @@ export const dispatchMethods = {
         await this.persistQuietly('pending 复用会话');
       }
       if (!sessionId) {
+        const leaderCreationEpoch = isIssueItem(todo) && this.leaderState?.settings?.autoEnrollNew === true
+          && this.leaderDurableEpoch === this.leaderState.epoch && Number.isSafeInteger(this.leaderState.creationPolicyEpoch)
+          && this.leaderState.creationPolicyEpoch >= 0 ? this.leaderState.creationPolicyEpoch : null;
         const request = {
           workspaceId: this.resolveWorkspaceId(isIssueItem(todo)
             ? this.state.settings.issueSessionCwd
@@ -710,6 +715,11 @@ export const dispatchMethods = {
           openMrs: [...ownMrs],
           item: todo,
         };
+        // Only an actual successful create may authorize the user-configured future enrollment.
+        if (isIssueItem(todo)) {
+          this.state.pending[todo.id].leaderCreatedSession = sessionId;
+          if (leaderCreationEpoch !== null) this.state.pending[todo.id].leaderCreatedPolicyEpoch = leaderCreationEpoch;
+        }
         await this.persistQuietly('pending Session');
         const renamed = await this.host.renameSession(sessionId, sessionTitle);
         if (typeof renamed?.title === 'string') {
@@ -796,6 +806,10 @@ export const dispatchMethods = {
         routeMode: route?.mode ?? '',
         requestId,
         sessionTitle: effectiveTitle,
+        ...(isIssueItem(todo) && this.state.pending[todo.id]?.leaderCreatedSession === sessionId
+          ? { leaderCreatedSession: sessionId,
+            ...(Number.isSafeInteger(this.state.pending[todo.id].leaderCreatedPolicyEpoch)
+              ? { leaderCreatedPolicyEpoch: this.state.pending[todo.id].leaderCreatedPolicyEpoch } : {}) } : {}),
         archived: false,
         archiveError: '',
         acceptedAt: Date.now(),
@@ -826,7 +840,19 @@ export const dispatchMethods = {
       delete this.state.pending[todo.id];
       this.state.recent = [record, ...this.state.recent.filter((item) => item.id !== todo.id)].slice(0, 50);
       this.state.lastDispatchError = null;
-      await this.persistQuietly('已接受 Todo');
+      if (record.leaderCreatedSession === sessionId && this.leaderState?.settings?.autoEnrollNew) {
+        try {
+          // The creation proof must be committed before granting the saved future-enrollment policy.
+          await this.persist();
+          const enrolled = await this.autoEnrollLeaderCreated(todo.id, sessionId);
+          if (!enrolled.ok) this.logger.warn(`Issue ${todo.id} 已接受，但未自动托管：${enrolled.error}`);
+        } catch (error) {
+          // Dispatch was already accepted: never misreport it as failed and invite another model run.
+          this.logger.warn(`Issue ${todo.id} 已接受，但托管证明保存失败：${errorMessage(error)}`);
+        }
+      } else {
+        await this.persistQuietly('已接受 Todo');
+      }
       this.logger.info(`派发 ${isIssueItem(todo) ? 'Issue' : 'Todo'} ${todo.id} → ${route ? `路由会话 ${sessionId}` : `会话 ${sessionId}`}（${effectiveTitle}）。`);
       return { ok: true, sessionId, duplicate: false, routed: route !== null, routeMode: route?.mode ?? '' };
     } catch (error) {

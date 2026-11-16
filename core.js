@@ -1,5 +1,102 @@
 export const STATE_VERSION = 6;
 
+// Leader has its own journal/version; Issue automatic:false and STATE_VERSION stay unchanged.
+export const LEADER_STATE_VERSION = 1;
+export function initialLeaderState() {
+  return { version: LEADER_STATE_VERSION, enabled: false, sessionId: null, phase: 'not-created',
+    settings: { model: null, autoEnrollNew: false }, items: [], events: [], outbox: [], creation: null, createdEnrollments: [],
+    epoch: 0, creationPolicyEpoch: 0, expiresAt: null, wakeups: 0, configuredModel: null, error: '' };
+}
+
+export function validateLeaderSettings(input, current = { model: null, autoEnrollNew: false }) {
+  if (!isRecord(input)) throw new Error('Leader 设置必须是对象。');
+  if (Object.keys(input).some((key) => !['model', 'autoEnrollNew'].includes(key))) throw new Error('未知 Leader 设置；不得扩大工具权限或重置预算。');
+  const next = { ...current };
+  if ('autoEnrollNew' in input) {
+    if (typeof input.autoEnrollNew !== 'boolean') throw new Error('autoEnrollNew 必须是布尔值。');
+    next.autoEnrollNew = input.autoEnrollNew;
+  }
+  if ('model' in input) {
+    const model = input.model;
+    if (model !== null && (!isRecord(model)
+      || typeof model.provider !== 'string' || !model.provider.trim() || model.provider.length > 200
+      || typeof model.model !== 'string' || !model.model.trim() || model.model.length > 200
+      || (model.reasoningEffort !== undefined && (typeof model.reasoningEffort !== 'string' || !model.reasoningEffort.trim() || model.reasoningEffort.length > 200)))) {
+      throw new Error('Leader 模型必须是 null 或有效 provider/model/reasoningEffort 对象。');
+    }
+    next.model = model === null ? null : { provider: model.provider.trim(), model: model.model.trim(),
+      ...(model.reasoningEffort !== undefined ? { reasoningEffort: model.reasoningEffort.trim() } : {}) };
+  }
+  return next;
+}
+
+export function normalizeLeaderState(value) {
+  if (!isRecord(value) || value.version !== LEADER_STATE_VERSION) throw new Error('Leader journal 版本/结构无效，禁止自动重建。');
+  const id = (value) => typeof value === 'string' && value.length > 0 && value.length <= 200 && value.trim() === value && !/[\u0000-\u001f]/u.test(value);
+  if (value.sessionId !== null && !id(value.sessionId)) throw new Error('Leader journal 会话 ID 无效，禁止重复创建。');
+  if (!Array.isArray(value.items) || value.items.length > 200 || !Array.isArray(value.outbox) || value.outbox.length > 500) throw new Error('Leader journal items/outbox 无效。');
+  const result = { ...initialLeaderState(), ...JSON.parse(JSON.stringify(value)) };
+  result.settings = validateLeaderSettings(value.settings);
+  result.configuredModel = validateLeaderSettings({ model: value.configuredModel ?? null }).model;
+  result.createdEnrollments = value.createdEnrollments ?? [];
+  if (!Array.isArray(result.createdEnrollments) || result.createdEnrollments.length > 1000
+    || result.createdEnrollments.some((entry) => !isRecord(entry) || !id(entry.taskId) || !id(entry.sessionId))) throw new Error('Leader 新创建来源消费 journal 无效。');
+  const taskIds = new Set(); const sessionIds = new Set();
+  for (const item of result.items) {
+    if (!isRecord(item) || !id(item.taskId) || !id(item.sessionId) || item.sessionId === result.sessionId
+      || taskIds.has(item.taskId) || sessionIds.has(item.sessionId) || !Array.isArray(item.alerts) || item.alerts.length > 50
+      || !isRecord(item.provenance) || !['ui', 'created'].includes(item.provenance.kind)
+      || !Number.isSafeInteger(item.actions) || item.actions < 0 || timestamp(item.expiresAt) === null
+      || (item.cursor !== null && timestamp(item.cursor) === null)) throw new Error('Leader journal 显式映射/预算/来源无效。');
+    taskIds.add(item.taskId); sessionIds.add(item.sessionId);
+    item.observation = null; // Restart invalidates read evidence; never reuse old idle authorization.
+    item.recentEvents = item.recentEvents ?? [];
+    if (!Array.isArray(item.recentEvents) || item.recentEvents.length > 40
+      || item.recentEvents.some((event) => !isRecord(event) || !Number.isSafeInteger(event.seq) || event.seq < 0
+        || typeof event.type !== 'string' || event.type.length > 100 || typeof event.data !== 'string' || event.data.length > 4000)
+      || JSON.stringify(item.recentEvents).length > 20100) throw new Error('Leader journal 近期上下文缓存无效/超出边界。');
+    item.recentEventsTruncated = item.recentEventsTruncated === true;
+    item.status = item.paused ? 'paused' : 'watching';
+    item.title = text(item.title).slice(0, 1000); item.url = safeUrl(item.url); item.summary = text(item.summary).slice(0, 2000); item.error = text(item.error).slice(0, 1000);
+    for (const alert of item.alerts) {
+      if (!id(alert.id) || typeof alert.question !== 'string' || alert.question.length > 2000 || !['pending', 'acknowledged'].includes(alert.status)) throw new Error('Leader journal alert binding 无效。');
+    }
+  }
+  const requests = new Set();
+  for (const entry of result.outbox) {
+    if (!isRecord(entry) || !id(entry.requestId) || !id(entry.sessionId) || requests.has(entry.requestId)
+      || typeof entry.body !== 'string' || typeof entry.fingerprint !== 'string' || !['advance', 'notify'].includes(entry.kind)) throw new Error('Leader journal outbox 无效，禁止自动重发。');
+    requests.add(entry.requestId);
+    if (!['prepared', 'sent', 'rejected', 'cancelled'].includes(entry.status)) { entry.status = 'uncertain'; entry.error ||= '重启时投递结果不确定，禁止自动重发。'; }
+    // An old prepared admission belonged to the previous epoch, not this process.
+    else if (entry.status === 'prepared') entry.status = 'cancelled';
+  }
+  if (result.creation !== null) {
+    if (!isRecord(result.creation) || !id(result.creation.requestId)) throw new Error('Leader 创建 journal 无效，禁止重复创建。');
+    if (!['created', 'ready'].includes(result.creation.status)) result.creation.status = 'uncertain';
+  }
+  result.epoch = Number.isSafeInteger(value.epoch) && value.epoch >= 0 ? value.epoch + 1 : 1;
+  // Policy provenance survives mapping/run changes, but never a process restart.
+  // Legacy global-epoch proof fields are never promoted into the new policy domain.
+  const policyEpoch = Object.hasOwn(value, 'creationPolicyEpoch') ? value.creationPolicyEpoch : 0;
+  if (!Number.isSafeInteger(policyEpoch) || policyEpoch < 0 || !Number.isSafeInteger(policyEpoch + 1)) throw new Error('Leader journal 新建托管 policy epoch 无效。');
+  result.creationPolicyEpoch = policyEpoch + 1;
+  result.enabled = false;
+  result.phase = result.sessionId ? (result.creation?.status === 'ready' ? 'paused' : 'error') : result.creation ? 'uncertain' : 'not-created';
+  result.events = (Array.isArray(value.events) ? value.events : []).slice(-100);
+  result.error = text(value.error).slice(0, 1000);
+  return result;
+}
+
+export function buildLeaderProjection(state = initialLeaderState()) {
+  return { enabled: state.enabled === true, sessionId: state.sessionId ?? null,
+    phase: ['not-created', 'ready', 'paused', 'error', 'uncertain'].includes(state.phase) ? state.phase : 'uncertain',
+    settings: JSON.parse(JSON.stringify(state.settings)),
+    items: state.items.map((item) => ({ taskId: item.taskId, sessionId: item.sessionId, title: item.title, url: item.url,
+      status: item.status, summary: item.summary || '', error: item.error || '', alerts: item.alerts.map((alert) => ({ ...alert })) })),
+    events: state.events.map((event) => ({ ...event })), error: state.error || '' };
+}
+
 export const DEFAULT_SETTINGS = Object.freeze({
   enabled: false,
   precheckEnabled: true,
@@ -1512,6 +1609,9 @@ export function normalizeState(value) {
         requestId: text(record.requestId).slice(0, 200),
         executionStatus: ['running', 'completed', 'failed'].includes(record.executionStatus) ? record.executionStatus : null,
         automatic: record.automatic !== false,
+        ...(record.leaderCreatedSession === sessionId && typeof sessionId === 'string' && sessionId.trim() === sessionId
+          && sessionId.length <= 200 && !/[\u0000-\u001f]/u.test(sessionId) ? { leaderCreatedSession: sessionId,
+            ...(Number.isSafeInteger(record.leaderCreatedPolicyEpoch) && record.leaderCreatedPolicyEpoch >= 0 ? { leaderCreatedPolicyEpoch: record.leaderCreatedPolicyEpoch } : {}) } : {}),
         completedAt: timestamp(record.completedAt),
         executionError: text(record.executionError),
         skipReason: text(record.skipReason).slice(0, 300),
@@ -1535,6 +1635,9 @@ export function normalizeState(value) {
         createdAt,
         manualHandoffs: normalizeManualHandoffs(record.manualHandoffs),
         automatic: record.automatic !== false,
+        ...(record.leaderCreatedSession === record.sessionId && record.sessionId.trim() === record.sessionId
+          && record.sessionId.length <= 200 && !/[\u0000-\u001f]/u.test(record.sessionId) ? { leaderCreatedSession: record.sessionId,
+            ...(Number.isSafeInteger(record.leaderCreatedPolicyEpoch) && record.leaderCreatedPolicyEpoch >= 0 ? { leaderCreatedPolicyEpoch: record.leaderCreatedPolicyEpoch } : {}) } : {}),
         followUp: record.followUp === true,
         routed: record.routed === true,
         routeMode: ROUTE_MODES.includes(record.routeMode) ? record.routeMode : '',
