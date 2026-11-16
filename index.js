@@ -39,7 +39,8 @@ const PACKAGE_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_STORAGE_DIRECTORY = join(homedir(), '.dsh-plugins', 'gitlabtodo');
 const LEGACY_STATE_FILE = join(PACKAGE_DIR, '.runtime', 'state.json');
 const LEADER_RPC_CHANNEL = '/gitlab-workstation-leader';
-const LEADER_UI_OPERATIONS = new Set(['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue']);
+const LEADER_UI_OPERATIONS = new Set(['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue',
+  'resetIssueBudget', 'resolveDelivery', 'resolveCreation']);
 
 /**
  * 运行时骨架：状态生命周期（加载/迁移/持久化）、轮询与对账定时器、bridge 入口。
