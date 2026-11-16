@@ -721,7 +721,11 @@ window.__ModuleLoader__.load({
         || (validLeaderSessionId(previousSessionId) ? previousSessionId : null);
       const success = data?.ok === true && Boolean(projection)
         && (operation === 'snapshot' ? data.result?.ok !== false : data.result?.ok === true);
-      return { projection, sessionId, state: data?.state,
+      // Only a successful serialized Host snapshot can release an attempted create.
+      // Unknown, failed or partial reads must retain the latch and any known ID.
+      const creationAbsent = operation === 'snapshot' && success && !projection.error
+        && projection.phase === 'not-created' && !projection.enabled && !sessionId;
+      return { projection, sessionId, state: data?.state, creationAbsent,
         error: !success ? data?.result?.error || projection?.error || t('leaderInvalidResponse') : projection.error || '' };
     }
 
@@ -1001,6 +1005,7 @@ window.__ModuleLoader__.load({
         const result = readLeaderResponse(data, operation, previous.sessionId, t);
         updateLeaderView({ ...previous, projection: result.projection || previous.projection, sessionId: result.sessionId,
           error: operation === 'snapshot' ? previous.error : result.error,
+          creationAttempted: result.creationAbsent ? false : previous.creationAttempted,
           pollError: operation === 'snapshot' ? result.error : '' });
         setLeaderFresh(Boolean(result.projection));
         if (result.state) setSnapshot(result.state);

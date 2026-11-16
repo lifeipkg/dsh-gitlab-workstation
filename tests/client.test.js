@@ -716,6 +716,28 @@ test('Leader snapshot prefers projection, supports direct result, and mutation e
   assert.equal(readLeaderResponse({ ok: true, result: { ok: false, error: 'snapshot failed' }, projection: ready }, 'snapshot', null, translateKey).error, 'snapshot failed');
 });
 
+test('only a successful authoritative not-created snapshot releases an attempted Leader creation', async () => {
+  const { readLeaderResponse, canCreateLeader } = await loadLeaderHelpers();
+  const snapshot = (projection, extra = {}, knownId = null, operation = 'snapshot') =>
+    readLeaderResponse({ ok: true, result: { ok: true }, projection, ...extra }, operation, knownId, translateKey);
+  const absent = snapshot(leaderProjection());
+  assert.equal(absent.creationAbsent, true);
+  assert.equal(canCreateLeader(absent.projection, absent.sessionId, !absent.creationAbsent), true);
+  for (const phase of ['uncertain', 'error', 'ready', 'paused', 'running']) {
+    assert.equal(snapshot(leaderProjection({ phase })).creationAbsent, false);
+  }
+  assert.equal(snapshot(leaderProjection({ error: 'journal unreadable' })).creationAbsent, false);
+  assert.equal(snapshot(leaderProjection({ enabled: true })).creationAbsent, false);
+  assert.equal(snapshot(leaderProjection({ sessionId: 'leader-known' })).creationAbsent, false);
+  assert.equal(snapshot(leaderProjection(), {}, 'leader-known').creationAbsent, false);
+  assert.equal(snapshot(leaderProjection(), { ok: false }).creationAbsent, false);
+  assert.equal(snapshot(leaderProjection(), { result: { ok: false, error: 'read failed' } }).creationAbsent, false);
+  assert.equal(snapshot({}).creationAbsent, false);
+  assert.equal(snapshot(leaderProjection(), {}, null, 'create').creationAbsent, false);
+  const source = await clientSource();
+  assert.match(source, /creationAttempted: result\.creationAbsent \? false : previous\.creationAttempted/);
+});
+
 test('known partial Leader setup can retry only the authoritative same ID while unknown creation stays blocked', async () => {
   const { canRetryLeaderSetup, canCreateLeader, callLeader } = await loadLeaderHelpers();
   for (const phase of ['error', 'uncertain']) {
