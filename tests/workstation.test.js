@@ -40,7 +40,10 @@ test('Workstation package identity aligns while legacy runtime and task protocol
   assert.match(client, /const NS = 'gitlab-todo-agent'/);
   assert.match(client, /const PANEL_ID = 'gitlab-todos'/);
   for (const source of [client, constants]) assert.ok(source.includes('/api/gitlab-todo-agent'));
-  assert.match(runtime, /join\(homedir\(\), '\.dsh-plugins', 'gitlabtodo'\)/);
+  assert.match(runtime, /const STORAGE_NAME = 'gitlab-workstation'/);
+  assert.match(runtime, /join\(resolveDshHome\(env\), 'storages', STORAGE_NAME\)/);
+  // 旧目录只作为迁移来源保留，不再是默认数据目录。
+  assert.match(runtime, /LEGACY_STORAGE_DIRECTORY = join\(homedir\(\), '\.dsh-plugins', 'gitlabtodo'\)/);
   assert.equal(STATE_VERSION, 6);
   assert.ok(core.includes("CLOSURE_MARKER = '[TODO-CLOSURE]'"));
   assert.ok(dispatch.includes('`gitlab-todo-${randomUUID()}`'));
@@ -51,7 +54,7 @@ test('package rename documents explicit consumer switching without deleting stat
   const docs = await read('README.md');
   assert.match(docs, /新包发布后使用 `@lifeipkg\/dsh-gitlab-workstation`/);
   assert.match(docs, /不会自动替换旧 bundle/);
-  assert.match(docs, /不要删除整个 `~\/\.dsh-plugins\/gitlabtodo\/` 数据目录/);
+  assert.match(docs, /不要删除整个 `~\/\.dsh\/storages\/gitlab-workstation\/` 数据目录/);
   assert.match(docs, /storageDirectory/);
   assert.match(docs, /legacyStateFile/);
   assert.match(docs, /确认只启用一份消费者/);
