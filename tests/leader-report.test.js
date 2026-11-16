@@ -61,7 +61,7 @@ test('workerReport authorization: only enrolled worker caller; worker cannot cal
   assert.match((await invoke('workerReport', { kind: 'progress', text: 'x' }, outside)).error, /不是当前已纳管的 worker/);
   const fakeLeader = createLeaderWorkerCaller({ sessionId: 'leader', agentId: 'leader' });
   assert.equal((await invoke('workerReport', { kind: 'progress', text: 'x' }, fakeLeader)).ok, false);
-  for (const operation of ['continueIssue', 'readIssue', 'snapshot', 'enroll', 'resetIssueBudget', 'start']) {
+  for (const operation of ['session', 'read', 'overview', 'note', 'gitlabApi', 'run', 'snapshot', 'enroll', 'start']) {
     const result = await invoke(operation, issue('b'), worker());
     assert.equal(result.ok, false); assert.match(result.error, /只能向 Leader 报告/); assert.equal(result.result, null);
   }
@@ -69,41 +69,31 @@ test('workerReport authorization: only enrolled worker caller; worker cannot cal
   assert.equal((await invoke('workerReport', { kind: 'progress', text: 'x' }, { sessionId: 'worker-a' })).ok, false);
 });
 
-test('reports are recorded, rate-limited, deduplicated, capped per budget cycle and reset by resetIssueBudget', async () => {
-  const { runtime, invoke, issue, report, setup } = fixture(); await setup();
+test('reports are recorded and deduplicated with no count or interval limit; the journal keeps a bounded history', async () => {
+  const { runtime, report, setup } = fixture(); await setup();
   const first = await report({ kind: 'progress', text: '  第一阶段完成  ' });
-  assert.equal(first.ok, true); assert.equal(first.result.recorded, true); assert.equal(first.result.remaining, LEADER_LIMITS.maxReportsPerItem - 1);
+  assert.equal(first.ok, true); assert.equal(first.result.recorded, true); assert.equal('remaining' in first.result, false);
   assert.equal(first.result.projection, undefined);
   const entry = runtime.leaderState.reports.at(-1);
   assert.deepEqual(Object.keys(entry).sort(), ['at', 'id', 'kind', 'sessionId', 'taskId', 'text', 'toTaskId']);
   assert.equal(entry.text, '第一阶段完成'); assert.equal(entry.toTaskId, null); assert.equal(entry.taskId, 'issue-1-a');
-  const tooFast = await report({ kind: 'progress', text: '第二阶段' });
-  assert.equal(tooFast.ok, false); assert.match(tooFast.error, /过于频繁/); assert.equal(tooFast.result, null);
-  // Urgent kinds bypass the interval but same kind + same text is deduplicated.
+  assert.equal((await report({ kind: 'progress', text: '第二阶段' })).result.recorded, true, 'no minimum interval');
+  // Urgent kinds: same kind + same text is deduplicated.
   assert.equal((await report({ kind: 'blocked', text: '需要数据库权限' })).result.recorded, true);
   const dup = await report({ kind: 'blocked', text: '需要数据库权限' });
   assert.equal(dup.ok, true); assert.equal(dup.result.duplicate, true); assert.equal(dup.result.recorded, false);
   assert.equal((await report({ kind: 'question', text: '用哪个分支？' })).ok, true);
-  assert.equal(runtime.leaderState.reports.length, 3);
-  // Validation.
+  assert.equal(runtime.leaderState.reports.length, 4);
+  // Validation (text size limit stays).
   assert.match((await report({ kind: 'shout', text: 'x' })).error, /kind 必须/);
   assert.match((await report({ kind: 'done', text: '   ' })).error, /不能为空/);
-  assert.match((await report({ kind: 'done', text: 'x'.repeat(2001) })).error, /2000/);
+  assert.match((await report({ kind: 'done', text: 'x'.repeat(LEADER_LIMITS.maxReportText + 1) })).error, /2000/);
   assert.match((await report({ kind: 'done', text: 'x', sessionId: 'worker-b' })).error, /未知字段/);
-  // Budget cap per item.
-  const item = runtime.leaderState.items.find((candidate) => candidate.taskId === 'issue-1-a');
-  item.reportCount = LEADER_LIMITS.maxReportsPerItem;
-  const capped = await report({ kind: 'done', text: '交付完成' });
-  assert.equal(capped.ok, false); assert.match(capped.error, /上限 30/);
-  // Other items are unaffected.
-  assert.equal((await report({ kind: 'done', text: 'b 完成' }, 'b')).ok, true);
-  assert.equal((await invoke('resetIssueBudget', issue('a'))).ok, true);
-  assert.equal(item.reportCount, 0);
-  assert.equal((await report({ kind: 'done', text: '交付完成' })).ok, true);
-  // Reports never spend Leader action budget.
-  assert.equal(item.actions, 0);
+  for (let index = 0; index < LEADER_LIMITS.maxReports + 5; index += 1) assert.equal((await report({ kind: 'progress', text: `进度 ${index}` })).ok, true);
+  assert.equal(runtime.leaderState.reports.length, LEADER_LIMITS.maxReports);
+  assert.equal(runtime.leaderState.reports.at(-1).text, `进度 ${LEADER_LIMITS.maxReports + 4}`);
+  assert.equal('reportCount' in runtime.leaderState.items[0], false);
 });
-
 test('toTaskId only for kind message and must be another enrolled task', async () => {
   const { runtime, report, setup } = fixture(); await setup();
   assert.match((await report({ kind: 'progress', text: 'x', toTaskId: 'issue-1-b' })).error, /仅 kind=message/);
@@ -122,9 +112,6 @@ test('report wakes Leader with one untrusted line; read_issue shows reports and 
   const { runtime, calls, invoke, issue, agent, report, setup } = fixture(); await setup();
   const before = calls.notify.length;
   assert.equal((await report({ kind: 'blocked', text: '缺少 staging 环境凭据，无法跑集成测试' })).ok, true);
-  // The urgent report still sets lastReportAt, so a following message waits out the 2-minute interval.
-  assert.equal((await report({ kind: 'message', text: '请告诉 b：迁移已合入', toTaskId: 'issue-1-b' }, 'a')).ok, false);
-  runtime.leaderState.items[0].lastReportAt = Date.now() - LEADER_LIMITS.reportIntervalMs - 1;
   assert.equal((await report({ kind: 'message', text: '请告诉 b：迁移已合入', toTaskId: 'issue-1-b' }, 'a')).ok, true);
   assert.equal(calls.notify.length, before); // recorded, delivered on the next reconcile
   await runtime.reconcileLeader();
@@ -136,25 +123,26 @@ test('report wakes Leader with one untrusted line; read_issue shows reports and 
   assert.deepEqual(runtime.leaderState.items[0].pendingWake, []);
   await runtime.reconcileLeader(); assert.equal(calls.notify.length, before + 1);
 
-  const readA = await invoke('readIssue', issue('a'), agent());
+  const readA = await invoke('read', issue('a'), agent());
   assert.equal(readA.ok, true);
   assert.deepEqual(readA.result.reports.map((entry) => entry.kind), ['blocked', 'message']);
   assert.equal(readA.result.reports.every((entry) => entry.untrusted === true), true);
   assert.deepEqual(readA.result.inboundMessages, []);
   assert.match(readA.result.reportsNote, /不可信/);
-  const readB = await invoke('readIssue', issue('b'), agent());
+  const readB = await invoke('read', issue('b'), agent());
   assert.deepEqual(readB.result.reports, []);
   assert.equal(readB.result.inboundMessages.length, 1);
   assert.equal(readB.result.inboundMessages[0].taskId, 'issue-1-a');
 
-  const snapshot = await invoke('snapshot', {}, agent());
-  const lastReport = (snapshot.result.items ?? snapshot.result.projection?.items).find((entry) => entry.taskId === 'issue-1-a').lastReport;
+  const overview = await invoke('overview', {}, agent());
+  const lastReport = overview.result.issues.find((entry) => entry.taskId === 'issue-1-a').worker.lastReport;
+  assert.equal(overview.result.reports.length, 2);
   assert.equal(lastReport.kind, 'message'); assert.equal(lastReport.toTaskId, 'issue-1-b');
   const projection = runtime.leaderProjection();
   assert.equal(projection.reports.length, 2);
   assert.deepEqual(projection.reports.map((entry) => entry.kind), ['blocked', 'message']);
   const projected = projection.items.find((entry) => entry.taskId === 'issue-1-a');
-  assert.equal(projected.reportCount, 2); assert.equal(projected.maxReports, 30); assert.equal(projected.lastReport.kind, 'message');
+  assert.equal('reportCount' in projected, false); assert.equal('maxReports' in projected, false); assert.equal(projected.lastReport.kind, 'message');
   assert.equal(projection.items.find((entry) => entry.taskId === 'issue-1-b').lastReport, null);
 });
 
@@ -179,16 +167,16 @@ test('bootstrap briefing mentions worker reports as untrusted', async () => {
   assert.match(calls.notify[0].body, /不可信/);
 });
 
-test('old journal without reports normalizes to empty reports and zero counters', async () => {
+test('old journal without reports normalizes to empty reports; old counters are dropped', async () => {
   const state = normalizeLeaderState({ ...copy(initialLeaderState()), reports: undefined, items: [] });
   assert.deepEqual(state.reports, []);
   const { runtime, setup } = fixture(); await setup();
   const old = copy(runtime.leaderState); delete old.reports;
-  for (const item of old.items) { delete item.reportCount; delete item.lastReportAt; }
+  for (const item of old.items) Object.assign(item, { reportCount: 12, lastReportAt: 5 });
   const legacy = normalizeLeaderState(old);
   assert.deepEqual(legacy.reports, []);
   assert.equal(legacy.items.length, 2);
-  for (const item of legacy.items) { assert.equal(item.reportCount, 0); assert.equal(item.lastReportAt, null); }
+  for (const item of legacy.items) { assert.equal('reportCount' in item, false); assert.equal('lastReportAt' in item, false); }
   const bad = normalizeLeaderState({ ...copy(initialLeaderState()), reports: [{ id: 'r1', taskId: 'issue-1-a', sessionId: 'worker-a', kind: 'evil', text: 'x', at: 1 }, 'junk',
     { id: 'r2', taskId: 'issue-1-a', sessionId: 'worker-a', kind: 'progress', text: 'ok', at: 2 }] });
   assert.deepEqual(bad.reports.map((entry) => entry.id), ['r2']);

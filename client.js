@@ -121,7 +121,6 @@ window.__ModuleLoader__.load({
       leaderAutoEnroll: 'Manage new Issue sessions by default', leaderAutoEnrollHint: 'Off by default. Never enrolls existing sessions.',
       leaderScope: 'Enrollment lets Leader read the selected session and send instructions only within its original task scope. It grants no human approval or question-answering authority.',
       leaderStartHint: 'Start supervision of the explicitly enrolled sessions. Unselected sessions remain untouched.',
-      leaderResumeHint: 'First handle any native approval or question yourself in the actual session. Resume only confirms your follow-up decision; the Host refuses while native input or work is pending.',
       leaderAutoEnrollConfirm: 'Apply this access to future sessions created from the Issue tab only. Existing sessions remain untouched.',
       leaderConfirm: 'Confirm access', leaderEnrolled: 'Managed', leaderEnroll: 'Manage with Leader', leaderUnenroll: 'Unmanage',
       leaderManaged: 'Managed sessions',
@@ -135,17 +134,17 @@ window.__ModuleLoader__.load({
       leaderRefresh: 'Refresh Leader status', leaderWorking: 'Updating Leader…', leaderSaved: 'Leader updated',
       leaderStandby: 'Standby', leaderCold: 'Not loaded', leaderNeverStartedPhase: 'Created · not started', leaderDeliveryUncertain: 'Delivery unconfirmed',
       leaderNeverStartedHint: 'Leader is created but supervision has not started. Until you click "Start supervision", the Leader session stays blank and DSH shows it as "New Session". This is not a failed creation; do not create another Leader.',
-      leaderPausedHint: 'Supervision is paused. Managed Issues are on standby; start supervision again to let Leader report progress here.',
+      leaderPausedHint: 'Supervision is paused: Leader is not woken automatically, but can still act when you talk to it. Start supervision again to resume automatic wakes.',
       leaderMainWindow: 'Leader is your main window: once supervision runs, it posts progress for every Issue session in its own conversation.',
-      leaderAudit: 'Leader session actions', leaderAuditHint: 'Sessions Leader created, renamed, archived or switched models for, and replies it relayed. Display only.',
+      leaderAudit: 'Leader session actions', leaderAuditHint: 'Every Leader action: sessions created, messages sent, notes, GitLab API calls, run start/pause and more. Display only.',
       leaderAuditCreate: 'Created session', leaderAuditEnroll: 'Took over session', leaderAuditRename: 'Renamed', leaderAuditArchive: 'Archived',
       leaderAuditModel: 'Switched model', leaderAuditRelay: 'Relayed your reply', leaderAuditTaskCreate: 'Opened ad-hoc task', leaderAuditTaskDismiss: 'Dismissed uncertain task',
       leaderTaskTag: 'Ad-hoc task', leaderTasksUncertain: 'Ad-hoc tasks with uncertain creation', leaderTasksUncertainHint: 'Leader tried to open these sessions but the result is unknown. Check the DSH session list; archive any stray session yourself, then dismiss the record here.', leaderTaskDismiss: 'Dismiss',
-      leaderRelayHint: 'You can also answer in the Leader session; Leader forwards your exact words to the Issue session. Native approvals and questions still need you in the actual session.',
+      leaderRelayHint: 'You can also answer in the Leader session; Leader passes your answer on to the Issue session. Native approvals and questions still need you in the actual session.',
       leaderAuditQueue: 'Queued', leaderAuditDequeue: 'Dequeued', leaderAuditQueueDrop: 'Dropped from queue', leaderAuditComplete: 'Completed',
       leaderAuditArchiveFailed: 'Archive after completion failed', leaderAuditTodoRouted: 'Routed Todo to worker', leaderAuditManageEnroll: 'Leader enrolled Issue', leaderAuditManageUnenroll: 'Leader unenrolled Issue',
-    leaderAuditManagePause: 'Leader paused Issue', leaderAuditManageResume: 'Leader resumed Issue', leaderAuditManageReset: 'Leader reset Issue budget',
-    leaderAuditManageDelivery: 'Leader resolved uncertain delivery', leaderAuditManageStart: 'Leader started/renewed run', leaderAuditManagePauseLeader: 'Leader paused itself', leaderAuditSteer: 'Steered running worker',
+      leaderAuditManageDelivery: 'Leader resolved uncertain delivery', leaderAuditManageStart: 'Leader started run', leaderAuditManagePauseLeader: 'Leader paused itself', leaderAuditSteer: 'Steered running worker',
+      leaderAuditSend: 'Sent message to worker', leaderAuditNote: 'Updated notes', leaderAuditGitlabApi: 'GitLab API call',
       leaderAuditSteerUncertain: 'Steer delivery uncertain', leaderAuditHandoff: 'Leader session handoff', leaderAuditComment: 'Posted GitLab comment',
       leaderAuditCommentUncertain: 'GitLab comment uncertain',
       leaderReportProgress: 'Progress', leaderReportBlocked: 'Blocked', leaderReportDone: 'Done', leaderReportQuestion: 'Question', leaderReportMessage: 'Message',
@@ -157,11 +156,11 @@ window.__ModuleLoader__.load({
       leaderPreviousSessions: 'Previous Leader sessions', leaderPreviousNotArchived: 'Not archived',
       leaderCommentsUncertain: 'GitLab comments with unknown result', leaderCommentsUncertainHint: 'These comments may or may not have been posted. Check the Issue on GitLab; they are never retried automatically.',
       leaderHandoff: 'Hand off to new session', leaderHandoffHint: 'Open a fresh Leader session that keeps all managed Issues, notes and queue; the old session is archived.',
-      leaderHandoffConfirm: 'Create a new Leader session and archive the current one? Managed Issues, notes, queue and budgets carry over. Only possible while Leader is idle with no unconfirmed deliveries.',
+      leaderHandoffConfirm: 'Create a new Leader session and archive the current one? Managed Issues, notes and queue carry over. Only possible while Leader is idle with no unconfirmed deliveries.',
       leaderMaxRunning: 'Max running workers', leaderMaxRunningHint: 'Only limits how many Issue sessions run at once (1–10). Extra Leader requests wait in a queue.',
       leaderArchiveOnComplete: 'Archive worker on completion', leaderArchiveOnCompleteHint: 'When Leader completes an Issue, archive its session. Archive failure does not undo completion.',
-      leaderIssueComments: 'Allow Leader GitLab progress comments', leaderIssueCommentsHint: 'Off by default. When on, Leader may post short signed progress comments on managed Issues (rate limited).',
-      leaderIssueCommentsConfirm: 'Allow Leader to post comments on GitLab Issues under your account? Comments carry the signature below, are limited to 1 per 30 minutes and 10 per Issue budget.',
+      leaderGitlabWrite: 'Allow Leader GitLab writes', leaderGitlabWriteHint: 'Off by default. When on, Leader may call write methods (POST/PUT/DELETE) of the GitLab API under your account; Issue comments carry the signature below. Reads are always allowed.',
+      leaderGitlabWriteConfirm: 'Allow Leader to write to GitLab under your account (comments, labels, Issue/MR updates and other API writes)? Every call is audited; comments carry the signature below.',
       leaderCommentSignature: 'Comment signature',
       todoBatchTag: 'Merged', todoBatchHint: 'Handled together with other Todos on the same target in one session turn.', todoLeaderTag: 'Leader worker', todoLeaderHint: 'Routed to the Leader-managed Issue session.',
       mergeSameTarget: 'Merge same-target @mentions', mergeSameTargetHint: 'Several new @mention Todos on the same Issue/MR are handled in one session turn instead of one each.',
@@ -293,7 +292,6 @@ window.__ModuleLoader__.load({
       leaderAutoEnroll: '新 Issue 会话默认托管', leaderAutoEnrollHint: '默认关闭，不会纳管既有会话。',
       leaderScope: '选入即允许 Leader 读取所选会话，并仅在原任务范围内发送指令；不授予人类审批或代答问答权限。',
       leaderStartHint: '启动对明确选入会话的托管，未选入会话不受影响。',
-      leaderResumeHint: '请先在实际会话入口亲自处理原生审批或问答。恢复仅确认你的续办决策；存在未决原生输入或正在执行时 Host 会拒绝恢复。',
       leaderAutoEnrollConfirm: '仅对之后从 Issue 页创建的会话授予此访问权限；既有会话保持不变。',
       leaderConfirm: '确认授权', leaderEnrolled: '已托管', leaderEnroll: '交给 Leader 托管', leaderUnenroll: '解除托管',
       leaderManaged: '纳管会话',
@@ -307,17 +305,17 @@ window.__ModuleLoader__.load({
       leaderRefresh: '刷新 Leader 状态', leaderWorking: '正在更新 Leader…', leaderSaved: 'Leader 已更新',
       leaderStandby: '待命', leaderCold: '未加载', leaderNeverStartedPhase: '已创建 · 未启动', leaderDeliveryUncertain: '投递待核对',
       leaderNeverStartedHint: 'Leader 已创建，但尚未启动托管。点击“启动托管”之前，Leader 会话是空白的，DSH 会把它显示为“New Session”。这不是创建失败，请不要重复创建 Leader。',
-      leaderPausedHint: '托管已暂停，纳管的 Issue 处于待命状态；重新启动托管后，Leader 会继续在其会话里汇报进度。',
+      leaderPausedHint: '托管已暂停：不再自动唤醒 Leader，你和它对话时它仍可操作。重新启动托管即恢复自动唤醒。',
       leaderMainWindow: 'Leader 会话是你的主窗口：托管运行时，它会在自己的对话里汇报每个 Issue 会话的进度。',
-      leaderAudit: 'Leader 会话操作', leaderAuditHint: 'Leader 创建、重命名、归档、换模型的会话，以及它转达的回复。仅供查看。',
+      leaderAudit: 'Leader 会话操作', leaderAuditHint: 'Leader 的每个操作：建会话、发消息、记笔记、GitLab API 调用、开始/暂停托管等。仅供查看。',
       leaderAuditCreate: '创建会话', leaderAuditEnroll: '接管会话', leaderAuditRename: '重命名', leaderAuditArchive: '归档',
       leaderAuditModel: '更换模型', leaderAuditRelay: '转达你的回复', leaderAuditTaskCreate: '开启临时任务', leaderAuditTaskDismiss: '放弃不确定的临时任务',
       leaderTaskTag: '临时任务', leaderTasksUncertain: '创建结果不确定的临时任务', leaderTasksUncertainHint: 'Leader 尝试开启这些会话但结果未知。请在 DSH 会话列表核查，如有多余会话请自行归档，再在此放弃该记录。', leaderTaskDismiss: '放弃记录',
-      leaderRelayHint: '也可以直接在 Leader 会话里回复，Leader 会把你的原话转给对应 Issue 会话；原生审批与问答仍需你在实际会话中处理。',
+      leaderRelayHint: '也可以直接在 Leader 会话里回复，Leader 会把你的答复转告对应 Issue 会话；原生审批与问答仍需你在实际会话中处理。',
       leaderAuditQueue: '排队', leaderAuditDequeue: '出队执行', leaderAuditQueueDrop: '移出队列', leaderAuditComplete: '完成收尾',
       leaderAuditArchiveFailed: '完成后归档失败', leaderAuditTodoRouted: 'Todo 转交 worker', leaderAuditManageEnroll: 'Leader 纳管 Issue', leaderAuditManageUnenroll: 'Leader 解除纳管',
-    leaderAuditManagePause: 'Leader 暂停 Issue', leaderAuditManageResume: 'Leader 恢复 Issue', leaderAuditManageReset: 'Leader 重置预算',
-    leaderAuditManageDelivery: 'Leader 核对投递', leaderAuditManageStart: 'Leader 开始/续期托管', leaderAuditManagePauseLeader: 'Leader 暂停托管', leaderAuditSteer: '纠偏运行中会话',
+      leaderAuditManageDelivery: 'Leader 核对投递', leaderAuditManageStart: 'Leader 开始托管', leaderAuditManagePauseLeader: 'Leader 暂停托管', leaderAuditSteer: '纠偏运行中会话',
+      leaderAuditSend: '给 worker 发消息', leaderAuditNote: '更新笔记', leaderAuditGitlabApi: 'GitLab API 调用',
       leaderAuditSteerUncertain: '纠偏投递不确定', leaderAuditHandoff: 'Leader 会话交接', leaderAuditComment: '发布 GitLab 评论',
       leaderAuditCommentUncertain: 'GitLab 评论结果不确定',
       leaderReportProgress: '进度', leaderReportBlocked: '受阻', leaderReportDone: '完成', leaderReportQuestion: '提问', leaderReportMessage: '消息',
@@ -329,11 +327,11 @@ window.__ModuleLoader__.load({
       leaderPreviousSessions: '历史 Leader 会话', leaderPreviousNotArchived: '未归档',
       leaderCommentsUncertain: '结果不确定的 GitLab 评论', leaderCommentsUncertainHint: '这些评论可能已发出也可能没有，请到 GitLab Issue 核查；插件不会自动重发。',
       leaderHandoff: '交接到新会话', leaderHandoffHint: '新开一个 Leader 会话，保留全部纳管 Issue、笔记和队列；旧会话会被归档。',
-      leaderHandoffConfirm: '新建 Leader 会话并归档当前会话？纳管 Issue、笔记、队列和预算都会保留。仅在 Leader 空闲且没有未确认投递时可用。',
+      leaderHandoffConfirm: '新建 Leader 会话并归档当前会话？纳管 Issue、笔记和队列都会保留。仅在 Leader 空闲且没有未确认投递时可用。',
       leaderMaxRunning: '并发上限', leaderMaxRunningHint: '只限制同时运行的 Issue 会话数（1–10），创建数量不限；超出的 Leader 请求进入队列。',
       leaderArchiveOnComplete: '完成后归档 worker', leaderArchiveOnCompleteHint: 'Leader 完成某个 Issue 时归档其会话；归档失败不影响完成。',
-      leaderIssueComments: '允许 Leader 在 GitLab 发进度评论', leaderIssueCommentsHint: '默认关闭。开启后 Leader 可在纳管 Issue 下发简短的带签名进度评论（有频率限制）。',
-      leaderIssueCommentsConfirm: '允许 Leader 以你的账号在 GitLab Issue 下发评论？评论会带下方签名，每个 Issue 30 分钟最多 1 条、每轮预算最多 10 条。',
+      leaderGitlabWrite: '允许 Leader 写 GitLab', leaderGitlabWriteHint: '默认关闭。开启后 Leader 可以你的账号调用 GitLab API 的写方法（POST/PUT/DELETE），Issue 评论自动带下方签名。读取始终可用。',
+      leaderGitlabWriteConfirm: '允许 Leader 以你的账号写 GitLab（评论、标签、Issue/MR 更新等 API 写操作）？每次调用都记审计，评论带下方签名。',
       leaderCommentSignature: '评论签名',
       todoBatchTag: '合并处理', todoBatchHint: '与同一对象的其他 Todo 在同一会话的同一轮中一起处理。', todoLeaderTag: 'Leader worker', todoLeaderHint: '已转交给 Leader 纳管的 Issue 会话。',
       mergeSameTarget: '同对象 @我 合并派发', mergeSameTargetHint: '同一 Issue/MR 上的多条新 @我 Todo 合并为一个会话的一轮处理，而不是各开一次。',
@@ -381,8 +379,8 @@ window.__ModuleLoader__.load({
     // 写操作必须显式覆盖 issues/logs 等只读 action 的默认 GET，否则刷新和清空只会读取缓存。
     const post = (action, payload, signal) => bridge(action, { method: 'POST', payload, signal });
 
-    const LEADER_RPC_OPERATIONS = ['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue',
-      'resetIssueBudget', 'resolveDelivery', 'resolveCreation', 'resolveTask', 'cancelQueued', 'handoff'];
+    const LEADER_RPC_OPERATIONS = ['create', 'configure', 'start', 'pause', 'enroll', 'unenroll',
+      'resolveDelivery', 'resolveCreation', 'resolveTask', 'cancelQueued', 'handoff'];
     /** Native ConnectionRpcResult, not RemoteResult or HTTP: Host authenticates the browser peer. */
     async function callLeader(ctx, operation, payload = {}, signal) {
       if (!LEADER_RPC_OPERATIONS.includes(operation)) throw new Error(bridgeText('leaderInvalidResponse'));
@@ -756,9 +754,9 @@ window.__ModuleLoader__.load({
       queue: 'leaderAuditQueue', dequeue: 'leaderAuditDequeue', 'queue-drop': 'leaderAuditQueueDrop', complete: 'leaderAuditComplete',
       'archive-failed': 'leaderAuditArchiveFailed', 'todo-routed': 'leaderAuditTodoRouted', steer: 'leaderAuditSteer',
       'steer-uncertain': 'leaderAuditSteerUncertain', handoff: 'leaderAuditHandoff', comment: 'leaderAuditComment',
-      'comment-uncertain': 'leaderAuditCommentUncertain', 'manage-enroll': 'leaderAuditManageEnroll', 'manage-unenroll': 'leaderAuditManageUnenroll',
-      'manage-pause': 'leaderAuditManagePause', 'manage-resume': 'leaderAuditManageResume', 'manage-reset_budget': 'leaderAuditManageReset',
-      'manage-resolve_delivery': 'leaderAuditManageDelivery', 'manage-start': 'leaderAuditManageStart', 'manage-pause_leader': 'leaderAuditManagePauseLeader' };
+      'comment-uncertain': 'leaderAuditCommentUncertain', 'session-unenroll': 'leaderAuditManageUnenroll',
+      'session-resolve_delivery': 'leaderAuditManageDelivery', 'run-start': 'leaderAuditManageStart', 'run-pause': 'leaderAuditManagePauseLeader',
+      'session-send': 'leaderAuditSend', 'session-steer': 'leaderAuditSteer', note: 'leaderAuditNote', 'gitlab-api': 'leaderAuditGitlabApi' };
     const LEADER_REPORT_LABELS = { progress: 'leaderReportProgress', blocked: 'leaderReportBlocked', done: 'leaderReportDone',
       question: 'leaderReportQuestion', message: 'leaderReportMessage' };
 
@@ -795,8 +793,7 @@ window.__ModuleLoader__.load({
         runState: LEADER_RUN_STATES.includes(value.runState) ? value.runState : '',
         creation: value.creation && typeof value.creation === 'object'
           ? { status: text(value.creation.status), createdAt: count(value.creation.createdAt), agentPreset: text(value.creation.agentPreset) } : null,
-        run: { expiresAt: count(value.run?.expiresAt), wakeups: count(value.run?.wakeups), maxWakeups: count(value.run?.maxWakeups),
-          lastStartedAt: count(value.run?.lastStartedAt) },
+        run: { wakeups: count(value.run?.wakeups), lastStartedAt: count(value.run?.lastStartedAt) },
         deliveries: (Array.isArray(value.deliveries) ? value.deliveries : [])
           .filter((entry) => entry && text(entry.requestId) && ['advance', 'notify', 'relay'].includes(entry.kind))
           .map((entry) => ({ requestId: entry.requestId, kind: entry.kind, taskId: text(entry.taskId),
@@ -807,14 +804,13 @@ window.__ModuleLoader__.load({
           autoEnrollNew: value.settings.autoEnrollNew,
           maxRunningWorkers: Number.isSafeInteger(value.settings.maxRunningWorkers) ? value.settings.maxRunningWorkers : 3,
           archiveOnComplete: value.settings.archiveOnComplete !== false,
-          issueComments: value.settings.issueComments === true,
+          gitlabWrite: value.settings.gitlabWrite === true,
           commentSignature: text(value.settings.commentSignature).trim() || '—— 由 AI Leader 代发' },
         items: value.items.filter((item) => item && item.taskId != null).map((item) => ({
           taskId: String(item.taskId), sessionId: validLeaderSessionId(item.sessionId) ? item.sessionId : null,
           title: text(item.title), url: text(item.url),
           status: Object.hasOwn(LEADER_STATUS_LABELS, item.status) ? item.status : 'unknown',
           summary: text(item.summary), error: text(item.error),
-          paused: item.paused === true, actions: count(item.actions), maxActions: count(item.maxActions), expiresAt: count(item.expiresAt),
           alerts: (Array.isArray(item.alerts) ? item.alerts : []).filter((alert) => alert && text(alert.question)).map((alert) => ({
             id: text(alert.id), question: alert.question, status: text(alert.status), createdAt: alert.createdAt,
           })),
@@ -1152,10 +1148,10 @@ window.__ModuleLoader__.load({
         if (operation === 'create' && (!leaderFresh
           || (!canCreateLeader(leaderViewRef.current.projection, leaderViewRef.current.sessionId, leaderViewRef.current.creationAttempted)
             && !canRetryLeaderSetup(leaderViewRef.current.projection, leaderViewRef.current.sessionId)))) return Promise.resolve(false);
-        if (['start', 'enroll', 'resumeIssue'].includes(operation)
+        if (['start', 'enroll'].includes(operation)
           && (!leaderFresh || !canGrantLeaderAccess(leaderViewRef.current.projection))) return Promise.resolve(false);
         // Recovery operations are human assertions about the latest Host state; never act on a stale view.
-        if (['resetIssueBudget', 'resolveDelivery', 'resolveCreation', 'resolveTask', 'cancelQueued', 'handoff'].includes(operation) && !leaderFresh) return Promise.resolve(false);
+        if (['resolveDelivery', 'resolveCreation', 'resolveTask', 'cancelQueued', 'handoff'].includes(operation) && !leaderFresh) return Promise.resolve(false);
         if (operation === 'configure') {
           if (!leaderFresh || !leaderViewRef.current.projection || ['error', 'uncertain'].includes(leaderViewRef.current.projection.phase)) return Promise.resolve(false);
           payload = { settings: { ...leaderViewRef.current.projection.settings, ...payload.settings } };
@@ -2017,13 +2013,13 @@ window.__ModuleLoader__.load({
                   type: 'checkbox', checked: leaderSettings.archiveOnComplete !== false, disabled: !leaderCanConfigure,
                   onChange: (event) => { void runLeader('configure', { settings: { archiveOnComplete: event.target.checked } }); },
                 }), t('leaderArchiveOnComplete')),
-                h('label', { className: 'gta-check', title: t('leaderIssueCommentsHint') }, h('input', {
-                  type: 'checkbox', checked: leaderSettings.issueComments === true, disabled: !leaderCanConfigure,
+                h('label', { className: 'gta-check', title: t('leaderGitlabWriteHint') }, h('input', {
+                  type: 'checkbox', checked: leaderSettings.gitlabWrite === true, disabled: !leaderCanConfigure,
                   onChange: (event) => event.target.checked
-                    ? setLeaderConfirm({ operation: 'configure', payload: { settings: { issueComments: true } }, title: t('leaderIssueComments') })
-                    : void runLeader('configure', { settings: { issueComments: false } }),
-                }), t('leaderIssueComments')),
-                leaderSettings.issueComments === true && h('label', null, t('leaderCommentSignature'), h('input', {
+                    ? setLeaderConfirm({ operation: 'configure', payload: { settings: { gitlabWrite: true } }, title: t('leaderGitlabWrite') })
+                    : void runLeader('configure', { settings: { gitlabWrite: false } }),
+                }), t('leaderGitlabWrite')),
+                leaderSettings.gitlabWrite === true && h('label', null, t('leaderCommentSignature'), h('input', {
                   key: leaderSettings.commentSignature, type: 'text', maxLength: 100, defaultValue: leaderSettings.commentSignature, disabled: !leaderCanConfigure,
                   onBlur: (event) => {
                     const value = event.target.value.trim();
@@ -2036,9 +2032,8 @@ window.__ModuleLoader__.load({
                 leaderConfirm.payload.taskId && h('div', { className: 'gta-muted' }, `${leaderConfirm.payload.taskId} · ${leaderConfirm.payload.sessionId}`),
                 h('p', null, t('leaderScope')),
                 leaderConfirm.operation === 'start' && h('p', null, t('leaderStartHint')),
-                leaderConfirm.operation === 'resumeIssue' && h('p', null, t('leaderResumeHint')),
                 leaderConfirm.operation === 'configure' && h('p', null,
-                  t(leaderConfirm.payload.settings?.issueComments === true ? 'leaderIssueCommentsConfirm' : 'leaderAutoEnrollConfirm')),
+                  t(leaderConfirm.payload.settings?.gitlabWrite === true ? 'leaderGitlabWriteConfirm' : 'leaderAutoEnrollConfirm')),
                 leaderConfirm.operation === 'handoff' && h('p', null, t('leaderHandoffConfirm')),
                 h('div', { className: 'gta-form-actions' },
                   h(Button, { primary: true, disabled: leaderConfirm.operation === 'configure' ? !leaderCanConfigure
