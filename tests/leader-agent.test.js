@@ -279,3 +279,20 @@ test('startup created barrier reuses journal load already started by Host startu
   assert.equal(released, false); release(); await done;
   assert.equal(released, true); assert.equal(fixture.adapter.capabilities.atomicIdleDelivery, true);
 });
+
+test('prepareWorker activates only enrolled Issue workers through the trusted session controller', async () => {
+  const fixture = setup(); fixture.residents.delete('worker');
+  const resolved = [];
+  fixture.ctx.sessionController = { resolveAgent: async (id) => { resolved.push(id); fixture.residents.set(id, fixture.worker); return { agent: fixture.worker }; } };
+  assert.equal((await fixture.adapter.prepareWorker('leader')).ok, false);
+  assert.equal((await fixture.adapter.prepareWorker('outside')).ok, false);
+  assert.deepEqual(resolved, []);
+  const prepared = await fixture.adapter.prepareWorker('worker'); assert.equal(prepared.ok, true); assert.equal(prepared.status, 'prepared');
+  assert.deepEqual(resolved, ['worker']);
+  assert.equal((await fixture.adapter.prepareWorker('worker')).ok, true); assert.deepEqual(resolved, ['worker']);
+  fixture.residents.delete('worker'); fixture.ctx.workspaceRegistry.archivedSessionIds.push('worker');
+  assert.equal((await fixture.adapter.prepareWorker('worker')).ok, false); assert.deepEqual(resolved, ['worker']);
+  fixture.ctx.workspaceRegistry.archivedSessionIds.length = 0;
+  fixture.ctx.sessionController = { resolveAgent: async () => ({ agent: { ...fixture.worker } }) };
+  assert.equal((await fixture.adapter.prepareWorker('worker')).ok, false);
+});

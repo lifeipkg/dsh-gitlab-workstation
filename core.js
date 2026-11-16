@@ -2,10 +2,52 @@ export const STATE_VERSION = 6;
 
 // Leader has its own journal/version; Issue automatic:false and STATE_VERSION stay unchanged.
 export const LEADER_STATE_VERSION = 1;
+// Shared by Host enforcement and the UI projection so both always show the same budgets.
+export const LEADER_LIMITS = Object.freeze({
+  maxActions: 20, maxWakeups: 100, leaseMs: 24 * 60 * 60 * 1000, issueLeaseMs: 72 * 60 * 60 * 1000,
+  maxEvents: 100, maxOutbox: 500, maxOpenOutbox: 100, keepTerminalOutbox: 200, keepTerminalBodies: 20,
+  maxItems: 200, maxCreatedEnrollments: 1000, maxBudgetLedger: 200, maxAbandonedCreations: 20,
+});
+export const DEFAULT_LEADER_AGENT_PRESET = 'gitlab-issue-leader';
+const TERMINAL_OUTBOX = new Set(['sent', 'rejected', 'cancelled']);
+const OPEN_DELIVERY = new Set(['sending', 'uncertain']);
 export function initialLeaderState() {
   return { version: LEADER_STATE_VERSION, enabled: false, sessionId: null, phase: 'not-created',
     settings: { model: null, autoEnrollNew: false }, items: [], events: [], outbox: [], creation: null, createdEnrollments: [],
-    epoch: 0, creationPolicyEpoch: 0, expiresAt: null, wakeups: 0, configuredModel: null, error: '' };
+    epoch: 0, creationPolicyEpoch: 0, expiresAt: null, wakeups: 0, configuredModel: null, error: '',
+    lastStartedAt: null, budgetLedger: [], abandonedCreations: [] };
+}
+
+/**
+ * Terminal deliveries only serve requestId idempotency and audit. Keep their fingerprints for the
+ * newest `keepTerminalOutbox` entries, bodies for the newest `keepTerminalBodies`, and drop the rest.
+ * Open entries (prepared/sending/uncertain) are never compacted: they are the replay tombstones.
+ * Mutates retained entries in place so callers holding an open entry keep a live reference.
+ */
+export function compactLeaderOutbox(outbox, limits = LEADER_LIMITS) {
+  const terminal = outbox.filter((entry) => TERMINAL_OUTBOX.has(entry.status));
+  const dropped = new Set(terminal.slice(0, Math.max(0, terminal.length - limits.keepTerminalOutbox)));
+  const stripped = terminal.slice(0, Math.max(0, terminal.length - limits.keepTerminalBodies));
+  for (const entry of stripped) {
+    if (dropped.has(entry) || entry.compacted === true) continue;
+    entry.body = ''; entry.compacted = true; entry.error = text(entry.error).slice(0, 200);
+  }
+  return outbox.filter((entry) => !dropped.has(entry));
+}
+
+/** A consumed proof can only match the current policy epoch; older tuples are dead weight. */
+export function pruneCreatedEnrollments(entries, creationPolicyEpoch) {
+  return (entries ?? []).filter((entry) => entry.creationPolicyEpoch === creationPolicyEpoch);
+}
+
+export function leaderRunState(state) {
+  if (!state) return 'not-created';
+  if (state.phase === 'error') return 'error';
+  if (!state.sessionId) return state.creation ? 'creation-uncertain' : 'not-created';
+  if (state.creation?.status !== 'ready') return 'setup-incomplete';
+  if (state.outbox?.some((entry) => entry.kind === 'notify' && OPEN_DELIVERY.has(entry.status))) return 'delivery-uncertain';
+  if (state.enabled) return 'running';
+  return state.lastStartedAt ? 'paused' : 'never-started';
 }
 
 export function validateLeaderSettings(input, current = { model: null, autoEnrollNew: false }) {
@@ -56,7 +98,10 @@ export function normalizeLeaderState(value) {
         || typeof event.type !== 'string' || event.type.length > 100 || typeof event.data !== 'string' || event.data.length > 4000)
       || JSON.stringify(item.recentEvents).length > 20100) throw new Error('Leader journal 近期上下文缓存无效/超出边界。');
     item.recentEventsTruncated = item.recentEventsTruncated === true;
-    item.status = item.paused ? 'paused' : 'watching';
+    item.pendingWake = Array.isArray(item.pendingWake)
+      ? item.pendingWake.filter((reason) => typeof reason === 'string' && reason.length <= 100).slice(-10) : [];
+    // Restart always pauses the Leader, so nothing is being watched until an explicit start.
+    item.status = item.paused ? (Array.isArray(item.alerts) && item.alerts.some((alert) => alert?.status === 'pending') ? 'needs-human' : 'paused') : 'standby';
     item.title = text(item.title).slice(0, 1000); item.url = safeUrl(item.url); item.summary = text(item.summary).slice(0, 2000); item.error = text(item.error).slice(0, 1000);
     for (const alert of item.alerts) {
       if (!id(alert.id) || typeof alert.question !== 'string' || alert.question.length > 2000 || !['pending', 'acknowledged'].includes(alert.status)) throw new Error('Leader journal alert binding 无效。');
@@ -71,16 +116,26 @@ export function normalizeLeaderState(value) {
     // An old prepared admission belonged to the previous epoch, not this process.
     else if (entry.status === 'prepared') entry.status = 'cancelled';
   }
+  result.outbox = compactLeaderOutbox(result.outbox);
   if (result.creation !== null) {
     if (!isRecord(result.creation) || !id(result.creation.requestId)) throw new Error('Leader 创建 journal 无效，禁止重复创建。');
     if (!['created', 'ready'].includes(result.creation.status)) result.creation.status = 'uncertain';
+    if (result.creation.agentPreset !== undefined && result.creation.agentPreset !== null && !id(result.creation.agentPreset)) delete result.creation.agentPreset;
   }
+  result.lastStartedAt = timestamp(value.lastStartedAt);
+  result.budgetLedger = (Array.isArray(value.budgetLedger) ? value.budgetLedger : [])
+    .filter((entry) => isRecord(entry) && id(entry.taskId) && id(entry.sessionId) && Number.isSafeInteger(entry.actions)
+      && entry.actions >= 0 && timestamp(entry.expiresAt) !== null).slice(-LEADER_LIMITS.maxBudgetLedger);
+  result.abandonedCreations = (Array.isArray(value.abandonedCreations) ? value.abandonedCreations : [])
+    .filter((entry) => isRecord(entry) && id(entry.requestId)).slice(-LEADER_LIMITS.maxAbandonedCreations);
   result.epoch = Number.isSafeInteger(value.epoch) && value.epoch >= 0 ? value.epoch + 1 : 1;
   // Policy provenance survives mapping/run changes, but never a process restart.
   // Legacy global-epoch proof fields are never promoted into the new policy domain.
   const policyEpoch = Object.hasOwn(value, 'creationPolicyEpoch') ? value.creationPolicyEpoch : 0;
   if (!Number.isSafeInteger(policyEpoch) || policyEpoch < 0 || !Number.isSafeInteger(policyEpoch + 1)) throw new Error('Leader journal 新建托管 policy epoch 无效。');
   result.creationPolicyEpoch = policyEpoch + 1;
+  // Proofs from older policy epochs can never match again; dropping them keeps the journal bounded.
+  result.createdEnrollments = pruneCreatedEnrollments(result.createdEnrollments, result.creationPolicyEpoch);
   result.enabled = false;
   result.phase = result.sessionId ? (result.creation?.status === 'ready' ? 'paused' : 'error') : result.creation ? 'uncertain' : 'not-created';
   result.events = (Array.isArray(value.events) ? value.events : []).slice(-100);
@@ -89,11 +144,24 @@ export function normalizeLeaderState(value) {
 }
 
 export function buildLeaderProjection(state = initialLeaderState()) {
+  const creation = isRecord(state.creation) ? { status: text(state.creation.status, 'uncertain'),
+    createdAt: timestamp(state.creation.createdAt), agentPreset: typeof state.creation.agentPreset === 'string' ? state.creation.agentPreset : null } : null;
   return { enabled: state.enabled === true, sessionId: state.sessionId ?? null,
     phase: ['not-created', 'ready', 'paused', 'error', 'uncertain'].includes(state.phase) ? state.phase : 'uncertain',
+    runState: leaderRunState(state),
     settings: JSON.parse(JSON.stringify(state.settings)),
+    creation,
+    run: { expiresAt: state.enabled === true ? timestamp(state.expiresAt) : null, wakeups: Number.isSafeInteger(state.wakeups) ? state.wakeups : 0,
+      maxWakeups: LEADER_LIMITS.maxWakeups, lastStartedAt: timestamp(state.lastStartedAt) },
     items: state.items.map((item) => ({ taskId: item.taskId, sessionId: item.sessionId, title: item.title, url: item.url,
-      status: item.status, summary: item.summary || '', error: item.error || '', alerts: item.alerts.map((alert) => ({ ...alert })) })),
+      status: item.status, summary: item.summary || '', error: item.error || '', alerts: item.alerts.map((alert) => ({ ...alert })),
+      paused: item.paused === true, actions: Number.isSafeInteger(item.actions) ? item.actions : 0, maxActions: LEADER_LIMITS.maxActions,
+      expiresAt: timestamp(item.expiresAt), enrolledAt: timestamp(item.enrolledAt), provenance: item.provenance?.kind === 'created' ? 'created' : 'ui',
+      pendingWake: Array.isArray(item.pendingWake) ? [...item.pendingWake] : [] })),
+    // Open deliveries are the only records a human must resolve; terminal ones stay internal audit.
+    deliveries: (state.outbox ?? []).filter((entry) => OPEN_DELIVERY.has(entry.status)).map((entry) => ({ requestId: entry.requestId,
+      kind: entry.kind, taskId: entry.taskId ?? null, sessionId: entry.sessionId, status: entry.status, error: entry.error || '',
+      createdAt: timestamp(entry.createdAt) })),
     events: state.events.map((event) => ({ ...event })), error: state.error || '' };
 }
 

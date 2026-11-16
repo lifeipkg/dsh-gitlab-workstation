@@ -72,7 +72,9 @@ function fixture() {
 
 test('default Leader is off with no existing enrollment and independent settings', () => {
   const { runtime } = fixture();
-  assert.deepEqual(runtime.leaderProjection(), { enabled: false, sessionId: null, phase: 'not-created', settings: { model: null, autoEnrollNew: false }, items: [], events: [], error: '' });
+  assert.deepEqual(runtime.leaderProjection(), { enabled: false, sessionId: null, phase: 'not-created', runState: 'not-created',
+    settings: { model: null, autoEnrollNew: false }, creation: null, run: { expiresAt: null, wakeups: 0, maxWakeups: 100, lastStartedAt: null },
+    items: [], deliveries: [], events: [], error: '' });
   assert.equal(runtime.state.settings.enabled, false);
   assert.equal(Object.keys(runtime.state.handled).length, 2);
   assert.equal(runtime.leaderState.items.length, 0);
@@ -382,7 +384,8 @@ test('new auto-enrollment requires actual persisted policy proof and current dur
   assert.equal((await runtime.autoEnrollLeaderCreated('issue-1-a', 'worker-a')).ok, false);
   runtime.state.handled['issue-1-a'].leaderCreatedPolicyEpoch = runtime.leaderState.creationPolicyEpoch;
   assert.equal((await runtime.autoEnrollLeaderCreated('issue-1-a', 'worker-a')).ok, true);
-  const item = runtime.leaderState.items[0]; assert.equal(item.paused, true); assert.equal(item.provenance.kind, 'created');
+  // Leader is paused: the new Issue waits as standby (not individually paused) and is watched on the next start.
+  const item = runtime.leaderState.items[0]; assert.equal(item.paused, false); assert.equal(item.status, 'standby'); assert.equal(item.provenance.kind, 'created');
   assert.equal(runtime.state.handled['issue-1-a'].automatic, false);
   await invoke('unenroll', issue());
   runtime.state.handled['issue-1-a'].leaderCreatedPolicyEpoch = runtime.leaderState.creationPolicyEpoch;
@@ -558,5 +561,213 @@ test('atomic standalone journal survives disk roundtrip, reload is off and no du
     await runtime.loadLeader(); assert.equal((await invoke('create')).ok, true); assert.equal((await invoke('enroll', issue())).ok, true);
     assert.equal((await invoke('start')).ok, true); await runtime.loadLeader(); assert.equal(runtime.leaderState.enabled, false);
     assert.equal(runtime.leaderState.items.length, 1); assert.equal((await invoke('create')).ok, true); assert.equal(calls.create.length, 1);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+// ---- Leader hardening (outbox compaction, triage, rollback, cold workers, budgets, recovery) ----
+
+test('terminal outbox is compacted so a long-running Leader never wedges at the old 500 cap', async () => {
+  const { runtime, setup, advance } = fixture(); await setup();
+  runtime.leaderState.outbox.push(...Array.from({ length: 600 }, (_, index) => ({ kind: 'notify', requestId: `old-${index}`, sessionId: 'leader',
+    status: 'sent', body: 'x'.repeat(100), fingerprint: 'f', createdAt: index, epoch: 0, expectedCursor: 0, error: '' })));
+  const advanced = await advance(); assert.equal(advanced.ok, true, advanced.error);
+  const outbox = runtime.leaderState.outbox;
+  assert.ok(outbox.length <= 202, `outbox ${outbox.length}`);
+  assert.ok(outbox.filter((entry) => entry.compacted === true && entry.body === '').length > 0);
+  assert.equal(outbox.at(-1).requestId, 'advance-a'); assert.equal(outbox.at(-1).status, 'sent');
+  assert.doesNotThrow(() => normalizeLeaderState(runtime.leaderState));
+});
+
+test('unresolved deliveries still hard-stop new outbox entries', async () => {
+  const { runtime, setup, advance } = fixture(); await setup();
+  runtime.leaderState.outbox.push(...Array.from({ length: 100 }, (_, index) => ({ kind: 'advance', requestId: `open-${index}`, taskId: `other-${index}`,
+    sessionId: `other-${index}`, status: 'uncertain', body: 'x', fingerprint: 'f', createdAt: index, epoch: 0, expectedCursor: 0, error: '' })));
+  assert.equal((await advance()).ok, false);
+});
+
+test('stale-policy created-enrollment tombstones are pruned on load', () => {
+  const state = { ...initialLeaderState(), creationPolicyEpoch: 3,
+    createdEnrollments: [{ taskId: 't', sessionId: 's', epoch: 1, creationPolicyEpoch: 3, createdAt: 1 }] };
+  // Reload bumps creationPolicyEpoch, so proofs stamped under the old policy can never match again.
+  const normalized = normalizeLeaderState(JSON.parse(JSON.stringify(state)));
+  assert.equal(normalized.creationPolicyEpoch, 4); assert.equal(normalized.createdEnrollments.length, 0);
+});
+
+test('worker log chatter does not wake the Leader; turn/end does, once', async () => {
+  const { runtime, setup, sessions, logs, calls } = fixture(); await setup();
+  assert.equal(calls.notify.length, 1);
+  sessions.set('worker-a', sessionState({ cursor: 11 })); logs.set('worker-a', [{ seq: 11, type: 'assistant/message', data: { text: 'progress' } }]);
+  await runtime.reconcileLeader(); assert.equal(calls.notify.length, 1);
+  sessions.set('worker-a', sessionState({ cursor: 12 })); logs.set('worker-a', [...logs.get('worker-a'), { seq: 12, type: 'turn/end', data: {} }]);
+  await runtime.reconcileLeader(); assert.equal(calls.notify.length, 2);
+  assert.match(calls.notify[1].body, /turn-end/); assert.match(calls.notify[1].body, /人类只看本会话/);
+  await runtime.reconcileLeader(); assert.equal(calls.notify.length, 2);
+});
+
+test('a busy Leader keeps the wake reason durable and is notified when idle', async () => {
+  const { runtime, setup, sessions, logs, calls } = fixture(); await setup();
+  sessions.set('leader', sessionState({ running: true }));
+  sessions.set('worker-a', sessionState({ cursor: 11 })); logs.set('worker-a', [{ seq: 11, type: 'turn/end', data: {} }]);
+  await runtime.reconcileLeader(); assert.equal(calls.notify.length, 1);
+  assert.deepEqual(runtime.leaderState.items[0].pendingWake, ['turn-end']);
+  sessions.set('leader', sessionState());
+  await runtime.reconcileLeader(); assert.equal(calls.notify.length, 2); assert.deepEqual(runtime.leaderState.items[0].pendingWake, []);
+});
+
+test('rejected bootstrap rolls start back to paused instead of a silent enabled Leader', async () => {
+  const { runtime, invoke, issue, calls } = fixture();
+  assert.equal((await invoke('create')).ok, true); assert.equal((await invoke('enroll', issue())).ok, true);
+  const notify = runtime.leaderAdapter.notify;
+  runtime.leaderAdapter.notify = async (request) => ({ ok: false, status: 'rejected', error: 'busy', requestId: request.requestId });
+  const started = await invoke('start'); assert.equal(started.ok, false);
+  assert.equal(runtime.leaderState.enabled, false); assert.equal(runtime.leaderState.phase, 'paused');
+  assert.equal(runtime.leaderState.items[0].status, 'standby'); assert.match(runtime.leaderState.error, /启动简报未送达/);
+  runtime.leaderAdapter.notify = notify;
+  assert.equal((await invoke('start')).ok, true); assert.equal(calls.notify.length, 1); assert.equal(runtime.leaderState.error, '');
+});
+
+test('explicit start and a guarded advance activate quiet cold workers', async () => {
+  const { runtime, invoke, issue, sessions, advance, calls } = fixture();
+  const prepared = [];
+  runtime.leaderAdapter.prepareWorker = async (sessionId) => { prepared.push(sessionId); sessions.set(sessionId, { ...sessions.get(sessionId), active: true }); return { ok: true, status: 'prepared', sessionId }; };
+  assert.equal((await invoke('create')).ok, true); assert.equal((await invoke('enroll', issue())).ok, true);
+  sessions.set('worker-a', sessionState({ active: false }));
+  assert.equal((await invoke('start')).ok, true); assert.deepEqual(prepared, ['worker-a']);
+  sessions.set('worker-a', sessionState({ active: false }));
+  const result = await advance(); assert.equal(result.ok, true, result.error); assert.deepEqual(prepared, ['worker-a', 'worker-a']);
+  assert.equal(calls.deliver.length, 1);
+});
+
+test('cold worker without an activation path is shown as cold, not as an error', async () => {
+  const { runtime, setup, sessions } = fixture(); await setup();
+  sessions.set('worker-a', sessionState({ active: false }));
+  await runtime.reconcileLeader();
+  assert.equal(runtime.leaderState.items[0].status, 'cold'); assert.equal(runtime.leaderState.items[0].error, '');
+});
+
+test('Leader is created with the built-in tool-less preset; explicit bad preset fails without latching', async () => {
+  const { runtime, invoke, calls } = fixture();
+  runtime.leaderServicesContext = { agentPresets: { async resolve(id) { if (id !== 'gitlab-issue-leader') throw new Error('unknown preset'); return { id }; } } };
+  runtime.config.leaderAgentPreset = 'missing-preset';
+  assert.equal((await invoke('create')).ok, false); assert.equal(calls.create.length, 0); assert.equal(runtime.leaderState.creation, null);
+  delete runtime.config.leaderAgentPreset;
+  assert.equal((await invoke('create')).ok, true);
+  assert.equal(calls.create[0].agentPreset, 'gitlab-issue-leader'); assert.equal(runtime.leaderProjection().creation.agentPreset, 'gitlab-issue-leader');
+});
+
+test('empty leaderAgentPreset and a broken default fall back to the host default preset', async () => {
+  for (const variant of ['empty', 'broken']) {
+    const { runtime, invoke, calls } = fixture();
+    runtime.leaderServicesContext = { agentPresets: { async resolve(id) { return { id, broken: 'missing plugin' }; } } };
+    if (variant === 'empty') runtime.config.leaderAgentPreset = '';
+    assert.equal((await invoke('create')).ok, true); assert.equal('agentPreset' in calls.create[0], false);
+  }
+});
+
+test('unenroll + re-enroll keeps the spent budget; only an explicit reset grants a new one', async () => {
+  const { runtime, setup, invoke, issue, advance } = fixture(); await setup();
+  runtime.leaderState.items[0].actions = 20;
+  assert.equal((await invoke('unenroll', issue())).ok, true); assert.equal((await invoke('enroll', issue())).ok, true);
+  assert.equal(runtime.leaderState.items[0].actions, 20); assert.equal((await advance()).ok, false);
+  // Observation already parked the exhausted Issue as needs-human; resume is refused until an explicit reset.
+  assert.equal(runtime.leaderState.items[0].paused, true); assert.equal((await invoke('resumeIssue', issue())).ok, false);
+  assert.equal((await invoke('resetIssueBudget', issue())).ok, true); assert.equal(runtime.leaderState.items[0].actions, 0);
+  assert.equal(runtime.leaderState.items[0].paused, true); assert.equal((await invoke('resumeIssue', issue())).ok, true);
+  const result = await advance(); assert.equal(result.ok, true, result.error);
+  assert.equal((await invoke('resetIssueBudget', issue(), createLeaderAgentCaller({ sessionId: 'leader', agentId: 'verified-agent' }))).ok, false);
+});
+
+test('human can resolve an uncertain advance; nothing is resent automatically', async () => {
+  const { runtime, setup, invoke, issue, advance, calls } = fixture(); await setup();
+  runtime.leaderAdapter.deliver = async () => { throw new Error('socket closed'); };
+  assert.equal((await advance()).ok, false);
+  assert.equal(runtime.leaderState.outbox.at(-1).status, 'uncertain'); assert.equal(runtime.leaderState.items[0].status, 'unknown');
+  assert.equal((await invoke('resolveDelivery', { requestId: 'nope', resolution: 'delivered' })).ok, false);
+  assert.equal((await invoke('resolveDelivery', { requestId: 'advance-a', resolution: 'maybe' })).ok, false);
+  assert.equal((await invoke('resolveDelivery', { requestId: 'advance-a', resolution: 'not-delivered' })).ok, true);
+  assert.equal(runtime.leaderState.outbox.find((entry) => entry.requestId === 'advance-a').status, 'rejected');
+  assert.equal((await invoke('resolveDelivery', { requestId: 'advance-a', resolution: 'delivered' })).ok, false);
+  assert.equal((await invoke('resumeIssue', issue())).ok, true);
+  runtime.leaderAdapter.deliver = async (request) => { calls.deliver.push(copy(request)); return { ok: true, status: 'delivered', requestId: request.requestId }; };
+  const result = await advance({ requestId: 'advance-a-retry' }); assert.equal(result.ok, true, result.error);
+  assert.equal(calls.deliver.length, 1);
+});
+
+test('uncertain Leader notify can be resolved by the human and start is allowed again', async () => {
+  const { runtime, invoke, issue } = fixture();
+  assert.equal((await invoke('create')).ok, true); assert.equal((await invoke('enroll', issue())).ok, true);
+  const notify = runtime.leaderAdapter.notify;
+  runtime.leaderAdapter.notify = async () => { throw new Error('lost receipt'); };
+  assert.equal((await invoke('start')).ok, false); assert.equal(runtime.leaderProjection().runState, 'delivery-uncertain');
+  assert.equal((await invoke('start')).ok, false);
+  const pending = runtime.leaderProjection().deliveries; assert.equal(pending.length, 1); assert.equal(pending[0].kind, 'notify');
+  assert.equal((await invoke('resolveDelivery', { requestId: pending[0].requestId, resolution: 'delivered' })).ok, true);
+  assert.equal(runtime.leaderState.phase, 'paused');
+  runtime.leaderAdapter.notify = notify; assert.equal((await invoke('start')).ok, true);
+});
+
+test('uncertain Leader creation can be abandoned or claimed, never silently recreated', async () => {
+  for (const resolution of ['abandon', 'claim']) {
+    const { runtime, invoke, calls } = fixture();
+    const create = runtime.host.createSession;
+    runtime.host.createSession = async () => { throw new Error('timeout'); };
+    assert.equal((await invoke('create')).ok, false); assert.equal(runtime.leaderProjection().runState, 'creation-uncertain');
+    assert.equal((await invoke('create')).ok, false);
+    runtime.host.createSession = create;
+    if (resolution === 'abandon') {
+      assert.equal((await invoke('resolveCreation', { resolution: 'abandon' })).ok, true);
+      assert.equal(runtime.leaderState.abandonedCreations.length, 1); assert.equal(runtime.leaderState.phase, 'not-created');
+      assert.equal((await invoke('create')).ok, true); assert.equal(calls.create.length, 1);
+    } else {
+      assert.equal((await invoke('resolveCreation', { resolution: 'claim', sessionId: 'worker-a' })).ok, false);
+      assert.equal((await invoke('resolveCreation', { resolution: 'claim', sessionId: 'ghost' })).ok, false);
+      const claimed = await invoke('resolveCreation', { resolution: 'claim', sessionId: 'outside' }); assert.equal(claimed.ok, true, claimed.error);
+      assert.equal(runtime.leaderState.sessionId, 'outside'); assert.equal(runtime.leaderState.creation.status, 'ready');
+      assert.equal(calls.create.length, 0); assert.deepEqual(calls.rename.at(-1), ['outside', 'GitLab Issue Leader']);
+    }
+  }
+});
+
+test('projection exposes run state, budgets and standby items while the Leader is paused', async () => {
+  const { runtime, invoke, issue, setup } = fixture();
+  assert.equal((await invoke('create')).ok, true); assert.equal(runtime.leaderProjection().runState, 'never-started');
+  assert.equal((await invoke('enroll', issue())).ok, true); assert.equal(runtime.leaderProjection().items[0].status, 'standby');
+  assert.equal((await invoke('start')).ok, true);
+  let projection = runtime.leaderProjection();
+  assert.equal(projection.runState, 'running'); assert.equal(projection.items[0].status, 'watching');
+  assert.equal(projection.items[0].maxActions, 20); assert.equal(typeof projection.run.expiresAt, 'number'); assert.equal(projection.run.wakeups, 1);
+  assert.equal((await invoke('pause')).ok, true); projection = runtime.leaderProjection();
+  assert.equal(projection.runState, 'paused'); assert.equal(projection.items[0].status, 'standby'); assert.equal(projection.run.expiresAt, null);
+  const reloaded = normalizeLeaderState(JSON.parse(JSON.stringify({ ...runtime.leaderState, enabled: true })));
+  assert.equal(reloaded.items[0].status, 'standby'); void setup;
+});
+
+test('snapshot gives the Leader a read-only overview of every Issue session', async () => {
+  const { setup, invoke, agent } = fixture(); await setup();
+  const snapshot = await invoke('snapshot', {}, agent()); assert.equal(snapshot.ok, true);
+  const issues = snapshot.result.issues; assert.equal(issues.length, 2);
+  assert.deepEqual(issues.map((item) => [item.taskId, item.sessionId, item.enrolled]), [['issue-1-a', 'worker-a', true], ['issue-1-b', 'worker-b', false]]);
+  assert.equal(issues.every((item) => item.untrusted === true), true);
+});
+
+test('paused Issues are observed by state only and items are observed concurrently', async () => {
+  const { runtime, setup, invoke, issue, calls } = fixture(); await setup(2);
+  let active = 0; let peak = 0; const observe = runtime.leaderAdapter.observe;
+  runtime.leaderAdapter.observe = async (...args) => { active += 1; peak = Math.max(peak, active); await new Promise((resolve) => setTimeout(resolve, 10)); try { return await observe(...args); } finally { active -= 1; } };
+  await runtime.reconcileLeader(); assert.equal(peak, 2);
+  assert.equal((await invoke('pauseIssue', issue('b'))).ok, true);
+  calls.observe.length = 0; await runtime.reconcileLeader();
+  assert.deepEqual(calls.observe.map(([sessionId]) => sessionId), ['worker-a']);
+});
+
+test('unchanged Leader journal is not rewritten', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'workstation-leader-'));
+  try {
+    const { runtime, invoke } = fixture(); runtime.storageDirectory = () => directory; runtime.persistLeader = leaderMethods.persistLeader;
+    await runtime.loadLeader(); assert.equal((await invoke('create')).ok, true);
+    const file = join(directory, 'leader.json'); await rm(file);
+    await runtime.persistLeader(); await assert.rejects(readFile(file, 'utf8'));
+    runtime.leaderState.settings = { ...runtime.leaderState.settings }; runtime.leaderState.epoch += 1;
+    await runtime.persistLeader(); assert.equal(JSON.parse(await readFile(file, 'utf8')).epoch, runtime.leaderState.epoch);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

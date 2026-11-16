@@ -622,7 +622,7 @@ test('Leader snapshot alone uses read-only POST and carries no session creation 
   assert.deepEqual(JSON.parse(calls[0].options.body), { action: 'leader', operation: 'snapshot' });
 });
 
-test('all eight Leader mutations use authenticated native RPC and unwrap ConnectionRpcResult.value', async () => {
+test('all Leader mutations use authenticated native RPC and unwrap ConnectionRpcResult.value', async () => {
   const { callLeader, LEADER_RPC_OPERATIONS } = await loadLeaderHelpers();
   const calls = [];
   const value = { ok: true, result: { ok: true }, projection: leaderProjection() };
@@ -630,14 +630,15 @@ test('all eight Leader mutations use authenticated native RPC and unwrap Connect
     assert.equal(this, rpc); calls.push({ channel, operation, payload, signal }); return { ok: true, value };
   } };
   const ctx = { connection: { rpc } };
-  const operations = ['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue'];
+  const operations = ['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue',
+    'resetIssueBudget', 'resolveDelivery', 'resolveCreation'];
   assert.deepEqual(Array.from(LEADER_RPC_OPERATIONS), operations);
   for (const operation of operations) {
     const payload = operation === 'configure' ? { settings: { model: { provider: 'p', model: 'm', reasoningEffort: 'high' }, autoEnrollNew: false } }
       : ['enroll', 'unenroll', 'pauseIssue', 'resumeIssue'].includes(operation) ? { taskId: 'issue:7', sessionId: 'worker-7' } : {};
     assert.equal(await callLeader(ctx, operation, payload), value);
   }
-  assert.equal(calls.length, 8);
+  assert.equal(calls.length, operations.length);
   calls.forEach((call, index) => {
     assert.equal(call.channel, '/gitlab-workstation-leader'); assert.equal(call.operation, operations[index]);
     assert.equal(call.signal.aborted, false); assert.equal(typeof call.signal.addEventListener, 'function');
@@ -675,7 +676,8 @@ test('Leader native RPC errors, missing value, absent connection and cancellatio
 test('Leader projections require real settings and phase, keep default off, and sanitize uncertain workers', async () => {
   const { normalizeLeaderProjection, canGrantLeaderAccess, canCreateLeader, validLeaderSessionId } = await loadLeaderHelpers();
   const initial = normalizeLeaderProjection(leaderProjection());
-  assert.deepEqual(plain(initial), leaderProjection());
+  assert.deepEqual(plain(initial), { ...leaderProjection(), runState: '', creation: null, deliveries: [],
+    run: { expiresAt: null, wakeups: null, maxWakeups: null, lastStartedAt: null } });
   assert.equal(canGrantLeaderAccess(initial), false);
   assert.equal(canCreateLeader(initial, null, false), true);
   assert.equal(canCreateLeader(initial, 'known-id', false), false);
@@ -845,7 +847,7 @@ test('Leader controls are optional and compact, enrollment is explicit in active
   assert.match(leader, /t\('leaderScope'\)/);
   assert.match(leader, /t\('leaderNativeHuman'\)/);
   assert.match(leader, /t\('leaderResumeHint'\)/);
-  assert.match(source, /\['paused', 'needs-human'\]\.includes\(item\.status\) && h\(Button/);
+  assert.match(source, /\(item\.paused \|\| \['paused', 'needs-human'\]\.includes\(item\.status\)\) && h\(Button/);
   assert.match(source, /confirmLeaderAccess\('resumeIssue', \{ taskId: item\.taskId, sessionId: item\.sessionId \}/);
   assert.match(leader, /role: 'region', 'aria-label': t\('leaderConfirm'\)/);
   assert.doesNotMatch(leader, /role: 'dialog'|aria-modal|prompt\(|post\('answer'|post\('approval'|question\/answer|approval\/answer/);
@@ -856,4 +858,29 @@ test('Leader controls are optional and compact, enrollment is explicit in active
   assert.match(leader, /withReasoningEffort\(leaderModel, event\.target\.value\)/);
   assert.doesNotMatch(leader, /updateSettings\(|issueSessionModel|issueSessionCwd/);
   assert.match(source, /\.gta-leader-settings select\{min-height:28px\}/);
+});
+
+test('hardened Leader projection exposes run state, budgets and unconfirmed deliveries; abandon releases the create latch', async () => {
+  const { normalizeLeaderProjection, readLeaderResponse, en, zh } = await loadLeaderHelpers();
+  const projection = normalizeLeaderProjection(leaderProjection({ sessionId: 'leader-1', phase: 'paused', runState: 'never-started',
+    creation: { status: 'ready', createdAt: 5, agentPreset: 'gitlab-issue-leader' }, run: { expiresAt: null, wakeups: 0, maxWakeups: 100, lastStartedAt: null },
+    deliveries: [{ requestId: 'r1', kind: 'advance', taskId: 'issue:7', sessionId: 'worker-7', status: 'uncertain', error: 'lost', createdAt: 9 },
+      { requestId: 'r2', kind: 'bogus' }, null],
+    items: [{ taskId: 'issue:7', sessionId: 'worker-7', status: 'standby', paused: false, actions: 20, maxActions: 20, expiresAt: -1, alerts: [] },
+      { taskId: 'issue:8', sessionId: 'worker-8', status: 'cold', paused: 'yes', actions: '3', alerts: [] }] }));
+  assert.equal(projection.runState, 'never-started'); assert.equal(projection.creation.agentPreset, 'gitlab-issue-leader');
+  assert.equal(projection.deliveries.length, 1); assert.equal(projection.deliveries[0].requestId, 'r1');
+  assert.deepEqual(projection.items.map((item) => [item.status, item.paused, item.actions, item.maxActions, item.expiresAt]),
+    [['standby', false, 20, 20, null], ['cold', false, null, null, null]]);
+  assert.equal(normalizeLeaderProjection(leaderProjection({ runState: 'bogus' })).runState, '');
+  const t = (key) => en[key];
+  const abandoned = readLeaderResponse({ ok: true, result: { ok: true }, projection: leaderProjection({ runState: 'not-created' }) }, 'resolveCreation', null, t);
+  assert.equal(abandoned.creationAbsent, true);
+  const failed = readLeaderResponse({ ok: true, result: { ok: false, error: 'x' }, projection: leaderProjection() }, 'resolveCreation', null, t);
+  assert.equal(failed.creationAbsent, false);
+  assert.equal(readLeaderResponse({ ok: true, result: { ok: true }, projection: leaderProjection() }, 'resolveDelivery', null, t).creationAbsent, false);
+  for (const key of ['leaderNeverStartedHint', 'leaderResetBudget', 'leaderDeliveries', 'leaderClaim', 'leaderAbandon', 'leaderStandby', 'leaderCold']) {
+    assert.ok(en[key] && zh[key], key);
+  }
+  assert.match(zh.leaderNeverStartedHint, /New Session/);
 });

@@ -40,7 +40,7 @@ const schemas = {
 
 /** Thin native adapter, owned by the Workstation plugin; never calls session/prompt.
  * options.dependencies injects the official factory/binder in focused Node tests.
- * Cold Sessions stay cold: explicit human resume is required in this MVP.
+ * Observation never activates cold Sessions; only prepareWorker does, from trusted Host paths.
  */
 export function createLeaderAgentAdapter(runtime, options = {}) {
   const ctx = runtime.ctx;
@@ -171,6 +171,26 @@ export function createLeaderAgentAdapter(runtime, options = {}) {
         if (result?.error || !result?.agent || result.agent !== live(sessionId)) return failure(null, String(result?.error?.message ?? '原生 Leader 激活身份不可验证。'));
       }
       if (!await refreshBindings()) return failure(null, 'unavailable：Leader 限定工具不能绑定，未准备就绪。');
+      return { ok: true, status: 'prepared', sessionId };
+    } catch (error) { return failure(null, String(error?.message ?? error).slice(0, 1000)); }
+  }
+
+  /** Resume one explicitly enrolled, quiet worker as a resident Agent so guarded idle CAS can apply.
+   * Only trusted Host paths call this: explicit UI start/resume, or an advance already authorized
+   * by the running Leader. It never targets the Leader or an unmanaged session, and never delivers.
+   */
+  async function prepareWorker(sessionId) {
+    if (stopped || !boundedId(sessionId) || sessionId === selected()
+      || runtime.isLeaderManagedSession?.(sessionId) !== true) return failure(null, '只能激活已显式纳管的 worker 会话。');
+    const archived = ctx.workspaceRegistry?.archivedSessionIds;
+    if (!Array.isArray(archived) || !archived.every((id) => typeof id === 'string') || archived.includes(sessionId)) return failure(null, 'worker 已归档或归档状态未知。');
+    try {
+      if (live(sessionId)) return { ok: true, status: 'prepared', sessionId };
+      const controller = serviceContext()?.sessionController;
+      if (typeof controller?.resolveAgent !== 'function') return failure(null, 'unavailable：公开 SessionController 不可用，请人类打开 worker 会话。');
+      const result = await controller.resolveAgent(sessionId);
+      if (result?.error || !result?.agent || result.agent !== live(sessionId)) return failure(null, String(result?.error?.message ?? 'worker 激活身份不可验证。').slice(0, 1000));
+      if (stopped || runtime.isLeaderManagedSession?.(sessionId) !== true) return failure(null, '激活期间纳管权限已改变。');
       return { ok: true, status: 'prepared', sessionId };
     } catch (error) { return failure(null, String(error?.message ?? error).slice(0, 1000)); }
   }
@@ -341,6 +361,6 @@ export function createLeaderAgentAdapter(runtime, options = {}) {
   return {
     get capabilities() { const enabled = infrastructure() && bindings.has(live(selected())); return { atomicIdleDelivery: enabled, nonHumanSource: enabled }; },
     observe, deliver: (request) => send(request, 'advance'), notify: (request) => send(request, 'notify'),
-    prepare, refreshBindings, state, dispose,
+    prepare, prepareWorker, refreshBindings, state, dispose,
   };
 }

@@ -83,3 +83,13 @@ test('packaged entrypoints exist and the syntax check covers every runtime modul
   assert.ok(manifest.files.includes('locale/*.json'));
   assert.ok(manifest.files.includes('icon.svg'));
 });
+
+test('bundle ships the tool-less Issue Leader preset used by default', async () => {
+  const { DEFAULT_LEADER_AGENT_PRESET } = await import('../core.js');
+  const patch = await read('cordis.patch.yml');
+  assert.equal(DEFAULT_LEADER_AGENT_PRESET, 'gitlab-issue-leader');
+  assert.match(patch, /- id: preset-gitlab-issue-leader\r?\n\s+name: '@deepseek-ai\/dsh-agent-preset'\r?\n\s+config:\r?\n\s+id: gitlab-issue-leader\r?\n/);
+  const names = [...patch.matchAll(/name: '(@deepseek-ai\/[^']+)'/g)].map((match) => match[1]);
+  assert.deepEqual(names, ['@deepseek-ai/dsh-agent-preset', '@deepseek-ai/dsh-persona', '@deepseek-ai/dsh-compaction-basic', '@deepseek-ai/dsh-command-compact']);
+  assert.doesNotMatch(patch, /tool-|shell|web-fetch|dsh-tool/);
+});

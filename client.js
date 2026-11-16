@@ -138,6 +138,17 @@ window.__ModuleLoader__.load({
       leaderNotCreated: 'Not created · off', leaderReady: 'Ready', leaderPaused: 'Paused', leaderUncertain: 'Uncertain', leaderErrorPhase: 'Error',
       leaderWatching: 'Watching', leaderRunning: 'Running', leaderNeedsHuman: 'Needs you', leaderArchived: 'Archived', leaderMissing: 'Missing', leaderUnknown: 'Unknown',
       leaderRefresh: 'Refresh Leader status', leaderWorking: 'Updating Leader…', leaderSaved: 'Leader updated',
+      leaderStandby: 'Standby', leaderCold: 'Not loaded', leaderNeverStartedPhase: 'Created · not started', leaderDeliveryUncertain: 'Delivery unconfirmed',
+      leaderNeverStartedHint: 'Leader is created but supervision has not started. Until you click "Start supervision", the Leader session stays blank and DSH shows it as "New Session". This is not a failed creation; do not create another Leader.',
+      leaderPausedHint: 'Supervision is paused. Managed Issues are on standby; start supervision again to let Leader report progress here.',
+      leaderMainWindow: 'Leader is your main window: once supervision runs, it posts progress for every Issue session in its own conversation.',
+      leaderBudget: 'Actions', leaderResetBudget: 'Reset budget',
+      leaderResetBudgetHint: 'Grants this Issue a fresh action budget and lease. A paused Issue still needs an explicit resume.',
+      leaderDeliveries: 'Unconfirmed deliveries',
+      leaderDeliveriesHint: 'The Host could not confirm whether these messages arrived. Open the target session, check, then record the result. Nothing is resent automatically.',
+      leaderDelivered: 'It arrived', leaderNotDelivered: 'It did not arrive', leaderDeliveryOpen: 'Open target session',
+      leaderCreationUnresolved: 'A previous creation never confirmed its session ID. Check the session list: if a "GitLab Issue Leader" session exists, paste its ID and claim it; if none exists, abandon the record and create again.',
+      leaderClaim: 'Claim this session', leaderClaimPlaceholder: 'Leader session ID', leaderAbandon: 'No Leader exists, abandon record',
       logsTitle: 'Log', logsEmpty: 'No runtime log entries yet.',
       logsError: 'Could not load the runtime log', logsClear: 'Clear log', confirmClearLogs: 'Confirm clear log?',
       logsDropped: 'entries dropped (over the memory cap)', logsFilterAll: 'All', logsFilterWarn: 'Warnings+',
@@ -278,6 +289,17 @@ window.__ModuleLoader__.load({
       leaderNotCreated: '未创建 · 关闭', leaderReady: '就绪', leaderPaused: '已暂停', leaderUncertain: '不确定', leaderErrorPhase: '错误',
       leaderWatching: '观察中', leaderRunning: '执行中', leaderNeedsHuman: '需人工', leaderArchived: '已归档', leaderMissing: '不存在', leaderUnknown: '未知',
       leaderRefresh: '刷新 Leader 状态', leaderWorking: '正在更新 Leader…', leaderSaved: 'Leader 已更新',
+      leaderStandby: '待命', leaderCold: '未加载', leaderNeverStartedPhase: '已创建 · 未启动', leaderDeliveryUncertain: '投递待核对',
+      leaderNeverStartedHint: 'Leader 已创建，但尚未启动托管。点击“启动托管”之前，Leader 会话是空白的，DSH 会把它显示为“New Session”。这不是创建失败，请不要重复创建 Leader。',
+      leaderPausedHint: '托管已暂停，纳管的 Issue 处于待命状态；重新启动托管后，Leader 会继续在其会话里汇报进度。',
+      leaderMainWindow: 'Leader 会话是你的主窗口：托管运行时，它会在自己的对话里汇报每个 Issue 会话的进度。',
+      leaderBudget: '推进次数', leaderResetBudget: '重置预算',
+      leaderResetBudgetHint: '为该 Issue 重新发放推进预算和托管时限；已暂停的 Issue 仍需显式恢复。',
+      leaderDeliveries: '未确认投递',
+      leaderDeliveriesHint: 'Host 无法确认这些消息是否已送达。请打开目标会话核对后记录结果；无论选择哪项都不会自动重发。',
+      leaderDelivered: '已送达', leaderNotDelivered: '未送达', leaderDeliveryOpen: '打开目标会话',
+      leaderCreationUnresolved: '之前的一次创建没有确认会话 ID。请检查会话列表：如果存在“GitLab Issue Leader”会话，填入它的 ID 并认领；如果不存在，放弃该记录后重新创建。',
+      leaderClaim: '认领此会话', leaderClaimPlaceholder: 'Leader 会话 ID', leaderAbandon: '确认不存在，放弃该记录',
       logsTitle: '日志', logsEmpty: '暂无运行时日志。',
       logsError: '无法加载运行时日志', logsClear: '清空日志', confirmClearLogs: '确认清空日志？',
       logsDropped: '条因超出内存上限被丢弃', logsFilterAll: '全部', logsFilterWarn: '警告及以上',
@@ -317,7 +339,8 @@ window.__ModuleLoader__.load({
     // 写操作必须显式覆盖 issues/logs 等只读 action 的默认 GET，否则刷新和清空只会读取缓存。
     const post = (action, payload, signal) => bridge(action, { method: 'POST', payload, signal });
 
-    const LEADER_RPC_OPERATIONS = ['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue'];
+    const LEADER_RPC_OPERATIONS = ['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue',
+      'resetIssueBudget', 'resolveDelivery', 'resolveCreation'];
     /** Native ConnectionRpcResult, not RemoteResult or HTTP: Host authenticates the browser peer. */
     async function callLeader(ctx, operation, payload = {}, signal) {
       if (!LEADER_RPC_OPERATIONS.includes(operation)) throw new Error(bridgeText('leaderInvalidResponse'));
@@ -682,7 +705,9 @@ window.__ModuleLoader__.load({
     }
 
     const LEADER_PHASE_LABELS = { 'not-created': 'leaderNotCreated', ready: 'leaderReady', paused: 'leaderPaused', error: 'leaderErrorPhase', uncertain: 'leaderUncertain' };
-    const LEADER_STATUS_LABELS = { watching: 'leaderWatching', running: 'leaderRunning', 'needs-human': 'leaderNeedsHuman', paused: 'leaderPaused', archived: 'leaderArchived', missing: 'leaderMissing', unknown: 'leaderUnknown' };
+    const LEADER_STATUS_LABELS = { watching: 'leaderWatching', running: 'leaderRunning', 'needs-human': 'leaderNeedsHuman', paused: 'leaderPaused', archived: 'leaderArchived', missing: 'leaderMissing', unknown: 'leaderUnknown',
+      standby: 'leaderStandby', cold: 'leaderCold' };
+    const LEADER_RUN_STATES = ['error', 'creation-uncertain', 'not-created', 'setup-incomplete', 'delivery-uncertain', 'running', 'paused', 'never-started'];
 
     function validLeaderSessionId(value) {
       return typeof value === 'string' && value.length > 0 && value.trim() === value && !/[\u0000-\u001f]/u.test(value);
@@ -694,11 +719,23 @@ window.__ModuleLoader__.load({
         || (value.sessionId !== null && !validLeaderSessionId(value.sessionId))
         || !value.settings || typeof value.settings.autoEnrollNew !== 'boolean' || !Array.isArray(value.items)) return null;
       const text = (item) => typeof item === 'string' ? item : '';
+      const count = (item) => Number.isSafeInteger(item) && item >= 0 ? item : null;
       const model = value.settings.model;
       if (model !== null && (!model || !text(model.provider) || !text(model.model)
         || (model.reasoningEffort !== undefined && !text(model.reasoningEffort)))) return null;
       return {
         enabled: value.enabled, sessionId: validLeaderSessionId(value.sessionId) ? value.sessionId : null, phase: value.phase,
+        // Hosts before the hardening release omit these; '' / null keep the old behaviour.
+        runState: LEADER_RUN_STATES.includes(value.runState) ? value.runState : '',
+        creation: value.creation && typeof value.creation === 'object'
+          ? { status: text(value.creation.status), createdAt: count(value.creation.createdAt), agentPreset: text(value.creation.agentPreset) } : null,
+        run: { expiresAt: count(value.run?.expiresAt), wakeups: count(value.run?.wakeups), maxWakeups: count(value.run?.maxWakeups),
+          lastStartedAt: count(value.run?.lastStartedAt) },
+        deliveries: (Array.isArray(value.deliveries) ? value.deliveries : [])
+          .filter((entry) => entry && text(entry.requestId) && ['advance', 'notify'].includes(entry.kind))
+          .map((entry) => ({ requestId: entry.requestId, kind: entry.kind, taskId: text(entry.taskId),
+            sessionId: validLeaderSessionId(entry.sessionId) ? entry.sessionId : null, status: text(entry.status),
+            error: text(entry.error), createdAt: count(entry.createdAt) })),
         settings: { model: model && text(model.provider) && text(model.model)
           ? withReasoningEffort({ provider: model.provider, model: model.model }, text(model.reasoningEffort)) : null,
           autoEnrollNew: value.settings.autoEnrollNew },
@@ -707,6 +744,7 @@ window.__ModuleLoader__.load({
           title: text(item.title), url: text(item.url),
           status: Object.hasOwn(LEADER_STATUS_LABELS, item.status) ? item.status : 'unknown',
           summary: text(item.summary), error: text(item.error),
+          paused: item.paused === true, actions: count(item.actions), maxActions: count(item.maxActions), expiresAt: count(item.expiresAt),
           alerts: (Array.isArray(item.alerts) ? item.alerts : []).filter((alert) => alert && text(alert.question)).map((alert) => ({
             id: text(alert.id), question: alert.question, status: text(alert.status), createdAt: alert.createdAt,
           })),
@@ -723,7 +761,8 @@ window.__ModuleLoader__.load({
         && (operation === 'snapshot' ? data.result?.ok !== false : data.result?.ok === true);
       // Only a successful serialized Host snapshot can release an attempted create.
       // Unknown, failed or partial reads must retain the latch and any known ID.
-      const creationAbsent = operation === 'snapshot' && success && !projection.error
+      // A successful serialized abandon of the uncertain record is equally authoritative.
+      const creationAbsent = ['snapshot', 'resolveCreation'].includes(operation) && success && !projection.error
         && projection.phase === 'not-created' && !projection.enabled && !sessionId;
       return { projection, sessionId, state: data?.state, creationAbsent,
         error: !success ? data?.result?.error || projection?.error || t('leaderInvalidResponse') : projection.error || '' };
@@ -995,6 +1034,7 @@ window.__ModuleLoader__.load({
       const [leaderFresh, setLeaderFresh] = React.useState(false);
       const [leaderFeedback, setLeaderFeedback] = React.useState('');
       const [leaderConfirm, setLeaderConfirm] = React.useState(null);
+      const [leaderClaimId, setLeaderClaimId] = React.useState('');
       const leaderActiveRef = React.useRef(false);
       const leaderActionRef = React.useRef('');
       const leaderGuard = React.useRef(null);
@@ -1051,6 +1091,8 @@ window.__ModuleLoader__.load({
             && !canRetryLeaderSetup(leaderViewRef.current.projection, leaderViewRef.current.sessionId)))) return Promise.resolve(false);
         if (['start', 'enroll', 'resumeIssue'].includes(operation)
           && (!leaderFresh || !canGrantLeaderAccess(leaderViewRef.current.projection))) return Promise.resolve(false);
+        // Recovery operations are human assertions about the latest Host state; never act on a stale view.
+        if (['resetIssueBudget', 'resolveDelivery', 'resolveCreation'].includes(operation) && !leaderFresh) return Promise.resolve(false);
         if (operation === 'configure') {
           if (!leaderFresh || !leaderViewRef.current.projection || ['error', 'uncertain'].includes(leaderViewRef.current.projection.phase)) return Promise.resolve(false);
           payload = { settings: { ...leaderViewRef.current.projection.settings, ...payload.settings } };
@@ -1426,13 +1468,21 @@ window.__ModuleLoader__.load({
       const leaderCanConfigure = leaderFresh && !leaderBusy && leaderProjection && !['error', 'uncertain'].includes(leaderProjection.phase);
       const leaderItems = leaderProjection?.items ?? [];
       const leaderHuman = leaderHumanItems(leaderProjection);
+      const leaderRunState = leaderProjection?.runState || '';
       const leaderPhaseLabel = !leaderFresh ? t('leaderUncertain') : leaderProjection?.enabled && leaderProjection.phase === 'ready'
-        ? t('enabled') : t(LEADER_PHASE_LABELS[leaderProjection?.phase] || 'leaderUncertain');
+        ? t('enabled') : leaderRunState === 'never-started' ? t('leaderNeverStartedPhase')
+          : leaderRunState === 'delivery-uncertain' ? t('leaderDeliveryUncertain') : t(LEADER_PHASE_LABELS[leaderProjection?.phase] || 'leaderUncertain');
+      const leaderDeliveries = (leaderProjection?.deliveries ?? []).filter((entry) => entry.status === 'uncertain');
+      const leaderCreationUnresolved = leaderFresh && leaderRunState === 'creation-uncertain';
+      const leaderBudgetSpent = (item) => item.actions !== null && item.maxActions !== null && item.actions >= item.maxActions
+        || (item.expiresAt !== null && item.expiresAt <= Date.now());
       const leaderItemActions = (item) => h('div', { className: 'gta-todo-actions' },
         item.sessionId && h(Button, { onClick: (event) => openManagedIssue(item, event.currentTarget) }, t('openSession')),
-        ['watching', 'running', 'needs-human'].includes(item.status) && h(Button, { disabled: !leaderFresh || Boolean(leaderBusy),
+        ['watching', 'running', 'needs-human', 'standby', 'cold'].includes(item.status) && !item.paused && h(Button, { disabled: !leaderFresh || Boolean(leaderBusy),
           onClick: () => { void runLeader('pauseIssue', { taskId: item.taskId, sessionId: item.sessionId }); } }, t('leaderPauseIssue')),
-        ['paused', 'needs-human'].includes(item.status) && h(Button, { disabled: !leaderCanGrant || !item.sessionId,
+        leaderBudgetSpent(item) && h(Button, { disabled: !leaderFresh || Boolean(leaderBusy) || !item.sessionId, title: t('leaderResetBudgetHint'),
+          onClick: () => { void runLeader('resetIssueBudget', { taskId: item.taskId, sessionId: item.sessionId }); } }, t('leaderResetBudget')),
+        (item.paused || ['paused', 'needs-human'].includes(item.status)) && h(Button, { disabled: !leaderCanGrant || !item.sessionId,
           onClick: () => confirmLeaderAccess('resumeIssue', { taskId: item.taskId, sessionId: item.sessionId }, item.title) }, t('leaderResumeIssue')),
         h(Button, { disabled: !leaderFresh || Boolean(leaderBusy),
           onClick: () => { void runLeader('unenroll', { taskId: item.taskId, ...(item.sessionId ? { sessionId: item.sessionId } : {}) }); } }, t('leaderUnenroll')),
@@ -1890,6 +1940,31 @@ window.__ModuleLoader__.load({
               (leaderView.error || leaderView.pollError || leaderProjection?.error) && h('div', { className: 'gta-banner gta-warn', role: 'status' },
                 `${t(leaderView.pollError && !leaderView.error ? 'leaderSnapshotError' : 'leaderError')}${colon()}${leaderView.error || leaderView.pollError || leaderProjection.error}`),
               (leaderBusy || leaderFeedback) && h('div', { className: 'gta-feedback gta-muted', role: 'status' }, leaderBusy ? t('leaderWorking') : leaderFeedback),
+              leaderFresh && leaderRunState === 'never-started' && h('div', { className: 'gta-banner gta-warn', role: 'status' }, t('leaderNeverStartedHint')),
+              leaderFresh && leaderRunState === 'paused' && h('p', { className: 'gta-muted' }, t('leaderPausedHint')),
+              leaderFresh && leaderRunState === 'running' && h('p', { className: 'gta-muted' }, t('leaderMainWindow')),
+              leaderCreationUnresolved && h('div', { className: 'gta-banner gta-warn gta-leader-confirm', role: 'region', 'aria-label': t('leaderCreateUncertain') },
+                h('p', null, t('leaderCreationUnresolved')),
+                h('div', { className: 'gta-form-actions' },
+                  h('input', { type: 'text', value: leaderClaimId, placeholder: t('leaderClaimPlaceholder'), 'aria-label': t('leaderClaimPlaceholder'),
+                    onChange: (event) => setLeaderClaimId(event.target.value) }),
+                  h(Button, { disabled: Boolean(leaderBusy) || !validLeaderSessionId(leaderClaimId.trim()),
+                    onClick: () => { void runLeader('resolveCreation', { resolution: 'claim', sessionId: leaderClaimId.trim() }); } }, t('leaderClaim')),
+                  h(Button, { disabled: Boolean(leaderBusy),
+                    onClick: () => { void runLeader('resolveCreation', { resolution: 'abandon' }); } }, t('leaderAbandon')),
+                )),
+              leaderFresh && leaderDeliveries.length > 0 && h('div', { className: 'gta-banner gta-warn', role: 'region', 'aria-label': t('leaderDeliveries') },
+                h('strong', null, `${t('leaderDeliveries')} ${leaderDeliveries.length}`),
+                h('p', null, t('leaderDeliveriesHint')),
+                leaderDeliveries.map((entry) => h('div', { key: entry.requestId, className: 'gta-form-actions' },
+                  h('span', { className: 'gta-muted gta-meta' }, `${entry.kind === 'notify' ? t('leaderTitle') : entry.taskId} · ${entry.sessionId || ''}${entry.createdAt ? ` · ${formatTime(entry.createdAt, '')}` : ''}`),
+                  entry.sessionId && h(Button, { onClick: (event) => entry.kind === 'notify' ? openLeader(event.currentTarget)
+                    : openManagedIssue({ taskId: entry.taskId, sessionId: entry.sessionId, title: entry.taskId, url: '' }, event.currentTarget) }, t('leaderDeliveryOpen')),
+                  h(Button, { disabled: Boolean(leaderBusy),
+                    onClick: () => { void runLeader('resolveDelivery', { requestId: entry.requestId, resolution: 'delivered' }); } }, t('leaderDelivered')),
+                  h(Button, { disabled: Boolean(leaderBusy),
+                    onClick: () => { void runLeader('resolveDelivery', { requestId: entry.requestId, resolution: 'not-delivered' }); } }, t('leaderNotDelivered')),
+                ))),
               h('div', { className: 'gta-form-grid gta-leader-settings' },
                 h('label', null, t('leaderModel'), h('select', {
                   value: sessionModelKey(leaderModel), disabled: !leaderCanConfigure, 'aria-label': t('leaderModel'),
@@ -1925,6 +2000,8 @@ window.__ModuleLoader__.load({
                       h('div', { className: 'gta-todo-title' }, h('span', null, item.title || item.taskId),
                         h('span', { className: `gta-tag ${['needs-human', 'unknown', 'missing'].includes(item.status) ? 'gta-tag-attention' : 'gta-tag-neutral'}` }, t(LEADER_STATUS_LABELS[item.status]))),
                       item.summary && h('div', { className: 'gta-muted gta-meta gta-leader-summary' }, item.summary),
+                      item.actions !== null && item.maxActions !== null && h('div', { className: 'gta-muted gta-meta' },
+                        `${t('leaderBudget')} ${item.actions}/${item.maxActions}${item.expiresAt ? ` · ${formatTime(item.expiresAt, '')}` : ''}`),
                       item.error && h('div', { className: 'gta-muted gta-attention gta-meta' }, item.error),
                     ), leaderItemActions(item),
                   ))),
