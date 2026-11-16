@@ -75,8 +75,10 @@ function fixture() {
 test('default Leader is off with no existing enrollment and independent settings', () => {
   const { runtime } = fixture();
   assert.deepEqual(runtime.leaderProjection(), { enabled: false, sessionId: null, phase: 'not-created', runState: 'not-created',
-    settings: { model: null, autoEnrollNew: false }, creation: null, run: { expiresAt: null, wakeups: 0, maxWakeups: 100, lastStartedAt: null },
-    items: [], deliveries: [], audit: [], tasks: [], events: [], error: '' });
+    settings: { ...initialLeaderState().settings }, creation: null, run: { expiresAt: null, wakeups: 0, maxWakeups: 100, lastStartedAt: null },
+    items: [], previousSessions: [], comments: [], queue: [], completed: [], deliveries: [], audit: [], tasks: [], reports: [], events: [], error: '' });
+  assert.equal(runtime.leaderProjection().settings.maxRunningWorkers, 3);
+  assert.equal(runtime.leaderProjection().settings.archiveOnComplete, true);
   assert.equal(runtime.state.settings.enabled, false);
   assert.equal(Object.keys(runtime.state.handled).length, 2);
   assert.equal(runtime.leaderState.items.length, 0);
@@ -84,7 +86,10 @@ test('default Leader is off with no existing enrollment and independent settings
 
 test('settings validate model independently and reject permission/budget expansion', () => {
   assert.deepEqual(validateLeaderSettings({ model: { provider: ' p ', model: ' m ', reasoningEffort: ' high ' }, autoEnrollNew: true }),
-    { model: { provider: 'p', model: 'm', reasoningEffort: 'high' }, autoEnrollNew: true });
+    { ...initialLeaderState().settings, model: { provider: 'p', model: 'm', reasoningEffort: 'high' }, autoEnrollNew: true });
+  assert.equal(validateLeaderSettings({ maxRunningWorkers: 10, archiveOnComplete: false }).maxRunningWorkers, 10);
+  assert.equal(validateLeaderSettings({ archiveOnComplete: false }).archiveOnComplete, false);
+  for (const settings of [{ maxRunningWorkers: 0 }, { maxRunningWorkers: 11 }, { maxRunningWorkers: 2.5 }, { maxRunningWorkers: '3' }, { archiveOnComplete: 'yes' }]) assert.throws(() => validateLeaderSettings(settings));
   for (const settings of [{ model: {} }, { model: 'm' }, { autoEnrollNew: 1 }, { maxActions: 100 }, { enabled: true }, { model: { provider: 'p', model: 'm', reasoningEffort: '' } }]) assert.throws(() => validateLeaderSettings(settings));
 });
 
@@ -1021,4 +1026,192 @@ test('uncertain ad-hoc creation is never retried and only the human can dismiss 
   const dismissed = await invoke('resolveTask', { taskId, action: 'dismiss' }); assert.equal(dismissed.ok, true, dismissed.error);
   assert.deepEqual(dismissed.result.tasks, []); assert.equal(runtime.leaderProjection().audit.at(-1).action, 'task-dismiss');
   assert.equal((await invoke('resolveTask', { taskId, action: 'dismiss' })).ok, false);
+});
+
+// ---- Leader orchestration (v2.39): running cap + queue, dependencies, completion, Todo routing ----
+
+const gitlabFacts = (patch = {}) => ({ available: true, state: 'opened', mergeRequests: [], ...patch });
+const auditActions = (runtime) => runtime.leaderState.audit.map((entry) => entry.action);
+
+test('running-worker cap queues continue/create FIFO, dedupes, never dequeues while paused and lets the human cancel', async () => {
+  const { runtime, setup, invoke, issue, agent, sessions, calls, advance } = fixture(); await setup(2);
+  const host = withTaskHost(runtime, sessions);
+  assert.equal((await invoke('configure', { settings: { maxRunningWorkers: 1 } })).ok, true);
+  assert.equal(runtime.leaderProjection().settings.maxRunningWorkers, 1);
+  sessions.set('worker-a', sessionState({ running: true })); await runtime.reconcileLeader();
+  const queued = await advance({}, 'b');
+  assert.equal(queued.ok, true, queued.error); assert.equal(queued.result.queued, true); assert.equal(queued.result.position, 1);
+  assert.equal(calls.deliver.length, 0);
+  const again = await advance({ body: '换个说法也算同一个续办请求' }, 'b');
+  assert.equal(again.result.queueId, queued.result.queueId); assert.equal(again.result.duplicate, true);
+  const create = await invoke('createSession', { title: '调查 IAM', brief: '梳理鉴权链路。' }, agent());
+  assert.equal(create.ok, true, create.error); assert.equal(create.result.queued, true); assert.equal(create.result.position, 2);
+  assert.equal(host.created.length, 0);
+  assert.deepEqual(runtime.leaderProjection().queue.map((entry) => [entry.kind, entry.taskId, entry.position]), [['continue', 'issue-1-b', 1], ['create', null, 2]]);
+  // Paused Leader never dequeues, even when slots are free.
+  assert.equal((await invoke('pause')).ok, true);
+  sessions.set('worker-a', sessionState()); await runtime.reconcileLeader();
+  assert.equal(runtime.leaderState.queue.length, 2); assert.equal(calls.deliver.length, 0);
+  assert.equal((await invoke('start')).ok, true);
+  await runtime.reconcileLeader();
+  // FIFO: the continue runs first and occupies the only slot; the create keeps waiting.
+  assert.equal(calls.deliver.length, 1); assert.equal(calls.deliver[0].sessionId, 'worker-b');
+  assert.match(calls.deliver[0].body, /继续核查原 Issue 的 CI 结果/);
+  assert.equal(host.created.length, 0); assert.deepEqual(runtime.leaderState.queue.map((entry) => entry.kind), ['create']);
+  assert.ok(auditActions(runtime).includes('queue')); assert.ok(auditActions(runtime).includes('dequeue'));
+  const queueId = runtime.leaderState.queue[0].id;
+  assert.equal((await invoke('cancelQueued', { queueId }, agent())).ok, false);
+  assert.equal((await invoke('completeIssue', { ...issue('a'), summary: 'x' })).ok, false);
+  assert.equal((await invoke('cancelQueued', { queueId: 'leader-queue-nope' })).ok, false);
+  const cancelled = await invoke('cancelQueued', { queueId }); assert.equal(cancelled.ok, true, cancelled.error);
+  assert.deepEqual(cancelled.result.queue, []); assert.equal(auditActions(runtime).at(-1), 'queue-drop');
+});
+
+test('queued create runs when a slot frees; queue is bounded at 50', async () => {
+  const { runtime, setup, invoke, agent, sessions } = fixture(); await setup();
+  const host = withTaskHost(runtime, sessions);
+  assert.equal((await invoke('configure', { settings: { maxRunningWorkers: 1 } })).ok, true);
+  sessions.set('worker-a', sessionState({ running: true })); await runtime.reconcileLeader();
+  const create = await invoke('createSession', { title: '调查 IAM', brief: '梳理鉴权链路。' }, agent());
+  assert.equal(create.result.queued, true);
+  sessions.set('worker-a', sessionState()); await runtime.reconcileLeader();
+  assert.equal(host.created.length, 1); assert.equal(host.prompts.length, 1); assert.deepEqual(runtime.leaderState.queue, []);
+  assert.equal(runtime.leaderState.tasks.at(-1).status, 'created');
+  // The new task counts as running until observed, so the next request queues again.
+  const next = await invoke('createSession', { title: '另一个调查', brief: '独立问题。' }, agent());
+  assert.equal(next.result.queued, true);
+  runtime.leaderState.queue = Array.from({ length: 50 }, (_, index) => ({ id: `leader-queue-${index}`, kind: 'create', taskId: null, sessionId: null,
+    request: { title: `t${index}`, brief: 'b', workingDirectory: '', taskId: null }, fingerprint: `f${index}`, queuedAt: Date.now(), requestedBy: 'leader' }));
+  const full = await invoke('createSession', { title: '第 51 个', brief: '超出上限。' }, agent());
+  assert.equal(full.ok, false); assert.match(full.error, /50/);
+});
+
+test('a queued continue that no longer validates is dropped with audit and a one-line wake notice', async () => {
+  const { runtime, setup, sessions, calls, advance } = fixture(); await setup(2);
+  assert.equal((await runtime.leaderOperation('configure', { settings: { maxRunningWorkers: 1 } }, createLeaderUiCaller())).ok, true);
+  sessions.set('worker-a', sessionState({ running: true })); await runtime.reconcileLeader();
+  assert.equal((await advance({}, 'b')).result.queued, true);
+  sessions.set('worker-a', sessionState()); sessions.set('worker-b', sessionState({ pendingInput: ['approval'] }));
+  await runtime.reconcileLeader();
+  assert.equal(calls.deliver.length, 0); assert.deepEqual(runtime.leaderState.queue, []);
+  const drop = runtime.leaderState.audit.at(-1); assert.equal(drop.action, 'queue-drop'); assert.match(drop.detail, /需人类处理|原生审批/);
+  await runtime.reconcileLeader();
+  assert.match(calls.notify.at(-1).body, /出队失败已丢弃/); assert.deepEqual(runtime.leaderState.queueNotices, []);
+});
+
+test('dependsOn rejects self, unknown and cyclic edges, blocks continue and wakes downstream on completion', async () => {
+  const { runtime, setup, invoke, issue, agent, sessions, calls, advance } = fixture(); await setup(2);
+  const host = withTaskHost(runtime, sessions);
+  const { taskId } = (await invoke('createSession', { title: '前置调查', brief: '先调查依赖。' }, agent())).result;
+  const archived = []; runtime.setSessionArchived = async (sessionId, value) => { archived.push([sessionId, value]); return { ok: true }; };
+  runtime.leaderIssueGitlab = async () => gitlabFacts({ state: 'closed', mergeRequests: [{ iid: 5, state: 'merged', pipeline: null }] });
+  assert.match((await invoke('updateIssue', { ...issue('a'), dependsOn: ['issue-1-a'] }, agent())).error, /不能依赖自己/);
+  assert.match((await invoke('updateIssue', { ...issue('a'), dependsOn: ['issue-1-zzz'] }, agent())).error, /既未纳管也不在已完成记录中/);
+  assert.equal((await invoke('updateIssue', { ...issue('a'), dependsOn: Array.from({ length: 11 }, (_, i) => `x${i}`) }, agent())).ok, false);
+  const linked = await invoke('updateIssue', { ...issue('a'), dependsOn: ['issue-1-b', taskId] }, agent());
+  assert.equal(linked.ok, true, linked.error); assert.deepEqual(linked.result.notes.dependsOn, ['issue-1-b', taskId]);
+  assert.match((await invoke('updateIssue', { ...issue('b'), dependsOn: ['issue-1-a'] }, agent())).error, /依赖成环：issue-1-b → issue-1-a → issue-1-b/);
+  assert.deepEqual(runtime.leaderProjection().items[0].blockedBy, ['issue-1-b', taskId]);
+  const blocked = await advance(); assert.equal(blocked.ok, false); assert.match(blocked.error, /依赖 issue-1-b、leader-task-[0-9a-f]+ 未完成；如需绕过请先用 update_issue 调整 dependsOn/);
+  await runtime.reconcileLeader(); const before = calls.notify.length;
+  const doneB = await invoke('completeIssue', { ...issue('b'), summary: 'MR !5 已合并，验收通过。' }, agent());
+  assert.equal(doneB.ok, true, doneB.error); assert.deepEqual(doneB.result.woken, [{ taskId: 'issue-1-a', reason: 'dependency:issue-1-b' }]);
+  assert.deepEqual(runtime.leaderState.items.find((item) => item.taskId === 'issue-1-a').pendingWake, ['dependency:issue-1-b']);
+  const doneTask = await invoke('completeIssue', { taskId, sessionId: 'task-s', summary: '调查结论已汇报。' }, agent());
+  assert.equal(doneTask.ok, true, doneTask.error); assert.deepEqual(host.archived, ['task-s']);
+  assert.equal(runtime.leaderState.tasks.find((task) => task.taskId === taskId).status, 'archived');
+  const itemA = runtime.leaderProjection().items.find((item) => item.taskId === 'issue-1-a');
+  assert.deepEqual(itemA.blockedBy, []); assert.deepEqual(itemA.pendingWake, ['dependency:issue-1-b', 'unblocked']);
+  await runtime.reconcileLeader(); assert.equal(calls.notify.length, before + 1);
+  assert.match(calls.notify.at(-1).body, /全部依赖已完成/); assert.match(calls.notify.at(-1).body, /原因 dependency:issue-1-b,unblocked/);
+  assert.equal((await advance()).ok, true);
+  // dependsOn may point at completed taskIds.
+  assert.equal((await invoke('updateIssue', { ...issue('a'), dependsOn: ['issue-1-b'] }, agent())).ok, true);
+});
+
+test('complete verifies quiet worker and GitLab facts, archives, retires budget and records history', async () => {
+  const { runtime, setup, invoke, issue, agent, sessions } = fixture(); await setup(2);
+  const archived = []; runtime.setSessionArchived = async (sessionId, value) => { archived.push([sessionId, value]); return { ok: true }; };
+  let facts = gitlabFacts(); let reads = 0;
+  runtime.leaderIssueGitlab = async (id) => { reads += 1; assert.equal(id, 'issue-1-a'); return facts; };
+  assert.equal((await invoke('completeIssue', { ...issue(), summary: '' }, agent())).ok, false);
+  sessions.set('worker-a', sessionState({ running: true }));
+  assert.match((await invoke('completeIssue', { ...issue(), summary: '完成' }, agent())).error, /静默/);
+  sessions.set('worker-a', sessionState({ pendingInput: ['approval'] }));
+  assert.match((await invoke('completeIssue', { ...issue(), summary: '完成' }, agent())).error, /原生审批/);
+  assert.equal(reads, 0); sessions.set('worker-a', sessionState());
+  assert.match((await invoke('completeIssue', { ...issue(), summary: '完成' }, agent())).error, /acceptWithoutMr/);
+  assert.equal((await invoke('completeIssue', { ...issue(), summary: '完成', acceptWithoutMr: true }, agent())).ok, false);
+  facts = gitlabFacts({ mergeRequests: [{ iid: 7, state: 'opened', pipeline: { status: 'failed', url: 'https://gitlab.test/p/-/pipelines/1' } }, { iid: 6, state: 'merged', pipeline: null }] });
+  assert.match((await invoke('completeIssue', { ...issue(), summary: '完成', acceptWithoutMr: true, reason: '纯调查' }, agent())).error, /!7 仍 open 且最新流水线失败/);
+  facts = gitlabFacts({ available: false, errors: ['glab timeout'] });
+  assert.match((await invoke('completeIssue', { ...issue(), summary: '完成' }, agent())).error, /glab timeout/);
+  assert.equal(archived.length, 0); assert.equal(runtime.leaderState.items.length, 2);
+  facts = gitlabFacts();
+  runtime.leaderState.queue.push({ id: 'leader-queue-x', kind: 'continue', taskId: 'issue-1-a', sessionId: 'worker-a', request: { body: 'b', reason: '' }, fingerprint: 'f', queuedAt: Date.now(), requestedBy: 'leader' });
+  runtime.leaderState.items[0].actions = 4;
+  const done = await invoke('completeIssue', { ...issue(), summary: '纯调查，结论已在 Issue 评论。', acceptWithoutMr: true, reason: '调查类 Issue，无需代码变更' }, agent());
+  assert.equal(done.ok, true, done.error); assert.equal(done.result.archived, true);
+  assert.deepEqual(archived, [['worker-a', true]]); assert.deepEqual(runtime.leaderState.queue, []);
+  assert.equal(runtime.leaderState.items.some((item) => item.taskId === 'issue-1-a'), false);
+  assert.equal(runtime.leaderState.budgetLedger.at(-1).taskId, 'issue-1-a'); assert.equal(runtime.leaderState.budgetLedger.at(-1).actions, 4);
+  const record = runtime.leaderProjection().completed.at(-1);
+  assert.equal(record.taskId, 'issue-1-a'); assert.equal(record.kind, 'issue'); assert.equal(record.acceptWithoutMr, true);
+  assert.deepEqual(record.verification, { issueState: 'opened', mergedMrs: [], pipeline: null });
+  assert.equal(auditActions(runtime).at(-1), 'complete');
+  assert.equal((await invoke('completeIssue', { ...issue(), summary: '再来' }, agent())).ok, false);
+  // archiveOnComplete=false keeps the worker; a failed archive never rolls back the completion.
+  assert.equal((await invoke('configure', { settings: { archiveOnComplete: false } })).ok, true);
+  runtime.leaderIssueGitlab = async () => gitlabFacts({ state: 'closed', mergeRequests: [{ iid: 9, state: 'merged', pipeline: null }] });
+  const kept = await invoke('completeIssue', { ...issue('b'), summary: 'MR !9 已合并。' }, agent());
+  assert.equal(kept.ok, true, kept.error); assert.equal(kept.result.archived, false); assert.equal(archived.length, 1);
+  assert.deepEqual(runtime.leaderProjection().completed.at(-1).verification.mergedMrs, [9]);
+});
+
+test('a failed archive on completion is audited but the completion stands', async () => {
+  const { runtime, setup, invoke, issue, agent } = fixture(); await setup();
+  runtime.setSessionArchived = async () => ({ ok: false, error: '宿主拒绝' });
+  runtime.leaderIssueGitlab = async () => gitlabFacts({ state: 'closed', mergeRequests: [{ iid: 3, state: 'merged', pipeline: null }] });
+  const done = await invoke('completeIssue', { ...issue(), summary: '已合并。' }, agent());
+  assert.equal(done.ok, true, done.error); assert.equal(done.result.archived, false); assert.match(done.result.archiveError, /宿主拒绝/);
+  assert.deepEqual(auditActions(runtime).slice(-2), ['archive-failed', 'complete']); assert.equal(runtime.leaderState.items.length, 0);
+});
+
+test('leaderWorkerForTarget finds only healthy unblocked enrolled Issue workers; noteLeaderTodo wakes the Leader', async () => {
+  const { runtime, setup, invoke, issue, agent, calls } = fixture(); await setup(2);
+  const url = 'https://GITLAB.test/project/-/issues/a#note_9';
+  assert.deepEqual(runtime.leaderWorkerForTarget(url), { taskId: 'issue-1-a', sessionId: 'worker-a' });
+  assert.equal(runtime.leaderWorkerForTarget('https://gitlab.test/project/-/issues/zzz'), null);
+  assert.equal(runtime.leaderWorkerForTarget('not a url'), null);
+  assert.equal((await invoke('pauseIssue', issue())).ok, true); assert.equal(runtime.leaderWorkerForTarget(url), null);
+  assert.equal((await invoke('resumeIssue', issue())).ok, true); assert.ok(runtime.leaderWorkerForTarget(url));
+  assert.equal((await invoke('updateIssue', { ...issue(), dependsOn: ['issue-1-b'] }, agent())).ok, true);
+  assert.equal(runtime.leaderWorkerForTarget(url), null);
+  assert.equal((await invoke('updateIssue', { ...issue(), dependsOn: [] }, agent())).ok, true);
+  assert.equal((await invoke('pause')).ok, true); assert.equal(runtime.leaderWorkerForTarget(url), null);
+  assert.equal((await invoke('start')).ok, true); assert.ok(runtime.leaderWorkerForTarget(url));
+  assert.equal((await runtime.noteLeaderTodo('issue-1-zzz', { todoId: 't0' })).ok, false);
+  const noted = await runtime.noteLeaderTodo('issue-1-a', { todoId: 't1', title: '请看看 CI 为什么红', url: 'https://gitlab.test/project/-/issues/a#note_9', author: 'alice' });
+  assert.equal(noted.ok, true, noted.error);
+  const item = runtime.leaderProjection().items[0];
+  assert.deepEqual(item.pendingWake, ['todo:t1']); assert.equal(item.lastTodo.title, '请看看 CI 为什么红'); assert.equal(item.lastTodo.author, 'alice');
+  assert.equal(auditActions(runtime).at(-1), 'todo-routed');
+  await runtime.reconcileLeader();
+  assert.match(calls.notify.at(-1).body, /Issue a｜状态 watching｜原因 todo:t1｜有新的 @我 Todo，已排入该 worker：请看看 CI 为什么红/);
+});
+
+test('orchestration journal fields migrate from older journals and survive normalization', () => {
+  const legacy = copy(initialLeaderState()); delete legacy.queue; delete legacy.completed; delete legacy.queueNotices;
+  legacy.settings = { model: null, autoEnrollNew: true };
+  const migrated = normalizeLeaderState(legacy);
+  assert.deepEqual(migrated.queue, []); assert.deepEqual(migrated.completed, []);
+  assert.equal(migrated.settings.maxRunningWorkers, 3); assert.equal(migrated.settings.archiveOnComplete, true); assert.equal(migrated.settings.autoEnrollNew, true);
+  const restored = normalizeLeaderState({ ...copy(initialLeaderState()), settings: { ...initialLeaderState().settings, maxRunningWorkers: 5 },
+    queue: [{ id: 'q1', kind: 'continue', taskId: 't', sessionId: 's', request: { body: 'b', reason: 'r' }, fingerprint: 'f', queuedAt: 1 }, { id: 'q2', kind: 'bogus', queuedAt: 1, request: {} }],
+    completed: [{ taskId: 't0', completedAt: 2, summary: 'ok', verification: { issueState: 'closed', mergedMrs: [1, 'x'] } }] });
+  assert.equal(restored.settings.maxRunningWorkers, 5);
+  assert.deepEqual(restored.queue.map((entry) => entry.id), ['q1']);
+  assert.deepEqual(restored.completed[0].verification, { issueState: 'closed', mergedMrs: [1], pipeline: null });
+  const projection = buildLeaderProjection(restored);
+  assert.deepEqual(projection.queue[0], { id: 'q1', kind: 'continue', taskId: 't', sessionId: 's', position: 1, title: '', reason: 'r', queuedAt: 1 });
 });

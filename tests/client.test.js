@@ -631,7 +631,7 @@ test('all Leader mutations use authenticated native RPC and unwrap ConnectionRpc
   } };
   const ctx = { connection: { rpc } };
   const operations = ['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue',
-    'resetIssueBudget', 'resolveDelivery', 'resolveCreation', 'resolveTask'];
+    'resetIssueBudget', 'resolveDelivery', 'resolveCreation', 'resolveTask', 'cancelQueued', 'handoff'];
   assert.deepEqual(Array.from(LEADER_RPC_OPERATIONS), operations);
   for (const operation of operations) {
     const payload = operation === 'configure' ? { settings: { model: { provider: 'p', model: 'm', reasoningEffort: 'high' }, autoEnrollNew: false } }
@@ -677,6 +677,8 @@ test('Leader projections require real settings and phase, keep default off, and 
   const { normalizeLeaderProjection, canGrantLeaderAccess, canCreateLeader, validLeaderSessionId } = await loadLeaderHelpers();
   const initial = normalizeLeaderProjection(leaderProjection());
   assert.deepEqual(plain(initial), { ...leaderProjection(), runState: '', creation: null, deliveries: [], audit: [], tasks: [],
+    queue: [], completed: [], previousSessions: [], comments: [], reports: [],
+    settings: { model: null, autoEnrollNew: false, maxRunningWorkers: 3, archiveOnComplete: true, issueComments: false, commentSignature: '—— 由 AI Leader 代发' },
     run: { expiresAt: null, wakeups: null, maxWakeups: null, lastStartedAt: null } });
   assert.equal(canGrantLeaderAccess(initial), false);
   assert.equal(canCreateLeader(initial, null, false), true);

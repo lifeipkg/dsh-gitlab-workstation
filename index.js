@@ -66,7 +66,7 @@ async function pathExists(path) {
 }
 const LEADER_RPC_CHANNEL = '/gitlab-workstation-leader';
 const LEADER_UI_OPERATIONS = new Set(['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue',
-  'resetIssueBudget', 'resolveDelivery', 'resolveCreation', 'resolveTask']);
+  'resetIssueBudget', 'resolveDelivery', 'resolveCreation', 'resolveTask', 'handoff', 'cancelQueued']);
 
 /**
  * 运行时骨架：状态生命周期（加载/迁移/持久化）、轮询与对账定时器、bridge 入口。
@@ -507,6 +507,8 @@ export function apply(ctx, config = {}) {
     if (!runtime.stopping) {
       runtime.leaderAdapter ??= createLeaderAgentAdapter(runtime);
       void runtime.leaderAdapter.refreshBindings().catch((error) => runtime.logger.warn(`Leader 绑定失败：${errorMessage(error)}`));
+      // Resident enrolled workers gain gitlab_leader_report once the native services arrive.
+      runtime.syncLeaderWorkerTools?.(true);
     }
     return async () => {
       runtime.stopLeader();
