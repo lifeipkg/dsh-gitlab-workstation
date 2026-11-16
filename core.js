@@ -1,156 +1,78 @@
 export const STATE_VERSION = 6;
 
-// Leader has its own journal/version; Issue automatic:false and STATE_VERSION stay unchanged.
-export const LEADER_STATE_VERSION = 1;
-// Journal/size bounds shared by Host enforcement and the UI projection. There are no action budgets or run leases.
+// Leader v3 keeps a small journal of its own: session id, model, ad-hoc task registry, the child-report board and
+// the uncertain-delivery ledger. Issue automatic:false and STATE_VERSION stay unchanged.
+export const LEADER_STATE_VERSION = 2;
+// Journal/size bounds shared by Host enforcement and the UI projection. There are no action budgets, leases or wakeups.
 export const LEADER_LIMITS = Object.freeze({
-  maxEvents: 100, maxOutbox: 500, maxOpenOutbox: 100, keepTerminalOutbox: 200, keepTerminalBodies: 20,
-  maxItems: 200, maxCreatedEnrollments: 1000, maxAbandonedCreations: 20,
-  stallMs: 20 * 60 * 1000, maxTasks: 200,
-  // Orchestration: concurrent running workers (setting range/default), FIFO queue, completion history, dependencies.
-  minRunningWorkers: 1, maxRunningWorkers: 10, defaultRunningWorkers: 3, maxQueue: 50, maxCompleted: 100, maxDependsOn: 10,
-  // Worker → Leader reports (gitlab_leader_report): journal size and text size.
+  maxTasks: 200, maxAbandonedCreations: 20,
+  // Child → Leader reports (gitlab_leader_report): journal size and text size.
   maxReports: 200, maxReportText: 2000,
-  // Leader text inputs (prompts sent to workers, GitLab API bodies).
-  maxPromptText: 8000, maxApiBody: 100000,
+  // Leader text inputs (messages sent to child sessions, ad-hoc task briefs).
+  maxPromptText: 8000,
+  // Delivery ledger: only open (sending/uncertain) entries matter; terminal ones are trimmed.
+  maxDeliveries: 100,
 });
-export const LEADER_REPORT_KINDS = Object.freeze(['progress', 'blocked', 'done', 'question', 'message']);
-// GitLab writes are off by default; when on, every Issue/MR note the Leader posts ends with this signature line.
-export const DEFAULT_LEADER_COMMENT_SIGNATURE = '—— 由 AI Leader 代发';
-// Journal bounds for handoff history and the GitLab write ledger.
-export const LEADER_OPS_LIMITS = Object.freeze({ maxPreviousSessions: 20, maxComments: 200, missingCheckMs: 10000 });
-const DEFAULT_LEADER_SETTINGS = Object.freeze({ model: null, autoEnrollNew: false, maxRunningWorkers: 3, archiveOnComplete: true,
-  gitlabWrite: false, commentSignature: DEFAULT_LEADER_COMMENT_SIGNATURE });
-const LEADER_QUEUE_KINDS = new Set(['create', 'continue']);
+export const LEADER_REPORT_KINDS = Object.freeze(['progress', 'blocked', 'done', 'question']);
+const DEFAULT_LEADER_SETTINGS = Object.freeze({ model: null });
+// Name of the opt-in persona preset shipped in cordis.patch.yml. The Leader defaults to the Host's standard preset.
 export const DEFAULT_LEADER_AGENT_PRESET = 'gitlab-issue-leader';
 // Leader-dispatched ad-hoc tasks (no GitLab Issue): namespaced taskIds plus their own journal registry.
 export const LEADER_TASK_STATUSES = Object.freeze(['creating', 'created', 'uncertain', 'archived']);
+export const LEADER_DELIVERY_KINDS = Object.freeze(['send', 'steer']);
+export const LEADER_DELIVERY_STATUSES = Object.freeze(['sending', 'sent', 'rejected', 'uncertain']);
 export const isLeaderTaskId = (value) => typeof value === 'string' && /^leader-task-[0-9a-f]{12}$/u.test(value);
-/** Managed worker kind: ad-hoc task (leader-task-…), plugin-created Todo session, or Issue session (default). */
+/** Kind of a plugin-created session on the board: ad-hoc task (leader-task-…), Todo or Issue (default). */
 export const leaderItemKind = (item) => (isLeaderTaskId(item?.taskId) ? 'task' : item?.kind === 'todo' ? 'todo' : 'issue');
-const TERMINAL_OUTBOX = new Set(['sent', 'rejected', 'cancelled']);
 const OPEN_DELIVERY = new Set(['sending', 'uncertain']);
+const leaderId = (value) => typeof value === 'string' && value.length > 0 && value.length <= 200 && value.trim() === value && !/[\u0000-\u001f]/u.test(value);
+
 export function initialLeaderState() {
-  return { version: LEADER_STATE_VERSION, enabled: false, sessionId: null, phase: 'not-created',
-    settings: { ...DEFAULT_LEADER_SETTINGS }, items: [], events: [], outbox: [], creation: null, createdEnrollments: [],
-    epoch: 0, creationPolicyEpoch: 0, wakeups: 0, configuredModel: null, error: '',
-    lastStartedAt: null, abandonedCreations: [], audit: [], tasks: [], queue: [], completed: [], queueNotices: [],
-    previousSessions: [], comments: [], reports: [] };
+  return { version: LEADER_STATE_VERSION, sessionId: null, phase: 'not-created', settings: { ...DEFAULT_LEADER_SETTINGS },
+    configuredModel: null, creation: null, abandonedCreations: [], tasks: [], reports: [], deliveries: [], error: '' };
 }
 
-/** Normalizes one worker report entry; returns null for malformed entries. */
+/** Normalizes one child report entry; returns null for malformed entries. */
 export function normalizeLeaderReport(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const okId = (entry) => typeof entry === 'string' && entry.length > 0 && entry.length <= 200;
-  if (!okId(value.id) || !okId(value.taskId) || !okId(value.sessionId)) return null;
+  if (!isRecord(value)) return null;
+  if (!leaderId(value.id) || !leaderId(value.taskId) || !leaderId(value.sessionId)) return null;
   if (!LEADER_REPORT_KINDS.includes(value.kind) || typeof value.text !== 'string' || !value.text) return null;
   if (!Number.isSafeInteger(value.at) || value.at < 0) return null;
   return { id: value.id, taskId: value.taskId, sessionId: value.sessionId, kind: value.kind,
-    text: value.text.slice(0, LEADER_LIMITS.maxReportText), toTaskId: okId(value.toTaskId) ? value.toTaskId : null, at: value.at };
+    text: value.text.slice(0, LEADER_LIMITS.maxReportText), at: value.at, seen: value.seen === true };
 }
 
-/**
- * Structured per-Issue notes the Leader keeps for the human (stage / next / waitingOn /
- * decisions / deliverables). strict rejects unknown keys and oversize text; lenient clips.
- */
-export function normalizeLeaderNotes(input, { strict = true } = {}) {
-  if (input === null || input === undefined) return null;
-  if (!isRecord(input)) { if (strict) throw new Error('notes 必须是对象。'); return null; }
-  const keys = ['stage', 'next', 'waitingOn', 'decisions', 'deliverables', 'dependsOn', 'updatedAt'];
-  if (strict && Object.keys(input).some((key) => !keys.includes(key))) throw new Error('notes 只允许 stage/next/waitingOn/decisions/deliverables/dependsOn。');
-  const line = (value, limit, name) => {
-    if (value === undefined || value === null) return '';
-    if (typeof value !== 'string' || value.length > limit) {
-      if (strict) throw new Error(`${name} 必须是至多 ${limit} 字符的文本。`);
-      return text(value).slice(0, limit).trim();
-    }
-    return value.trim();
-  };
-  const list = (value, name) => {
-    if (value === undefined || value === null) return [];
-    if (!Array.isArray(value) || value.length > 10 || value.some((entry) => typeof entry !== 'string' || entry.length > 300)) {
-      if (strict) throw new Error(`${name} 必须是至多 10 条、每条至多 300 字符的文本数组。`);
-      return (Array.isArray(value) ? value : []).filter((entry) => typeof entry === 'string').slice(0, 10).map((entry) => entry.slice(0, 300).trim()).filter(Boolean);
-    }
-    return value.map((entry) => entry.trim()).filter(Boolean);
-  };
-  // Upstream taskIds this Issue waits on; existence/self/cycle checks need the whole state and live in the Host.
-  const dependsOn = (value) => {
-    if (value === undefined || value === null) return [];
-    const valid = (entry) => typeof entry === 'string' && entry.trim().length > 0 && entry.length <= 200 && !/[\u0000-\u001f]/u.test(entry);
-    if (!Array.isArray(value) || value.length > LEADER_LIMITS.maxDependsOn || value.some((entry) => !valid(entry))) {
-      if (strict) throw new Error(`dependsOn 必须是至多 ${LEADER_LIMITS.maxDependsOn} 个、每个至多 200 字符的 taskId 数组。`);
-      return [...new Set((Array.isArray(value) ? value : []).filter(valid).map((entry) => entry.trim()))].slice(0, LEADER_LIMITS.maxDependsOn);
-    }
-    return [...new Set(value.map((entry) => entry.trim()))];
-  };
-  return { stage: line(input.stage, 200, 'stage'), next: line(input.next, 500, 'next'), waitingOn: line(input.waitingOn, 300, 'waitingOn'),
-    decisions: list(input.decisions, 'decisions'), deliverables: list(input.deliverables, 'deliverables'),
-    dependsOn: dependsOn(input.dependsOn), updatedAt: timestamp(input.updatedAt) };
+/** Normalizes one delivery ledger entry; an in-flight (sending) entry is uncertain after a restart and never resent. */
+export function normalizeLeaderDelivery(value, { restart = false } = {}) {
+  if (!isRecord(value) || !leaderId(value.requestId) || !leaderId(value.sessionId) || !LEADER_DELIVERY_KINDS.includes(value.kind)
+    || !LEADER_DELIVERY_STATUSES.includes(value.status)) return null;
+  const sending = restart && value.status === 'sending';
+  return { requestId: value.requestId, kind: value.kind, taskId: leaderId(value.taskId) ? value.taskId : null, sessionId: value.sessionId,
+    status: sending ? 'uncertain' : value.status, at: timestamp(value.at),
+    error: sending ? '重启时投递结果不确定，禁止自动重发；Leader 可读取会话日志核对后自行决定是否再发。' : text(value.error).slice(0, 500) };
 }
 
-/**
- * Terminal deliveries only serve requestId idempotency and audit. Keep their fingerprints for the
- * newest `keepTerminalOutbox` entries, bodies for the newest `keepTerminalBodies`, and drop the rest.
- * Open entries (prepared/sending/uncertain) are never compacted: they are the replay tombstones.
- * Mutates retained entries in place so callers holding an open entry keep a live reference.
- */
-export function compactLeaderOutbox(outbox, limits = LEADER_LIMITS) {
-  const terminal = outbox.filter((entry) => TERMINAL_OUTBOX.has(entry.status));
-  const dropped = new Set(terminal.slice(0, Math.max(0, terminal.length - limits.keepTerminalOutbox)));
-  const stripped = terminal.slice(0, Math.max(0, terminal.length - limits.keepTerminalBodies));
-  for (const entry of stripped) {
-    if (dropped.has(entry) || entry.compacted === true) continue;
-    entry.body = ''; entry.compacted = true; entry.error = text(entry.error).slice(0, 200);
-  }
-  return outbox.filter((entry) => !dropped.has(entry));
+/** Keeps every open delivery and the newest terminal ones within the cap. */
+export function compactLeaderDeliveries(deliveries, limit = LEADER_LIMITS.maxDeliveries) {
+  const open = deliveries.filter((entry) => OPEN_DELIVERY.has(entry.status));
+  const room = Math.max(0, limit - open.length);
+  const keep = new Set([...open, ...deliveries.filter((entry) => !OPEN_DELIVERY.has(entry.status)).slice(-room)]);
+  return deliveries.filter((entry) => keep.has(entry));
 }
 
-/** A consumed proof can only match the current policy epoch; older tuples are dead weight. */
-export function pruneCreatedEnrollments(entries, creationPolicyEpoch) {
-  return (entries ?? []).filter((entry) => entry.creationPolicyEpoch === creationPolicyEpoch);
-}
-
+/** Coarse state shown by the UI: not-created | creation-uncertain | setup-incomplete | error | ready. */
 export function leaderRunState(state) {
   if (!state) return 'not-created';
   if (state.phase === 'error') return 'error';
   if (!state.sessionId) return state.creation ? 'creation-uncertain' : 'not-created';
   if (state.creation?.status !== 'ready') return 'setup-incomplete';
-  if (state.outbox?.some((entry) => entry.kind === 'notify' && OPEN_DELIVERY.has(entry.status))) return 'delivery-uncertain';
-  if (state.enabled) return 'running';
-  return state.lastStartedAt ? 'paused' : 'never-started';
+  return 'ready';
 }
 
 export function validateLeaderSettings(input, current = DEFAULT_LEADER_SETTINGS) {
   if (!isRecord(input)) throw new Error('Leader 设置必须是对象。');
-  if (Object.keys(input).some((key) => !['model', 'autoEnrollNew', 'maxRunningWorkers', 'archiveOnComplete', 'gitlabWrite', 'commentSignature'].includes(key))) throw new Error('未知 Leader 设置；不得扩大工具权限。');
+  if (Object.keys(input).some((key) => key !== 'model')) throw new Error('未知 Leader 设置。');
   const next = { ...DEFAULT_LEADER_SETTINGS, ...current };
-  if ('gitlabWrite' in input) {
-    if (typeof input.gitlabWrite !== 'boolean') throw new Error('gitlabWrite 必须是布尔值。');
-    next.gitlabWrite = input.gitlabWrite;
-  }
-  if ('commentSignature' in input) {
-    const signature = input.commentSignature;
-    if (typeof signature !== 'string' || !signature.trim() || signature.length > 100 || /[\u0000-\u001f\u007f]/u.test(signature)) {
-      throw new Error('commentSignature 必须是 1–100 字符的单行文本。');
-    }
-    next.commentSignature = signature.trim();
-  }
-  if ('autoEnrollNew' in input) {
-    if (typeof input.autoEnrollNew !== 'boolean') throw new Error('autoEnrollNew 必须是布尔值。');
-    next.autoEnrollNew = input.autoEnrollNew;
-  }
-  if ('maxRunningWorkers' in input) {
-    const value = input.maxRunningWorkers;
-    if (!Number.isSafeInteger(value) || value < LEADER_LIMITS.minRunningWorkers || value > LEADER_LIMITS.maxRunningWorkers) {
-      throw new Error(`maxRunningWorkers 必须是 ${LEADER_LIMITS.minRunningWorkers}–${LEADER_LIMITS.maxRunningWorkers} 的整数。`);
-    }
-    next.maxRunningWorkers = value;
-  }
-  if ('archiveOnComplete' in input) {
-    if (typeof input.archiveOnComplete !== 'boolean') throw new Error('archiveOnComplete 必须是布尔值。');
-    next.archiveOnComplete = input.archiveOnComplete;
-  }
   if ('model' in input) {
     const model = input.model;
     if (model !== null && (!isRecord(model)
@@ -165,218 +87,79 @@ export function validateLeaderSettings(input, current = DEFAULT_LEADER_SETTINGS)
   return next;
 }
 
+/**
+ * Loads a Leader journal. v1 journals (items/outbox/queue/budgets) migrate to v2: only the session id, model, creation
+ * record, ad-hoc task registry and valid reports survive. `migratedFrom` tells the Host to back the old file up first.
+ */
 export function normalizeLeaderState(value) {
-  if (!isRecord(value) || value.version !== LEADER_STATE_VERSION) throw new Error('Leader journal 版本/结构无效，禁止自动重建。');
-  const id = (value) => typeof value === 'string' && value.length > 0 && value.length <= 200 && value.trim() === value && !/[\u0000-\u001f]/u.test(value);
-  if (value.sessionId !== null && !id(value.sessionId)) throw new Error('Leader journal 会话 ID 无效，禁止重复创建。');
-  if (!Array.isArray(value.items) || value.items.length > 200 || !Array.isArray(value.outbox) || value.outbox.length > 500) throw new Error('Leader journal items/outbox 无效。');
-  const result = { ...initialLeaderState(), ...JSON.parse(JSON.stringify(value)) };
-  // v2.42 and older journals carry issueComments; it becomes gitlabWrite (same meaning: Leader may write GitLab).
-  const settings = isRecord(value.settings) ? { ...value.settings } : value.settings;
-  if (isRecord(settings) && 'issueComments' in settings) {
-    if (!('gitlabWrite' in settings)) settings.gitlabWrite = settings.issueComments === true;
-    delete settings.issueComments;
-  }
+  if (!isRecord(value) || ![1, LEADER_STATE_VERSION].includes(value.version)) throw new Error('Leader journal 版本/结构无效，禁止自动重建。');
+  if (value.sessionId !== null && !leaderId(value.sessionId)) throw new Error('Leader journal 会话 ID 无效，禁止重复创建。');
+  const migrated = value.version === 1;
+  const result = initialLeaderState();
+  result.sessionId = value.sessionId;
+  const settings = isRecord(value.settings) ? { model: value.settings.model ?? null } : {};
   result.settings = validateLeaderSettings(settings, initialLeaderState().settings);
   result.configuredModel = validateLeaderSettings({ model: value.configuredModel ?? null }).model;
-  result.createdEnrollments = value.createdEnrollments ?? [];
-  if (!Array.isArray(result.createdEnrollments) || result.createdEnrollments.length > 1000
-    || result.createdEnrollments.some((entry) => !isRecord(entry) || !id(entry.taskId) || !id(entry.sessionId))) throw new Error('Leader 新创建来源消费 journal 无效。');
-  const taskIds = new Set(); const sessionIds = new Set();
-  for (const item of result.items) {
-    if (!isRecord(item) || !id(item.taskId) || !id(item.sessionId) || item.sessionId === result.sessionId
-      || taskIds.has(item.taskId) || sessionIds.has(item.sessionId) || !Array.isArray(item.alerts) || item.alerts.length > 50
-      || !isRecord(item.provenance) || !['ui', 'created', 'leader'].includes(item.provenance.kind)
-      || (item.cursor !== undefined && item.cursor !== null && timestamp(item.cursor) === null)) throw new Error('Leader journal 显式映射/来源无效。');
-    taskIds.add(item.taskId); sessionIds.add(item.sessionId);
-    // Removed mechanisms (v2.43): action budget, Issue lease, per-Issue pause, comment/report counters. Old fields load and drop silently.
-    for (const key of ['actions', 'maxActions', 'expiresAt', 'paused', 'commentCount', 'reportCount', 'lastSteerAt', 'lastCommentAt', 'lastReportAt']) delete item[key];
-    // Steer idempotency survives restart; an in-flight steer is uncertain, never resent.
-    if (item.lastSteerStatus === 'sending') item.lastSteerStatus = 'uncertain';
-    item.cursor = item.cursor ?? null;
-    item.observation = null; // Restart invalidates read evidence; never reuse old idle authorization.
-    item.recentEvents = item.recentEvents ?? [];
-    if (!Array.isArray(item.recentEvents) || item.recentEvents.length > 40
-      || item.recentEvents.some((event) => !isRecord(event) || !Number.isSafeInteger(event.seq) || event.seq < 0
-        || typeof event.type !== 'string' || event.type.length > 100 || typeof event.data !== 'string' || event.data.length > 4000)
-      || JSON.stringify(item.recentEvents).length > 20100) throw new Error('Leader journal 近期上下文缓存无效/超出边界。');
-    item.recentEventsTruncated = item.recentEventsTruncated === true;
-    item.pendingWake = Array.isArray(item.pendingWake)
-      ? item.pendingWake.filter((reason) => typeof reason === 'string' && reason.length <= 100).slice(-10) : [];
-    // Restart always pauses the Leader, so nothing is being watched until an explicit start.
-    item.status = item.alerts.some((alert) => alert?.status === 'pending') ? 'needs-human' : 'standby';
-    item.notes = normalizeLeaderNotes(item.notes, { strict: false });
-    item.lastActivityAt = timestamp(item.lastActivityAt); item.stallNotifiedAt = timestamp(item.stallNotifiedAt);
-    item.title = text(item.title).slice(0, 1000); item.url = safeUrl(item.url); item.summary = text(item.summary).slice(0, 2000); item.error = text(item.error).slice(0, 1000);
-    for (const alert of item.alerts) {
-      if (!id(alert.id) || typeof alert.question !== 'string' || alert.question.length > 2000 || !['pending', 'acknowledged'].includes(alert.status)) throw new Error('Leader journal alert binding 无效。');
-    }
-  }
-  const requests = new Set();
-  for (const entry of result.outbox) {
-    if (!isRecord(entry) || !id(entry.requestId) || !id(entry.sessionId) || requests.has(entry.requestId)
-      || typeof entry.body !== 'string' || typeof entry.fingerprint !== 'string' || !['advance', 'notify', 'relay'].includes(entry.kind)) throw new Error('Leader journal outbox 无效，禁止自动重发。');
-    requests.add(entry.requestId);
-    if (!['prepared', 'sent', 'rejected', 'cancelled'].includes(entry.status)) { entry.status = 'uncertain'; entry.error ||= '重启时投递结果不确定，禁止自动重发。'; }
-    // An old prepared admission belonged to the previous epoch, not this process.
-    else if (entry.status === 'prepared') entry.status = 'cancelled';
-  }
-  result.outbox = compactLeaderOutbox(result.outbox);
-  if (result.creation !== null) {
-    if (!isRecord(result.creation) || !id(result.creation.requestId)) throw new Error('Leader 创建 journal 无效，禁止重复创建。');
+  if (value.creation !== null && value.creation !== undefined) {
+    if (!isRecord(value.creation) || !leaderId(value.creation.requestId)) throw new Error('Leader 创建 journal 无效，禁止重复创建。');
+    result.creation = { ...JSON.parse(JSON.stringify(value.creation)) };
     if (!['created', 'ready'].includes(result.creation.status)) result.creation.status = 'uncertain';
-    if (result.creation.agentPreset !== undefined && result.creation.agentPreset !== null && !id(result.creation.agentPreset)) delete result.creation.agentPreset;
+    if (result.creation.agentPreset !== undefined && result.creation.agentPreset !== null && !leaderId(result.creation.agentPreset)) delete result.creation.agentPreset;
   }
-  result.lastStartedAt = timestamp(value.lastStartedAt);
-  // Removed mechanisms: run lease (expiresAt), Issue budget ledger, relay human-message ledger.
-  for (const key of ['expiresAt', 'budgetLedger', 'relays']) delete result[key];
-  result.wakeups = Number.isSafeInteger(value.wakeups) && value.wakeups >= 0 ? value.wakeups : 0;
   result.abandonedCreations = (Array.isArray(value.abandonedCreations) ? value.abandonedCreations : [])
-    .filter((entry) => isRecord(entry) && id(entry.requestId)).slice(-LEADER_LIMITS.maxAbandonedCreations);
-  // Leader action audit trail (every Leader tool action); bounded, display-only.
-  result.audit = (Array.isArray(value.audit) ? value.audit : [])
-    .filter((entry) => isRecord(entry) && typeof entry.action === 'string' && timestamp(entry.at) !== null)
-    .map((entry) => ({ action: entry.action.slice(0, 50), taskId: id(entry.taskId) ? entry.taskId : null, sessionId: id(entry.sessionId) ? entry.sessionId : null,
-      at: timestamp(entry.at), detail: text(entry.detail).slice(0, 1000) })).slice(-200);
-  // Leader ops: handoff history (pending at restart is uncertain, never retried).
-  result.previousSessions = (Array.isArray(value.previousSessions) ? value.previousSessions : [])
-    .filter((entry) => isRecord(entry) && id(entry.sessionId) && timestamp(entry.handedOffAt) !== null)
-    .map((entry) => ({ sessionId: entry.sessionId, handedOffAt: timestamp(entry.handedOffAt), archived: entry.archived === true })).slice(-20);
-  // GitLab write ledger (gitlab_leader_gitlab_api non-GET calls); a write still pending at restart is uncertain, never retried.
-  result.comments = (Array.isArray(value.comments) ? value.comments : [])
-    .filter((entry) => isRecord(entry) && id(entry.requestId) && ['pending', 'posted', 'uncertain', 'rejected'].includes(entry.status))
-    .map((entry) => ({ requestId: entry.requestId, taskId: id(entry.taskId) ? entry.taskId : null, method: text(entry.method).slice(0, 10),
-      path: text(entry.path).slice(0, 500), status: entry.status === 'pending' ? 'uncertain' : entry.status,
-      noteId: Number.isSafeInteger(entry.noteId) ? entry.noteId : null, url: safeUrl(entry.url), at: timestamp(entry.at),
-      error: entry.status === 'pending' ? '重启时 GitLab 写入结果不确定，禁止自动重发；请人工核查 GitLab。' : text(entry.error).slice(0, 500) }))
-    .slice(-LEADER_OPS_LIMITS.maxComments);
+    .filter((entry) => isRecord(entry) && leaderId(entry.requestId)).slice(-LEADER_LIMITS.maxAbandonedCreations);
   // Ad-hoc task registry: only "created" binds a session; a restart mid-creation is uncertain, never retried.
   const seenTasks = new Set();
   result.tasks = (Array.isArray(value.tasks) ? value.tasks : [])
     .filter((entry) => isRecord(entry) && isLeaderTaskId(entry.taskId) && !seenTasks.has(entry.taskId) && Boolean(seenTasks.add(entry.taskId))
-      && LEADER_TASK_STATUSES.includes(entry.status) && (entry.sessionId === null || entry.sessionId === undefined || id(entry.sessionId)))
+      && LEADER_TASK_STATUSES.includes(entry.status) && (entry.sessionId === null || entry.sessionId === undefined || leaderId(entry.sessionId)))
     .map((entry) => {
-      const sessionId = id(entry.sessionId) ? entry.sessionId : null;
+      const sessionId = leaderId(entry.sessionId) ? entry.sessionId : null;
       const status = entry.status === 'creating' || (entry.status === 'created' && !sessionId) ? 'uncertain' : entry.status;
       return { taskId: entry.taskId, sessionId, title: text(entry.title).slice(0, 80), brief: text(entry.brief).slice(0, 1000),
         workspace: text(entry.workspace).slice(0, 500), status, createdAt: timestamp(entry.createdAt),
         error: entry.status === 'creating' ? '重启时临时任务创建结果不确定，禁止自动重建；请人工核查宿主会话列表。' : text(entry.error).slice(0, 1000) };
     }).slice(-LEADER_LIMITS.maxTasks);
-  // Orchestration journal (older journals lack these and start empty). Queue entries are re-validated on dequeue.
-  const seenQueue = new Set();
-  result.queue = (Array.isArray(value.queue) ? value.queue : [])
-    .filter((entry) => isRecord(entry) && id(entry.id) && !seenQueue.has(entry.id) && Boolean(seenQueue.add(entry.id))
-      && LEADER_QUEUE_KINDS.has(entry.kind) && timestamp(entry.queuedAt) !== null && isRecord(entry.request)
-      && (entry.kind === 'create' || (id(entry.taskId) && id(entry.sessionId))))
-    .map((entry) => ({ id: entry.id, kind: entry.kind, taskId: id(entry.taskId) ? entry.taskId : null, sessionId: id(entry.sessionId) ? entry.sessionId : null,
-      request: entry.kind === 'create'
-        ? { title: text(entry.request.title).slice(0, 200), brief: text(entry.request.brief).slice(0, 8000), workingDirectory: text(entry.request.workingDirectory).slice(0, 1000),
-          taskId: id(entry.request.taskId) ? entry.request.taskId : null }
-        : { text: text(entry.request.text ?? entry.request.body).slice(0, 8000), ...(id(entry.request.requestId) ? { requestId: entry.request.requestId } : {}) },
-      fingerprint: text(entry.fingerprint).slice(0, 100), queuedAt: timestamp(entry.queuedAt), requestedBy: 'leader' }))
-    .slice(0, LEADER_LIMITS.maxQueue);
-  result.completed = (Array.isArray(value.completed) ? value.completed : [])
-    .filter((entry) => isRecord(entry) && id(entry.taskId) && timestamp(entry.completedAt) !== null)
-    .map((entry) => normalizeLeaderCompletion(entry)).slice(-LEADER_LIMITS.maxCompleted);
-  result.queueNotices = (Array.isArray(value.queueNotices) ? value.queueNotices : [])
-    .filter((entry) => isRecord(entry) && typeof entry.text === 'string')
-    .map((entry) => ({ text: entry.text.slice(0, 300), wake: entry.wake === true, at: timestamp(entry.at) })).slice(-10);
-  for (const item of result.items) {
-    item.lastTodo = normalizeLeaderTodo(item.lastTodo);
-    item.kickedAt = Number.isSafeInteger(item.kickedAt) ? item.kickedAt : null;
-    item.kind = leaderItemKind(item);
-  }
-  // Worker → Leader reports journal (older journals lack it and start empty). Content is untrusted worker output.
   const seenReports = new Set();
-  result.reports = (Array.isArray(value.reports) ? value.reports : []).map((entry) => normalizeLeaderReport(entry))
+  result.reports = (Array.isArray(value.reports) ? value.reports : [])
+    .map((entry) => normalizeLeaderReport(migrated ? { ...entry, seen: true } : entry))
     .filter((entry) => entry && !seenReports.has(entry.id) && Boolean(seenReports.add(entry.id))).slice(-LEADER_LIMITS.maxReports);
-  result.epoch = Number.isSafeInteger(value.epoch) && value.epoch >= 0 ? value.epoch + 1 : 1;
-  // Policy provenance survives mapping/run changes, but never a process restart.
-  // Legacy global-epoch proof fields are never promoted into the new policy domain.
-  const policyEpoch = Object.hasOwn(value, 'creationPolicyEpoch') ? value.creationPolicyEpoch : 0;
-  if (!Number.isSafeInteger(policyEpoch) || policyEpoch < 0 || !Number.isSafeInteger(policyEpoch + 1)) throw new Error('Leader journal 新建托管 policy epoch 无效。');
-  result.creationPolicyEpoch = policyEpoch + 1;
-  // Proofs from older policy epochs can never match again; dropping them keeps the journal bounded.
-  result.createdEnrollments = pruneCreatedEnrollments(result.createdEnrollments, result.creationPolicyEpoch);
-  result.enabled = false;
-  result.phase = result.sessionId ? (result.creation?.status === 'ready' ? 'paused' : 'error') : result.creation ? 'uncertain' : 'not-created';
-  result.events = (Array.isArray(value.events) ? value.events : []).slice(-100);
+  result.deliveries = migrated ? [] : compactLeaderDeliveries((Array.isArray(value.deliveries) ? value.deliveries : [])
+    .map((entry) => normalizeLeaderDelivery(entry, { restart: true })).filter(Boolean));
+  result.phase = result.sessionId ? (result.creation?.status === 'ready' ? 'ready' : 'error') : result.creation ? 'uncertain' : 'not-created';
   result.error = text(value.error).slice(0, 1000);
+  if (migrated) result.migratedFrom = 1;
   return result;
-}
-
-/** Completed-history entry (accepted Issue/task); bounded display + dependency resolution record. */
-export function normalizeLeaderCompletion(entry) {
-  const verification = isRecord(entry.verification) ? entry.verification : {};
-  const pipeline = isRecord(verification.pipeline) ? { status: text(verification.pipeline.status).slice(0, 50), url: safeUrl(verification.pipeline.url) } : null;
-  return { taskId: entry.taskId, sessionId: typeof entry.sessionId === 'string' ? entry.sessionId.slice(0, 200) : null,
-    title: text(entry.title).slice(0, 1000), url: safeUrl(entry.url), kind: ['task', 'todo'].includes(entry.kind) ? entry.kind : 'issue',
-    summary: text(entry.summary).slice(0, 1000), completedAt: timestamp(entry.completedAt),
-    acceptWithoutMr: entry.acceptWithoutMr === true, reason: text(entry.reason).slice(0, 500),
-    verification: { issueState: text(verification.issueState).slice(0, 50) || null,
-      mergedMrs: (Array.isArray(verification.mergedMrs) ? verification.mergedMrs : []).filter((iid) => Number.isSafeInteger(iid)).slice(0, 20),
-      pipeline } };
-}
-
-/** Last @-mention Todo the Workstation routed to an enrolled worker instead of dispatching a new session. */
-export function normalizeLeaderTodo(value) {
-  if (!isRecord(value)) return null;
-  return { todoId: text(value.todoId).slice(0, 200), title: text(value.title).slice(0, 300), url: safeUrl(value.url),
-    author: text(value.author).slice(0, 200), routedAt: timestamp(value.routedAt) };
-}
-
-/** Dependencies of an item that have no completion record yet (empty = unblocked). */
-export function leaderBlockedBy(item, completed) {
-  const done = new Set((Array.isArray(completed) ? completed : []).map((entry) => entry?.taskId));
-  const notes = normalizeLeaderNotes(item?.notes, { strict: false });
-  return (notes?.dependsOn ?? []).filter((taskId) => !done.has(taskId));
 }
 
 export function buildLeaderProjection(state = initialLeaderState()) {
   const creation = isRecord(state.creation) ? { status: text(state.creation.status, 'uncertain'),
     createdAt: timestamp(state.creation.createdAt), agentPreset: typeof state.creation.agentPreset === 'string' ? state.creation.agentPreset : null } : null;
-  return { enabled: state.enabled === true, sessionId: state.sessionId ?? null,
-    phase: ['not-created', 'ready', 'paused', 'error', 'uncertain'].includes(state.phase) ? state.phase : 'uncertain',
+  const reports = Array.isArray(state.reports) ? state.reports : [];
+  return { sessionId: state.sessionId ?? null,
+    phase: ['not-created', 'ready', 'error', 'uncertain'].includes(state.phase) ? state.phase : 'uncertain',
     runState: leaderRunState(state),
     settings: JSON.parse(JSON.stringify(state.settings)),
     creation,
-    run: { wakeups: Number.isSafeInteger(state.wakeups) ? state.wakeups : 0, lastStartedAt: timestamp(state.lastStartedAt) },
-    items: state.items.map((item) => ({ taskId: item.taskId, kind: leaderItemKind(item), sessionId: item.sessionId, title: item.title, url: item.url,
-      status: item.status, summary: item.summary || '', error: item.error || '', alerts: item.alerts.map((alert) => ({ ...alert })),
-      enrolledAt: timestamp(item.enrolledAt), provenance: ['created', 'leader'].includes(item.provenance?.kind) ? item.provenance.kind : 'ui',
-      notes: normalizeLeaderNotes(item.notes, { strict: false }), lastActivityAt: timestamp(item.lastActivityAt),
-      pendingWake: Array.isArray(item.pendingWake) ? [...item.pendingWake] : [],
-      blockedBy: leaderBlockedBy(item, state.completed), lastTodo: normalizeLeaderTodo(item.lastTodo),
-      lastReport: leaderReportSummary([...(Array.isArray(state.reports) ? state.reports : [])].reverse().find((entry) => entry?.taskId === item.taskId)) })),
-    // Leader sessions retired by a human handoff (newest last); comment ledger shows uncertain posts a human must check.
-    previousSessions: (Array.isArray(state.previousSessions) ? state.previousSessions : []).slice(-20).map((entry) => ({ ...entry })),
-    comments: (Array.isArray(state.comments) ? state.comments : []).slice(-20).map((entry) => ({ requestId: entry.requestId, taskId: entry.taskId ?? null,
-      method: entry.method || 'POST', path: entry.path || '', status: entry.status, noteId: entry.noteId ?? null, url: entry.url || '', at: timestamp(entry.at), error: entry.error || '' })),
-    // FIFO queue of Leader create/continue requests waiting for a running-worker slot (position is 1-based).
-    queue: (Array.isArray(state.queue) ? state.queue : []).slice(0, LEADER_LIMITS.maxQueue).map((entry, index) => ({ id: entry.id, kind: entry.kind,
-      taskId: entry.taskId ?? null, sessionId: entry.sessionId ?? null, position: index + 1,
-      title: entry.kind === 'create' ? text(entry.request?.title).slice(0, 200) : '',
-      reason: entry.kind === 'continue' ? text(entry.request?.reason).slice(0, 1000) : '', queuedAt: timestamp(entry.queuedAt) })),
-    completed: (Array.isArray(state.completed) ? state.completed : []).slice(-30).map((entry) => normalizeLeaderCompletion(entry)),
-    // Open deliveries are the only records a human must resolve; terminal ones stay internal audit.
-    deliveries: (state.outbox ?? []).filter((entry) => OPEN_DELIVERY.has(entry.status)).map((entry) => ({ requestId: entry.requestId,
-      kind: entry.kind, taskId: entry.taskId ?? null, sessionId: entry.sessionId, status: entry.status, error: entry.error || '',
-      createdAt: timestamp(entry.createdAt) })),
-    audit: (Array.isArray(state.audit) ? state.audit : []).slice(-30).map((entry) => ({ ...entry })),
+    // Open deliveries are the only records a human might need to look at; terminal ones stay internal.
+    deliveries: (state.deliveries ?? []).filter((entry) => OPEN_DELIVERY.has(entry.status)).map((entry) => ({ requestId: entry.requestId,
+      kind: entry.kind, taskId: entry.taskId ?? null, sessionId: entry.sessionId, status: entry.status, error: entry.error || '', at: timestamp(entry.at) })),
     // Ad-hoc tasks the Leader dispatched; uncertain ones need a human to check the Host session list.
     tasks: (Array.isArray(state.tasks) ? state.tasks : []).filter((task) => task.status !== 'archived').slice(-50).map((task) => ({
       taskId: task.taskId, sessionId: task.sessionId ?? null, title: task.title, status: task.status,
       createdAt: timestamp(task.createdAt), error: task.error || '' })),
-    // Worker self-reports (untrusted worker output, newest last) for the panel.
-    reports: (Array.isArray(state.reports) ? state.reports : []).slice(-30).map((entry) => ({ ...entry })),
-    events: state.events.map((event) => ({ ...event })), error: state.error || '' };
+    // Child self-reports (untrusted child output, newest last); `unseen` counts those the Leader has not read yet.
+    reports: reports.slice(-30).map((entry) => ({ ...entry })),
+    unseenReports: reports.filter((entry) => entry.seen !== true).length,
+    error: state.error || '' };
 }
 
-/** Compact one-line summary of a worker report (null when none). */
+/** Compact one-line summary of a child report (null when none). */
 export function leaderReportSummary(entry) {
   if (!isRecord(entry)) return null;
-  return { id: entry.id, kind: entry.kind, text: text(entry.text).replace(/\s+/gu, ' ').trim().slice(0, 200), toTaskId: entry.toTaskId ?? null, at: timestamp(entry.at) };
+  return { id: entry.id, kind: entry.kind, text: text(entry.text).replace(/\s+/gu, ' ').trim().slice(0, 200), at: timestamp(entry.at), seen: entry.seen === true };
 }
+
 
 export const DEFAULT_SETTINGS = Object.freeze({
   enabled: false,
@@ -1861,9 +1644,9 @@ function normalizeManualHandoffs(value) {
 }
 
 /**
- * 同对象合并派发 / Leader 转交的关联字段（仅在存在时写出，旧记录形状不变）：
- * batchId 标识同一回合处理的一组 Todo，mergedWith 为组内全部 todoId（含自身），
- * leaderTaskId 为接收转交的 Leader 托管任务 ID。
+ * 同对象合并派发的关联字段（仅在存在时写出，旧记录形状不变）：
+ * batchId 标识同一回合处理的一组 Todo，mergedWith 为组内全部 todoId（含自身）。
+ * 旧版本写入的 leaderTaskId 不再保留。
  */
 function normalizeDispatchLinks(record) {
   const id = (value) => (typeof value === 'string' && value && value.trim() === value && value.length <= 200
@@ -1871,8 +1654,7 @@ function normalizeDispatchLinks(record) {
   const batchId = id(record.batchId);
   const mergedWith = batchId && Array.isArray(record.mergedWith)
     ? [...new Set(record.mergedWith.map(id).filter(Boolean))].slice(0, 20) : [];
-  const leaderTaskId = id(record.leaderTaskId);
-  return { ...(batchId ? { batchId, mergedWith } : {}), ...(leaderTaskId ? { leaderTaskId } : {}) };
+  return batchId ? { batchId, mergedWith } : {};
 }
 
 export function normalizeState(value) {
@@ -1988,9 +1770,6 @@ export function normalizeState(value) {
         requestId: text(record.requestId).slice(0, 200),
         executionStatus: ['running', 'completed', 'failed'].includes(record.executionStatus) ? record.executionStatus : null,
         automatic: record.automatic !== false,
-        ...(record.leaderCreatedSession === sessionId && typeof sessionId === 'string' && sessionId.trim() === sessionId
-          && sessionId.length <= 200 && !/[\u0000-\u001f]/u.test(sessionId) ? { leaderCreatedSession: sessionId,
-            ...(Number.isSafeInteger(record.leaderCreatedPolicyEpoch) && record.leaderCreatedPolicyEpoch >= 0 ? { leaderCreatedPolicyEpoch: record.leaderCreatedPolicyEpoch } : {}) } : {}),
         completedAt: timestamp(record.completedAt),
         executionError: text(record.executionError),
         skipReason: text(record.skipReason).slice(0, 300),
@@ -2014,9 +1793,6 @@ export function normalizeState(value) {
         createdAt,
         manualHandoffs: normalizeManualHandoffs(record.manualHandoffs),
         automatic: record.automatic !== false,
-        ...(record.leaderCreatedSession === record.sessionId && record.sessionId.trim() === record.sessionId
-          && record.sessionId.length <= 200 && !/[\u0000-\u001f]/u.test(record.sessionId) ? { leaderCreatedSession: record.sessionId,
-            ...(Number.isSafeInteger(record.leaderCreatedPolicyEpoch) && record.leaderCreatedPolicyEpoch >= 0 ? { leaderCreatedPolicyEpoch: record.leaderCreatedPolicyEpoch } : {}) } : {}),
         followUp: record.followUp === true,
         routed: record.routed === true,
         routeMode: ROUTE_MODES.includes(record.routeMode) ? record.routeMode : '',
@@ -2406,7 +2182,6 @@ export function publicState(state, running = false, currentUserId = null) {
       routed: state.handled[todo.id]?.routed === true || state.pending[todo.id]?.routed === true,
       routeMode: state.handled[todo.id]?.routeMode ?? state.pending[todo.id]?.routeMode ?? '',
       batchSize: (state.handled[todo.id]?.mergedWith ?? state.pending[todo.id]?.mergedWith ?? []).length,
-      leaderTaskId: state.handled[todo.id]?.leaderTaskId ?? state.pending[todo.id]?.leaderTaskId ?? '',
       round: state.handled[todo.id]?.round ?? 1,
       closure: state.handled[todo.id]?.closure ?? '',
       closureNote: state.handled[todo.id]?.closureNote ?? '',

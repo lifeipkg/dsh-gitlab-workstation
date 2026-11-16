@@ -196,11 +196,9 @@ export const slotsMethods = {
       reportStatus: '',
       reportSummary: '',
       resumeAfterMinutes: null,
-      // 合并组与 Leader 转交的关联字段随 pending 一起落到 handled（供 UI 展示与结算归因）。
+      // 合并组的关联字段随 pending 一起落到 handled（供 UI 展示与结算归因）。
       ...(typeof pending.batchId === 'string' && pending.batchId
         ? { batchId: pending.batchId, mergedWith: Array.isArray(pending.mergedWith) ? [...pending.mergedWith] : [] } : {}),
-      ...(pending.routed === true && typeof pending.leaderTaskId === 'string' && pending.leaderTaskId
-        ? { leaderTaskId: pending.leaderTaskId } : {}),
     };
     this.state.handled[todoId] = record;
     delete this.state.pending[todoId];

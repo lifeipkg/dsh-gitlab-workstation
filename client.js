@@ -116,53 +116,21 @@ window.__ModuleLoader__.load({
       issuesTitle: 'Issues', issuesEmpty: 'No open issues assigned to you on GitLab.',
       issuesError: 'Could not load the issue list', issuesHint: 'Open issues assigned to you',
       issuesOrphans: 'Closed or unassigned', issueTag: 'Issue',
-      leaderTitle: 'WorkStation Leader', leaderCreate: 'Create Leader', leaderOpen: 'Open Leader',
-      leaderStart: 'Start supervision', leaderPause: 'Pause all', leaderModel: 'Leader model',
-      leaderAutoEnroll: 'Manage new Issue sessions by default', leaderAutoEnrollHint: 'Off by default. Never enrolls existing sessions.',
-      leaderScope: 'Enrollment lets Leader read the selected session and send instructions only within its original task scope. It grants no human approval or question-answering authority.',
-      leaderStartHint: 'Start supervision of the explicitly enrolled sessions. Unselected sessions remain untouched.',
-      leaderAutoEnrollConfirm: 'Apply this access to future sessions created from the Issue tab only. Existing sessions remain untouched.',
-      leaderConfirm: 'Confirm access', leaderEnrolled: 'Managed', leaderEnroll: 'Manage with Leader', leaderUnenroll: 'Unmanage',
-      leaderManaged: 'Managed sessions',
+      leaderTitle: 'WorkStation Leader', leaderCreate: 'Create Leader', leaderOpen: 'Open Leader', leaderModel: 'Leader model',
+      leaderIntro: 'Leader is a standard DSH session: talk to it in its own conversation. It reads your Issue list and manages worker sessions with its own tools.',
+      leaderUnseen: 'Unread reports', leaderSetupIncomplete: 'Setup incomplete',
       leaderError: 'Leader action failed', leaderSnapshotError: 'Could not read Leader status',
-      leaderInvalidResponse: 'Leader response could not be verified. Refresh status before granting access.',
-      leaderRpcUnavailable: 'Authenticated browser connection is unavailable. Leader access changes cannot use HTTP; refresh the page or check the Host.',
+      leaderInvalidResponse: 'Leader response could not be verified. Refresh status and try again.',
+      leaderRpcUnavailable: 'Authenticated browser connection is unavailable. Leader changes cannot use HTTP; refresh the page or check the Host.',
       leaderCreateUncertain: 'Creation was sent but no session ID is confirmed. Refresh status or check the Host; do not create another Leader.',
-      leaderRetrySetup: 'Retry setup (reuse known Leader)', leaderRetrySetupHint: 'Only retries setup on this known Leader session. It does not create another session, start supervision, or grant access to any Issue.',
-      leaderNotCreated: 'Not created · off', leaderReady: 'Ready', leaderPaused: 'Paused', leaderUncertain: 'Uncertain', leaderErrorPhase: 'Error',
-      leaderWatching: 'Watching', leaderRunning: 'Running', leaderNeedsHuman: 'Needs you', leaderArchived: 'Archived', leaderMissing: 'Missing', leaderUnknown: 'Unknown',
+      leaderRetrySetup: 'Retry setup (reuse known Leader)', leaderRetrySetupHint: 'Only retries setup on this known Leader session. It does not create another session.',
+      leaderNotCreated: 'Not created', leaderReady: 'Ready', leaderUncertain: 'Uncertain', leaderErrorPhase: 'Error',
       leaderRefresh: 'Refresh Leader status', leaderWorking: 'Updating Leader…', leaderSaved: 'Leader updated',
-      leaderStandby: 'Standby', leaderCold: 'Not loaded', leaderNeverStartedPhase: 'Created · not started', leaderDeliveryUncertain: 'Delivery unconfirmed',
-      leaderNeverStartedHint: 'Leader is created but supervision has not started. Until you click "Start supervision", the Leader session stays blank and DSH shows it as "New Session". This is not a failed creation; do not create another Leader.',
-      leaderPausedHint: 'Supervision is paused: Leader is not woken automatically, but can still act when you talk to it. Start supervision again to resume automatic wakes.',
-      leaderMainWindow: 'Leader is your main window: once supervision runs, it posts progress for every Issue session in its own conversation.',
-      leaderAudit: 'Leader session actions', leaderAuditHint: 'Every Leader action: sessions created, messages sent, notes, GitLab API calls, run start/pause and more. Display only.',
-      leaderAuditCreate: 'Created session', leaderAuditEnroll: 'Took over session', leaderAuditRename: 'Renamed', leaderAuditArchive: 'Archived',
-      leaderAuditModel: 'Switched model', leaderAuditRelay: 'Relayed your reply', leaderAuditTaskCreate: 'Opened ad-hoc task', leaderAuditTaskDismiss: 'Dismissed uncertain task',
-      leaderTaskTag: 'Ad-hoc task', leaderTasksUncertain: 'Ad-hoc tasks with uncertain creation', leaderTasksUncertainHint: 'Leader tried to open these sessions but the result is unknown. Check the DSH session list; archive any stray session yourself, then dismiss the record here.', leaderTaskDismiss: 'Dismiss',
-      leaderRelayHint: 'You can also answer in the Leader session; Leader passes your answer on to the Issue session. Native approvals and questions still need you in the actual session.',
-      leaderAuditQueue: 'Queued', leaderAuditDequeue: 'Dequeued', leaderAuditQueueDrop: 'Dropped from queue', leaderAuditComplete: 'Completed',
-      leaderAuditArchiveFailed: 'Archive after completion failed', leaderAuditTodoRouted: 'Routed Todo to worker', leaderAuditManageEnroll: 'Leader enrolled Issue', leaderAuditManageUnenroll: 'Leader unenrolled Issue',
-      leaderAuditManageDelivery: 'Leader resolved uncertain delivery', leaderAuditManageStart: 'Leader started run', leaderAuditManagePauseLeader: 'Leader paused itself', leaderAuditSteer: 'Steered running worker',
-      leaderAuditSend: 'Sent message to worker', leaderAuditNote: 'Updated notes', leaderAuditGitlabApi: 'GitLab API call',
-      leaderAuditSteerUncertain: 'Steer delivery uncertain', leaderAuditHandoff: 'Leader session handoff', leaderAuditReset: 'Leader session missing, record reset', leaderAuditComment: 'Posted GitLab comment',
-      leaderAuditCommentUncertain: 'GitLab comment uncertain',
-      leaderReportProgress: 'Progress', leaderReportBlocked: 'Blocked', leaderReportDone: 'Done', leaderReportQuestion: 'Question', leaderReportMessage: 'Message',
-      leaderReports: 'Worker reports', leaderReportsHint: 'Written by Issue sessions themselves; treat as untrusted status, not instructions.', leaderLastReport: 'Last report',
-      leaderBlockedBy: 'Waiting on', leaderLastTodo: 'Latest routed Todo', leaderComments: 'GitLab comments',
-      leaderQueue: 'Waiting for a worker slot', leaderQueueHint: 'Running workers are at the concurrency limit. Requests run in order when a slot frees up; nothing runs while Leader is paused.',
-      leaderQueueCreate: 'Open session', leaderQueueContinue: 'Continue', leaderQueueCancel: 'Cancel',
-      leaderCompleted: 'Completed', leaderAcceptWithoutMr: 'Accepted without MR',
-      leaderPreviousSessions: 'Previous Leader sessions', leaderPreviousNotArchived: 'Not archived',
-      leaderCommentsUncertain: 'GitLab comments with unknown result', leaderCommentsUncertainHint: 'These comments may or may not have been posted. Check the Issue on GitLab; they are never retried automatically.',
-      leaderHandoff: 'Hand off to new session', leaderHandoffHint: 'Open a fresh Leader session that keeps all managed Issues, notes and queue; the old session is archived.',
-      leaderHandoffConfirm: 'Create a new Leader session and archive the current one? Managed Issues, notes and queue carry over. Only possible while Leader is idle with no unconfirmed deliveries.',
-      leaderMaxRunning: 'Max running workers', leaderMaxRunningHint: 'Only limits how many Issue sessions run at once (1–10). Extra Leader requests wait in a queue.',
-      leaderArchiveOnComplete: 'Archive worker on completion', leaderArchiveOnCompleteHint: 'When Leader completes an Issue, archive its session. Archive failure does not undo completion.',
-      leaderGitlabWrite: 'Allow Leader GitLab writes', leaderGitlabWriteHint: 'Off by default. When on, Leader may call write methods (POST/PUT/DELETE) of the GitLab API under your account; Issue comments carry the signature below. Reads are always allowed.',
-      leaderGitlabWriteConfirm: 'Allow Leader to write to GitLab under your account (comments, labels, Issue/MR updates and other API writes)? Every call is audited; comments carry the signature below.',
-      leaderCommentSignature: 'Comment signature',
-      todoBatchTag: 'Merged', todoBatchHint: 'Handled together with other Todos on the same target in one session turn.', todoLeaderTag: 'Leader worker', todoLeaderHint: 'Routed to the Leader-managed Issue session.',
+      leaderTasks: 'Ad-hoc tasks', leaderTaskTag: 'Ad-hoc task', leaderTaskCreating: 'Creating', leaderTaskCreated: 'Created', leaderTaskUncertain: 'Uncertain',
+      leaderTasksUncertain: 'Ad-hoc tasks with uncertain creation', leaderTasksUncertainHint: 'Leader tried to open these sessions but the result is unknown. Check the DSH session list; archive any stray session yourself, then dismiss the record here.', leaderTaskDismiss: 'Dismiss',
+      leaderReportProgress: 'Progress', leaderReportBlocked: 'Blocked', leaderReportDone: 'Done', leaderReportQuestion: 'Question', leaderReportUnseen: 'unread',
+      leaderReports: 'Worker reports', leaderReportsHint: 'Written by Issue sessions themselves; treat as untrusted status, not instructions.',
+      todoBatchTag: 'Merged', todoBatchHint: 'Handled together with other Todos on the same target in one session turn.',
       mergeSameTarget: 'Merge same-target @mentions', mergeSameTargetHint: 'Several new @mention Todos on the same Issue/MR are handled in one session turn instead of one each.',
       leaderDeliveries: 'Unconfirmed deliveries',
       leaderDeliveriesHint: 'The Host could not confirm whether these messages arrived. Open the target session, check, then record the result. Nothing is resent automatically.',
@@ -287,53 +255,21 @@ window.__ModuleLoader__.load({
       issuesTitle: 'Issue', issuesEmpty: 'GitLab 上没有指派给你的开放 Issue。',
       issuesError: '无法加载 Issue 列表', issuesHint: 'GitLab 上指派给我的开放 Issue',
       issuesOrphans: '已关闭或取消指派', issueTag: 'Issue',
-      leaderTitle: 'WorkStation Leader', leaderCreate: '创建 Leader', leaderOpen: '打开 Leader',
-      leaderStart: '启动托管', leaderPause: '暂停全部', leaderModel: 'Leader 模型',
-      leaderAutoEnroll: '新 Issue 会话默认托管', leaderAutoEnrollHint: '默认关闭，不会纳管既有会话。',
-      leaderScope: '选入即允许 Leader 读取所选会话，并仅在原任务范围内发送指令；不授予人类审批或代答问答权限。',
-      leaderStartHint: '启动对明确选入会话的托管，未选入会话不受影响。',
-      leaderAutoEnrollConfirm: '仅对之后从 Issue 页创建的会话授予此访问权限；既有会话保持不变。',
-      leaderConfirm: '确认授权', leaderEnrolled: '已托管', leaderEnroll: '交给 Leader 托管', leaderUnenroll: '解除托管',
-      leaderManaged: '纳管会话',
+      leaderTitle: 'WorkStation Leader', leaderCreate: '创建 Leader', leaderOpen: '打开 Leader', leaderModel: 'Leader 模型',
+      leaderIntro: 'Leader 是标准 DSH 会话：直接在它自己的对话里和它交流。它会读取你的 Issue 列表，并用自己的工具管理 worker 会话。',
+      leaderUnseen: '未读汇报', leaderSetupIncomplete: '设置未完成',
       leaderError: 'Leader 操作失败', leaderSnapshotError: '无法读取 Leader 状态',
-      leaderInvalidResponse: '无法核验 Leader 响应；请先刷新状态再授予访问权限。',
-      leaderRpcUnavailable: '已认证浏览器连接不可用。Leader 权限变更不会回退到 HTTP；请刷新页面或核查 Host。',
+      leaderInvalidResponse: '无法核验 Leader 响应；请先刷新状态再重试。',
+      leaderRpcUnavailable: '已认证浏览器连接不可用。Leader 变更不会回退到 HTTP；请刷新页面或核查 Host。',
       leaderCreateUncertain: '已发送创建请求，但尚未确认会话 ID。请刷新状态或核查 Host，不要重复创建 Leader。',
-      leaderRetrySetup: '重试设置（复用已知 Leader）', leaderRetrySetupHint: '只重试此已知 Leader 会话的设置，不创建新会话、不启动托管，也不授予任何 Issue 访问权限。',
-      leaderNotCreated: '未创建 · 关闭', leaderReady: '就绪', leaderPaused: '已暂停', leaderUncertain: '不确定', leaderErrorPhase: '错误',
-      leaderWatching: '观察中', leaderRunning: '执行中', leaderNeedsHuman: '需人工', leaderArchived: '已归档', leaderMissing: '不存在', leaderUnknown: '未知',
+      leaderRetrySetup: '重试设置（复用已知 Leader）', leaderRetrySetupHint: '只重试此已知 Leader 会话的设置，不创建新会话。',
+      leaderNotCreated: '未创建', leaderReady: '就绪', leaderUncertain: '不确定', leaderErrorPhase: '错误',
       leaderRefresh: '刷新 Leader 状态', leaderWorking: '正在更新 Leader…', leaderSaved: 'Leader 已更新',
-      leaderStandby: '待命', leaderCold: '未加载', leaderNeverStartedPhase: '已创建 · 未启动', leaderDeliveryUncertain: '投递待核对',
-      leaderNeverStartedHint: 'Leader 已创建，但尚未启动托管。点击“启动托管”之前，Leader 会话是空白的，DSH 会把它显示为“New Session”。这不是创建失败，请不要重复创建 Leader。',
-      leaderPausedHint: '托管已暂停：不再自动唤醒 Leader，你和它对话时它仍可操作。重新启动托管即恢复自动唤醒。',
-      leaderMainWindow: 'Leader 会话是你的主窗口：托管运行时，它会在自己的对话里汇报每个 Issue 会话的进度。',
-      leaderAudit: 'Leader 会话操作', leaderAuditHint: 'Leader 的每个操作：建会话、发消息、记笔记、GitLab API 调用、开始/暂停托管等。仅供查看。',
-      leaderAuditCreate: '创建会话', leaderAuditEnroll: '接管会话', leaderAuditRename: '重命名', leaderAuditArchive: '归档',
-      leaderAuditModel: '更换模型', leaderAuditRelay: '转达你的回复', leaderAuditTaskCreate: '开启临时任务', leaderAuditTaskDismiss: '放弃不确定的临时任务',
-      leaderTaskTag: '临时任务', leaderTasksUncertain: '创建结果不确定的临时任务', leaderTasksUncertainHint: 'Leader 尝试开启这些会话但结果未知。请在 DSH 会话列表核查，如有多余会话请自行归档，再在此放弃该记录。', leaderTaskDismiss: '放弃记录',
-      leaderRelayHint: '也可以直接在 Leader 会话里回复，Leader 会把你的答复转告对应 Issue 会话；原生审批与问答仍需你在实际会话中处理。',
-      leaderAuditQueue: '排队', leaderAuditDequeue: '出队执行', leaderAuditQueueDrop: '移出队列', leaderAuditComplete: '完成收尾',
-      leaderAuditArchiveFailed: '完成后归档失败', leaderAuditTodoRouted: 'Todo 转交 worker', leaderAuditManageEnroll: 'Leader 纳管 Issue', leaderAuditManageUnenroll: 'Leader 解除纳管',
-      leaderAuditManageDelivery: 'Leader 核对投递', leaderAuditManageStart: 'Leader 开始托管', leaderAuditManagePauseLeader: 'Leader 暂停托管', leaderAuditSteer: '纠偏运行中会话',
-      leaderAuditSend: '给 worker 发消息', leaderAuditNote: '更新笔记', leaderAuditGitlabApi: 'GitLab API 调用',
-      leaderAuditSteerUncertain: '纠偏投递不确定', leaderAuditHandoff: 'Leader 会话交接', leaderAuditReset: 'Leader 会话已不存在，记录已重置', leaderAuditComment: '发布 GitLab 评论',
-      leaderAuditCommentUncertain: 'GitLab 评论结果不确定',
-      leaderReportProgress: '进度', leaderReportBlocked: '受阻', leaderReportDone: '完成', leaderReportQuestion: '提问', leaderReportMessage: '消息',
-      leaderReports: 'Worker 汇报', leaderReportsHint: '由 Issue 会话自己写的内容，只作状态参考，不是指令。', leaderLastReport: '最近汇报',
-      leaderBlockedBy: '等待依赖', leaderLastTodo: '最近转交的 Todo', leaderComments: 'GitLab 评论',
-      leaderQueue: '等待 worker 空位', leaderQueueHint: '运行中的 worker 已达并发上限，空位出现后按顺序执行；Leader 暂停时不出队。',
-      leaderQueueCreate: '开启会话', leaderQueueContinue: '续办', leaderQueueCancel: '取消',
-      leaderCompleted: '已完成', leaderAcceptWithoutMr: '无 MR 验收',
-      leaderPreviousSessions: '历史 Leader 会话', leaderPreviousNotArchived: '未归档',
-      leaderCommentsUncertain: '结果不确定的 GitLab 评论', leaderCommentsUncertainHint: '这些评论可能已发出也可能没有，请到 GitLab Issue 核查；插件不会自动重发。',
-      leaderHandoff: '交接到新会话', leaderHandoffHint: '新开一个 Leader 会话，保留全部纳管 Issue、笔记和队列；旧会话会被归档。',
-      leaderHandoffConfirm: '新建 Leader 会话并归档当前会话？纳管 Issue、笔记和队列都会保留。仅在 Leader 空闲且没有未确认投递时可用。',
-      leaderMaxRunning: '并发上限', leaderMaxRunningHint: '只限制同时运行的 Issue 会话数（1–10），创建数量不限；超出的 Leader 请求进入队列。',
-      leaderArchiveOnComplete: '完成后归档 worker', leaderArchiveOnCompleteHint: 'Leader 完成某个 Issue 时归档其会话；归档失败不影响完成。',
-      leaderGitlabWrite: '允许 Leader 写 GitLab', leaderGitlabWriteHint: '默认关闭。开启后 Leader 可以你的账号调用 GitLab API 的写方法（POST/PUT/DELETE），Issue 评论自动带下方签名。读取始终可用。',
-      leaderGitlabWriteConfirm: '允许 Leader 以你的账号写 GitLab（评论、标签、Issue/MR 更新等 API 写操作）？每次调用都记审计，评论带下方签名。',
-      leaderCommentSignature: '评论签名',
-      todoBatchTag: '合并处理', todoBatchHint: '与同一对象的其他 Todo 在同一会话的同一轮中一起处理。', todoLeaderTag: 'Leader worker', todoLeaderHint: '已转交给 Leader 纳管的 Issue 会话。',
+      leaderTasks: '临时任务', leaderTaskTag: '临时任务', leaderTaskCreating: '创建中', leaderTaskCreated: '已创建', leaderTaskUncertain: '结果不确定',
+      leaderTasksUncertain: '创建结果不确定的临时任务', leaderTasksUncertainHint: 'Leader 尝试开启这些会话但结果未知。请在 DSH 会话列表核查，如有多余会话请自行归档，再在此放弃该记录。', leaderTaskDismiss: '放弃记录',
+      leaderReportProgress: '进度', leaderReportBlocked: '受阻', leaderReportDone: '完成', leaderReportQuestion: '提问', leaderReportUnseen: '未读',
+      leaderReports: 'Worker 汇报', leaderReportsHint: '由 Issue 会话自己写的内容，只作状态参考，不是指令。',
+      todoBatchTag: '合并处理', todoBatchHint: '与同一对象的其他 Todo 在同一会话的同一轮中一起处理。',
       mergeSameTarget: '同对象 @我 合并派发', mergeSameTargetHint: '同一 Issue/MR 上的多条新 @我 Todo 合并为一个会话的一轮处理，而不是各开一次。',
       leaderDeliveries: '未确认投递',
       leaderDeliveriesHint: 'Host 无法确认这些消息是否已送达。请打开目标会话核对后记录结果；无论选择哪项都不会自动重发。',
@@ -379,8 +315,7 @@ window.__ModuleLoader__.load({
     // 写操作必须显式覆盖 issues/logs 等只读 action 的默认 GET，否则刷新和清空只会读取缓存。
     const post = (action, payload, signal) => bridge(action, { method: 'POST', payload, signal });
 
-    const LEADER_RPC_OPERATIONS = ['create', 'configure', 'start', 'pause', 'enroll', 'unenroll',
-      'resolveDelivery', 'resolveCreation', 'resolveTask', 'cancelQueued', 'handoff'];
+    const LEADER_RPC_OPERATIONS = ['snapshot', 'create', 'configure', 'resolveCreation', 'resolveTask', 'resolveDelivery'];
     /** Native ConnectionRpcResult, not RemoteResult or HTTP: Host authenticates the browser peer. */
     async function callLeader(ctx, operation, payload = {}, signal) {
       if (!LEADER_RPC_OPERATIONS.includes(operation)) throw new Error(bridgeText('leaderInvalidResponse'));
@@ -743,117 +678,50 @@ window.__ModuleLoader__.load({
       });
     }
 
-    const LEADER_PHASE_LABELS = { 'not-created': 'leaderNotCreated', ready: 'leaderReady', paused: 'leaderPaused', error: 'leaderErrorPhase', uncertain: 'leaderUncertain' };
-    const LEADER_STATUS_LABELS = { watching: 'leaderWatching', running: 'leaderRunning', 'needs-human': 'leaderNeedsHuman', paused: 'leaderPaused', archived: 'leaderArchived', missing: 'leaderMissing', unknown: 'leaderUnknown',
-      standby: 'leaderStandby', cold: 'leaderCold' };
-    const LEADER_RUN_STATES = ['error', 'creation-uncertain', 'not-created', 'setup-incomplete', 'delivery-uncertain', 'running', 'paused', 'never-started'];
-
-    const LEADER_AUDIT_LABELS = { 'session-create': 'leaderAuditCreate', 'session-enroll': 'leaderAuditEnroll', 'session-rename': 'leaderAuditRename',
-      'session-archive': 'leaderAuditArchive', 'session-model': 'leaderAuditModel', 'relay-reply': 'leaderAuditRelay',
-      'task-create': 'leaderAuditTaskCreate', 'task-dismiss': 'leaderAuditTaskDismiss',
-      queue: 'leaderAuditQueue', dequeue: 'leaderAuditDequeue', 'queue-drop': 'leaderAuditQueueDrop', complete: 'leaderAuditComplete',
-      'archive-failed': 'leaderAuditArchiveFailed', 'todo-routed': 'leaderAuditTodoRouted', steer: 'leaderAuditSteer',
-      'steer-uncertain': 'leaderAuditSteerUncertain', handoff: 'leaderAuditHandoff', 'leader-reset': 'leaderAuditReset', comment: 'leaderAuditComment',
-      'comment-uncertain': 'leaderAuditCommentUncertain', 'session-unenroll': 'leaderAuditManageUnenroll',
-      'session-resolve_delivery': 'leaderAuditManageDelivery', 'run-start': 'leaderAuditManageStart', 'run-pause': 'leaderAuditManagePauseLeader',
-      'session-send': 'leaderAuditSend', 'session-steer': 'leaderAuditSteer', note: 'leaderAuditNote', 'gitlab-api': 'leaderAuditGitlabApi' };
-    const LEADER_REPORT_LABELS = { progress: 'leaderReportProgress', blocked: 'leaderReportBlocked', done: 'leaderReportDone',
-      question: 'leaderReportQuestion', message: 'leaderReportMessage' };
-
-    /** Audit detail is a Host-written JSON string; show only the human-meaningful field. */
-    function leaderAuditDetail(detail) {
-      try {
-        const value = JSON.parse(detail || '{}');
-        if (typeof value.title === 'string') return value.title;
-        if (typeof value.reason === 'string') return value.reason;
-        if (typeof value.provider === 'string' && typeof value.model === 'string') return `${value.provider}/${value.model}`;
-        if (typeof value.summary === 'string') return value.summary;
-        if (typeof value.from === 'string' && typeof value.to === 'string') return `${value.from} → ${value.to}`;
-        return '';
-      } catch { return ''; }
-    }
+    const LEADER_PHASE_LABELS = { 'not-created': 'leaderNotCreated', ready: 'leaderReady', error: 'leaderErrorPhase', uncertain: 'leaderUncertain' };
+    const LEADER_RUN_LABELS = { 'not-created': 'leaderNotCreated', 'creation-uncertain': 'leaderUncertain', 'setup-incomplete': 'leaderSetupIncomplete',
+      error: 'leaderErrorPhase', ready: 'leaderReady' };
+    const LEADER_RUN_STATES = Object.keys(LEADER_RUN_LABELS);
+    const LEADER_TASK_STATUS_LABELS = { creating: 'leaderTaskCreating', created: 'leaderTaskCreated', uncertain: 'leaderTaskUncertain' };
+    const LEADER_REPORT_LABELS = { progress: 'leaderReportProgress', blocked: 'leaderReportBlocked', done: 'leaderReportDone', question: 'leaderReportQuestion' };
 
     function validLeaderSessionId(value) {
       return typeof value === 'string' && value.length > 0 && value.trim() === value && !/[\u0000-\u001f]/u.test(value);
     }
 
-    /** Read-only projection decoding: malformed status never becomes a grantable default. */
+    /** Read-only projection decoding of the v3 Leader journal (session, model, ad-hoc tasks, child reports, open deliveries). */
     function normalizeLeaderProjection(value) {
-      if (!value || !Object.hasOwn(LEADER_PHASE_LABELS, value.phase) || typeof value.enabled !== 'boolean'
+      if (!value || !Object.hasOwn(LEADER_PHASE_LABELS, value.phase)
         || (value.sessionId !== null && !validLeaderSessionId(value.sessionId))
-        || !value.settings || typeof value.settings.autoEnrollNew !== 'boolean' || !Array.isArray(value.items)) return null;
+        || !value.settings || typeof value.settings !== 'object') return null;
       const text = (item) => typeof item === 'string' ? item : '';
       const count = (item) => Number.isSafeInteger(item) && item >= 0 ? item : null;
-      const model = value.settings.model;
-      if (model !== null && (!model || !text(model.provider) || !text(model.model)
+      const list = (item) => Array.isArray(item) ? item : [];
+      const model = value.settings.model ?? null;
+      if (model !== null && (typeof model !== 'object' || !text(model.provider) || !text(model.model)
         || (model.reasoningEffort !== undefined && !text(model.reasoningEffort)))) return null;
       return {
-        enabled: value.enabled, sessionId: validLeaderSessionId(value.sessionId) ? value.sessionId : null, phase: value.phase,
-        // Hosts before the hardening release omit these; '' / null keep the old behaviour.
+        sessionId: validLeaderSessionId(value.sessionId) ? value.sessionId : null, phase: value.phase,
         runState: LEADER_RUN_STATES.includes(value.runState) ? value.runState : '',
         creation: value.creation && typeof value.creation === 'object'
           ? { status: text(value.creation.status), createdAt: count(value.creation.createdAt), agentPreset: text(value.creation.agentPreset) } : null,
-        run: { wakeups: count(value.run?.wakeups), lastStartedAt: count(value.run?.lastStartedAt) },
-        deliveries: (Array.isArray(value.deliveries) ? value.deliveries : [])
-          .filter((entry) => entry && text(entry.requestId) && ['advance', 'notify', 'relay'].includes(entry.kind))
+        deliveries: list(value.deliveries)
+          .filter((entry) => entry && text(entry.requestId) && ['send', 'steer'].includes(entry.kind))
           .map((entry) => ({ requestId: entry.requestId, kind: entry.kind, taskId: text(entry.taskId),
             sessionId: validLeaderSessionId(entry.sessionId) ? entry.sessionId : null, status: text(entry.status),
-            error: text(entry.error), createdAt: count(entry.createdAt) })),
-        settings: { model: model && text(model.provider) && text(model.model)
-          ? withReasoningEffort({ provider: model.provider, model: model.model }, text(model.reasoningEffort)) : null,
-          autoEnrollNew: value.settings.autoEnrollNew,
-          maxRunningWorkers: Number.isSafeInteger(value.settings.maxRunningWorkers) ? value.settings.maxRunningWorkers : 3,
-          archiveOnComplete: value.settings.archiveOnComplete !== false,
-          gitlabWrite: value.settings.gitlabWrite === true,
-          commentSignature: text(value.settings.commentSignature).trim() || '—— 由 AI Leader 代发' },
-        items: value.items.filter((item) => item && item.taskId != null).map((item) => ({
-          taskId: String(item.taskId), sessionId: validLeaderSessionId(item.sessionId) ? item.sessionId : null,
-          title: text(item.title), url: text(item.url),
-          status: Object.hasOwn(LEADER_STATUS_LABELS, item.status) ? item.status : 'unknown',
-          summary: text(item.summary), error: text(item.error),
-          alerts: (Array.isArray(item.alerts) ? item.alerts : []).filter((alert) => alert && text(alert.question)).map((alert) => ({
-            id: text(alert.id), question: alert.question, status: text(alert.status), createdAt: alert.createdAt,
-          })),
-          provenance: ['ui', 'created', 'leader'].includes(item.provenance) ? item.provenance : '',
-          kind: ['task', 'todo'].includes(item.kind) ? item.kind : 'issue',
-          notes: item.notes && typeof item.notes === 'object' ? { stage: text(item.notes.stage), next: text(item.notes.next), waitingOn: text(item.notes.waitingOn),
-            decisions: (Array.isArray(item.notes.decisions) ? item.notes.decisions : []).filter((entry) => typeof entry === 'string'),
-            deliverables: (Array.isArray(item.notes.deliverables) ? item.notes.deliverables : []).filter((entry) => typeof entry === 'string'),
-            updatedAt: count(item.notes.updatedAt) } : null,
-          blockedBy: (Array.isArray(item.blockedBy) ? item.blockedBy : []).filter((entry) => typeof entry === 'string'),
-          lastTodo: item.lastTodo && typeof item.lastTodo === 'object' ? { todoId: text(item.lastTodo.todoId), title: text(item.lastTodo.title),
-            author: text(item.lastTodo.author), routedAt: count(item.lastTodo.routedAt) } : null,
-          lastReport: item.lastReport && typeof item.lastReport === 'object' && Object.hasOwn(LEADER_REPORT_LABELS, item.lastReport.kind)
-            ? { kind: item.lastReport.kind, text: text(item.lastReport.text), at: count(item.lastReport.at) } : null,
-          commentCount: count(item.commentCount), maxComments: count(item.maxComments),
-        })),
-        // FIFO Leader create/continue requests waiting for a running-worker slot.
-        queue: (Array.isArray(value.queue) ? value.queue : []).filter((entry) => entry && text(entry.id) && ['create', 'continue'].includes(entry.kind))
-          .map((entry) => ({ id: entry.id, kind: entry.kind, taskId: text(entry.taskId), position: count(entry.position),
-            title: text(entry.title), reason: text(entry.reason), queuedAt: count(entry.queuedAt) })),
-        completed: (Array.isArray(value.completed) ? value.completed : []).filter((entry) => entry && text(entry.taskId)).map((entry) => ({
-          taskId: entry.taskId, title: text(entry.title), url: text(entry.url), kind: ['task', 'todo'].includes(entry.kind) ? entry.kind : 'issue',
-          summary: text(entry.summary), completedAt: count(entry.completedAt), acceptWithoutMr: entry.acceptWithoutMr === true, reason: text(entry.reason),
-        })),
-        previousSessions: (Array.isArray(value.previousSessions) ? value.previousSessions : []).filter((entry) => entry && validLeaderSessionId(entry.sessionId))
-          .map((entry) => ({ sessionId: entry.sessionId, handedOffAt: count(entry.handedOffAt), archived: entry.archived === true })),
-        comments: (Array.isArray(value.comments) ? value.comments : []).filter((entry) => entry && text(entry.requestId)).map((entry) => ({
-          requestId: entry.requestId, taskId: text(entry.taskId), status: text(entry.status), url: text(entry.url), at: count(entry.at), error: text(entry.error),
-        })),
-        // Worker self-reports (untrusted worker text, shown as plain text), newest last.
-        reports: (Array.isArray(value.reports) ? value.reports : []).filter((entry) => entry && Object.hasOwn(LEADER_REPORT_LABELS, entry.kind)).map((entry) => ({
-          id: text(entry.id), taskId: text(entry.taskId), kind: entry.kind, text: text(entry.text), toTaskId: text(entry.toTaskId), at: count(entry.at),
-        })),
-        // Display-only Leader session-management trail (create/rename/archive/model/relay), newest last.
-        audit: (Array.isArray(value.audit) ? value.audit : []).filter((entry) => entry && text(entry.action)).map((entry) => ({
-          action: entry.action, taskId: text(entry.taskId), sessionId: text(entry.sessionId), at: count(entry.at), detail: text(entry.detail),
-        })),
+            error: text(entry.error), at: count(entry.at) })),
+        settings: { model: model ? withReasoningEffort({ provider: model.provider, model: model.model }, text(model.reasoningEffort)) : null },
         // Leader-dispatched ad-hoc task sessions (no GitLab Issue); only uncertain ones need the human.
-        tasks: (Array.isArray(value.tasks) ? value.tasks : []).filter((entry) => entry && text(entry.taskId)).map((entry) => ({
+        tasks: list(value.tasks).filter((entry) => entry && text(entry.taskId)).map((entry) => ({
           taskId: entry.taskId, sessionId: validLeaderSessionId(entry.sessionId) ? entry.sessionId : null, title: text(entry.title),
-          status: text(entry.status), createdAt: count(entry.createdAt), error: text(entry.error),
+          status: Object.hasOwn(LEADER_TASK_STATUS_LABELS, entry.status) ? entry.status : 'created', createdAt: count(entry.createdAt), error: text(entry.error),
         })),
-        events: Array.isArray(value.events) ? value.events : [], error: text(value.error),
+        // Worker self-reports (untrusted worker text, shown as plain text), oldest first.
+        reports: list(value.reports).filter((entry) => entry && Object.hasOwn(LEADER_REPORT_LABELS, entry.kind)).map((entry) => ({
+          id: text(entry.id), taskId: text(entry.taskId), sessionId: validLeaderSessionId(entry.sessionId) ? entry.sessionId : null,
+          kind: entry.kind, text: text(entry.text), at: count(entry.at), seen: entry.seen === true,
+        })),
+        unseenReports: count(value.unseenReports) ?? 0, error: text(value.error),
       };
     }
 
@@ -868,27 +736,18 @@ window.__ModuleLoader__.load({
       // Unknown, failed or partial reads must retain the latch and any known ID.
       // A successful serialized abandon of the uncertain record is equally authoritative.
       const creationAbsent = ['snapshot', 'resolveCreation'].includes(operation) && success && !projection.error
-        && projection.phase === 'not-created' && !projection.enabled && !sessionId;
+        && projection.phase === 'not-created' && !sessionId;
       return { projection, sessionId, state: data?.state, creationAbsent,
         error: !success ? data?.result?.error || projection?.error || t('leaderInvalidResponse') : projection.error || '' };
     }
 
-    function leaderItemForSession(projection, taskId, sessionId) {
-      return projection?.items.find((item) => String(item.taskId) === String(taskId) && item.sessionId === sessionId) || null;
-    }
-
-    function canGrantLeaderAccess(projection) {
-      return Boolean(projection?.sessionId && ['ready', 'paused'].includes(projection.phase));
-    }
-
     function canCreateLeader(projection, knownSessionId, creationAttempted) {
-      return projection?.phase === 'not-created' && !projection.enabled && !projection.sessionId && !knownSessionId && !creationAttempted;
+      return projection?.phase === 'not-created' && !projection.sessionId && !knownSessionId && !creationAttempted;
     }
 
     function canRetryLeaderSetup(projection, knownSessionId) {
-      return Boolean(projection && !projection.enabled && validLeaderSessionId(knownSessionId)
-        && projection.sessionId === knownSessionId
-        && (['error', 'uncertain'].includes(projection.phase) || (projection.phase === 'paused' && projection.error)));
+      return Boolean(projection && validLeaderSessionId(knownSessionId) && projection.sessionId === knownSessionId
+        && (['error', 'uncertain'].includes(projection.phase) || projection.runState === 'setup-incomplete'));
     }
 
     function PanelIcon({ size = 20 }) {
@@ -1092,7 +951,6 @@ window.__ModuleLoader__.load({
       const [leaderBusy, setLeaderBusy] = React.useState('');
       const [leaderFresh, setLeaderFresh] = React.useState(false);
       const [leaderFeedback, setLeaderFeedback] = React.useState('');
-      const [leaderConfirm, setLeaderConfirm] = React.useState(null);
       const [leaderClaimId, setLeaderClaimId] = React.useState('');
       const leaderActiveRef = React.useRef(false);
       const leaderActionRef = React.useRef('');
@@ -1128,7 +986,7 @@ window.__ModuleLoader__.load({
         if (activeTab !== 'issues') return undefined;
         leaderActiveRef.current = true;
         leaderGuard.current.reset(); leaderActionRef.current = '';
-        setLeaderBusy(''); setLeaderFresh(false); setLeaderConfirm(null);
+        setLeaderBusy(''); setLeaderFresh(false);
         void fetchLeaderSnapshot();
         const timer = setInterval(() => void fetchLeaderSnapshot(), 15000);
         return () => {
@@ -1148,16 +1006,14 @@ window.__ModuleLoader__.load({
         if (operation === 'create' && (!leaderFresh
           || (!canCreateLeader(leaderViewRef.current.projection, leaderViewRef.current.sessionId, leaderViewRef.current.creationAttempted)
             && !canRetryLeaderSetup(leaderViewRef.current.projection, leaderViewRef.current.sessionId)))) return Promise.resolve(false);
-        if (['start', 'enroll'].includes(operation)
-          && (!leaderFresh || !canGrantLeaderAccess(leaderViewRef.current.projection))) return Promise.resolve(false);
         // Recovery operations are human assertions about the latest Host state; never act on a stale view.
-        if (['resolveDelivery', 'resolveCreation', 'resolveTask', 'cancelQueued', 'handoff'].includes(operation) && !leaderFresh) return Promise.resolve(false);
+        if (['resolveDelivery', 'resolveCreation', 'resolveTask'].includes(operation) && !leaderFresh) return Promise.resolve(false);
         if (operation === 'configure') {
           if (!leaderFresh || !leaderViewRef.current.projection || ['error', 'uncertain'].includes(leaderViewRef.current.projection.phase)) return Promise.resolve(false);
-          payload = { settings: { ...leaderViewRef.current.projection.settings, ...payload.settings } };
+          payload = { settings: { model: payload.settings?.model ?? null } };
         }
         leaderGuard.current.reset(); leaderActionRef.current = operation;
-        setLeaderBusy(operation); setLeaderFresh(false); setLeaderFeedback(''); setLeaderConfirm(null); setLeaderOpen(true);
+        setLeaderBusy(operation); setLeaderFresh(false); setLeaderFeedback(''); setLeaderOpen(true);
         updateLeaderView({ ...leaderViewRef.current, error: '', pollError: '',
           creationAttempted: leaderViewRef.current.creationAttempted || operation === 'create' });
         return leaderGuard.current.run(async ({ signal }) => {
@@ -1168,10 +1024,6 @@ window.__ModuleLoader__.load({
           if (result.data) applyLeaderResponse(result.data, operation);
           else { updateLeaderView({ ...leaderViewRef.current, error: result.error }); setLeaderFresh(false); }
         });
-      };
-      const confirmLeaderAccess = (operation, payload = {}, title = '') => {
-        if (leaderActionRef.current) return;
-        setLeaderOpen(true); setLeaderFeedback(''); setLeaderConfirm({ operation, payload, title });
       };
 
       // Log Tab：运行时内存日志（只进内存环形缓冲，不落盘）。打开期间每 3s 轮询快照。
@@ -1508,38 +1360,19 @@ window.__ModuleLoader__.load({
         issueSessionModel: withReasoningEffort(issueModel, effort),
       });
       const leaderProjection = leaderView.projection;
-      const leaderSettings = leaderProjection?.settings ?? { model: null, autoEnrollNew: false };
-      const leaderModel = leaderSettings.model;
+      const leaderModel = leaderProjection?.settings?.model ?? null;
       const leaderReasoning = reasoningForSelection(modelCatalog, leaderModel);
       const leaderEffort = leaderModel?.reasoningEffort ?? '';
       const leaderEffortAdvertised = !leaderEffort || leaderReasoning?.efforts.some((effort) => effort.id === leaderEffort);
-      const leaderCanGrant = leaderFresh && !leaderBusy && canGrantLeaderAccess(leaderProjection);
       const leaderCanConfigure = leaderFresh && !leaderBusy && leaderProjection && !['error', 'uncertain'].includes(leaderProjection.phase);
-      const leaderItems = leaderProjection?.items ?? [];
       const leaderRunState = leaderProjection?.runState || '';
-      const leaderPhaseLabel = !leaderFresh ? t('leaderUncertain') : leaderProjection?.enabled && leaderProjection.phase === 'ready'
-        ? t('enabled') : leaderRunState === 'never-started' ? t('leaderNeverStartedPhase')
-          : leaderRunState === 'delivery-uncertain' ? t('leaderDeliveryUncertain') : t(LEADER_PHASE_LABELS[leaderProjection?.phase] || 'leaderUncertain');
+      const leaderPhaseLabel = t(!leaderFresh ? 'leaderUncertain' : LEADER_RUN_LABELS[leaderRunState] || LEADER_PHASE_LABELS[leaderProjection?.phase] || 'leaderUncertain');
       const leaderDeliveries = (leaderProjection?.deliveries ?? []).filter((entry) => entry.status === 'uncertain');
-      const leaderAudit = [...(leaderProjection?.audit ?? [])].reverse().slice(0, 30);
       const leaderUncertainTasks = (leaderProjection?.tasks ?? []).filter((task) => task.status === 'uncertain');
-      const leaderQueue = leaderProjection?.queue ?? [];
-      const leaderCompleted = [...(leaderProjection?.completed ?? [])].reverse();
+      const leaderTasks = leaderProjection?.tasks ?? [];
       const leaderReports = [...(leaderProjection?.reports ?? [])].reverse().slice(0, 30);
-      const leaderPrevious = [...(leaderProjection?.previousSessions ?? [])].reverse();
-      const leaderUncertainComments = (leaderProjection?.comments ?? []).filter((entry) => entry.status === 'uncertain');
-      const leaderCanHandoff = leaderFresh && !leaderBusy && Boolean(leaderView.sessionId) && leaderProjection?.creation?.status === 'ready';
+      const leaderUnseen = leaderProjection?.unseenReports ?? 0;
       const leaderCreationUnresolved = leaderFresh && leaderRunState === 'creation-uncertain';
-      const issueLeaderControl = (issue) => {
-        if (!issue.sessionId) return null;
-        const item = leaderItemForSession(leaderProjection, issue.id, issue.sessionId);
-        return h(Button, {
-          disabled: Boolean(leaderBusy) || (item ? !leaderFresh : !leaderCanGrant),
-          title: item ? t('leaderEnrolled') : t('leaderScope'),
-          onClick: () => item ? void runLeader('unenroll', { taskId: String(issue.id), sessionId: issue.sessionId })
-            : void runLeader('enroll', { taskId: String(issue.id), sessionId: issue.sessionId }),
-        }, item ? t('leaderUnenroll') : t('leaderEnroll'));
-      };
       // 工作区下拉：值仍是工作区路径（sessionCwd 语义不变）；比较忽略大小写/斜杠差异。
       const workspaceOptions = Array.isArray(workspaceData) ? workspaceData : [];
       const normalizePathKey = (value) => String(value ?? '').replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
@@ -1895,7 +1728,6 @@ window.__ModuleLoader__.load({
                       h('span', { className: `gta-tag ${recordStatusClass(todo)}` }, todoStatusLabel(todo, t)),
                       routedLabel(todo, t) && h('span', { className: 'gta-tag gta-tag-routed' }, routedLabel(todo, t)),
                       todo.batchSize > 1 && h('span', { className: 'gta-tag', title: t('todoBatchHint') }, `${t('todoBatchTag')} ×${todo.batchSize}`),
-                      todo.leaderTaskId && h('span', { className: 'gta-tag', title: t('todoLeaderHint') }, t('todoLeaderTag')),
                     ),
                     h('div', { className: 'gta-muted gta-meta' }, [`#${todo.id}`, todo.project, todo.targetType, todo.action, todo.author && `@${todo.author}`, todo.skipReason, ...closureMeta(todo, t)].filter(Boolean).join(' · ')),
                     h(ReplyPreview, { reply: todo.lastReply, t }),
@@ -1930,19 +1762,11 @@ window.__ModuleLoader__.load({
         activeTab === 'issues' && snapshot && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-issues`, 'aria-labelledby': `${PANEL_ID}-tab-issues`, tabIndex: 0 },
           h('section', { className: 'gta-card gta-leader', 'aria-label': t('leaderTitle') },
             h('div', { className: 'gta-leader-head' },
-              h(Button, { expanded: leaderOpen, controls: `${PANEL_ID}-leader-body`,
-                onClick: () => { setLeaderOpen(!leaderOpen); if (leaderOpen) setLeaderConfirm(null); } },
-              `${leaderOpen ? '▾' : '▸'} ${t('leaderTitle')} · ${leaderPhaseLabel} · ${t('leaderManaged')} ${leaderItems.length}`),
-              h('label', { className: 'gta-check', title: t('leaderAutoEnrollHint') }, h('input', {
-                type: 'checkbox', checked: leaderSettings.autoEnrollNew === true, disabled: !leaderCanConfigure,
-                onChange: (event) => event.target.checked
-                  ? confirmLeaderAccess('configure', { settings: { autoEnrollNew: true } }, t('leaderAutoEnroll'))
-                  : void runLeader('configure', { settings: { autoEnrollNew: false } }),
-              }), t('leaderAutoEnroll')),
-              h('span', { className: 'gta-muted' }, t('leaderAutoEnrollHint')),
+              h(Button, { expanded: leaderOpen, controls: `${PANEL_ID}-leader-body`, onClick: () => setLeaderOpen(!leaderOpen) },
+              `${leaderOpen ? '▾' : '▸'} ${t('leaderTitle')} · ${leaderPhaseLabel}${leaderUnseen > 0 ? ` · ${t('leaderUnseen')} ${leaderUnseen}` : ''}`),
+              h('span', { className: 'gta-muted' }, t('leaderIntro')),
             ),
             leaderOpen && h('div', { id: `${PANEL_ID}-leader-body`, className: 'gta-leader-body' },
-              h('p', { className: 'gta-muted' }, t('leaderScope')),
               h('div', { className: 'gta-form-actions' },
                 !leaderView.sessionId && h(Button, { disabled: !leaderFresh || Boolean(leaderBusy)
                   || !canCreateLeader(leaderProjection, leaderView.sessionId, leaderView.creationAttempted),
@@ -1952,21 +1776,12 @@ window.__ModuleLoader__.load({
                   disabled: !leaderFresh || Boolean(leaderBusy), title: t('leaderRetrySetupHint'),
                   onClick: () => { void runLeader('create', { sessionId: leaderView.sessionId }); },
                 }, t('leaderRetrySetup')),
-                h(Button, { primary: !leaderProjection?.enabled, disabled: !leaderCanGrant || leaderProjection.enabled,
-                  onClick: () => confirmLeaderAccess('start', {}, t('leaderStart')) }, t('leaderStart')),
-                h(Button, { disabled: Boolean(leaderBusy) || !leaderView.sessionId,
-                  onClick: () => { void runLeader('pause'); } }, t('leaderPause')),
                 h(Button, { disabled: Boolean(leaderBusy), onClick: () => { void fetchLeaderSnapshot(); } }, t('leaderRefresh')),
-                leaderView.sessionId && h(Button, { disabled: !leaderCanHandoff, title: t('leaderHandoffHint'),
-                  onClick: () => setLeaderConfirm({ operation: 'handoff', payload: {}, title: t('leaderHandoff') }) }, t('leaderHandoff')),
               ),
               leaderView.creationAttempted && !leaderView.sessionId && h('div', { className: 'gta-banner gta-warn', role: 'status' }, t('leaderCreateUncertain')),
               (leaderView.error || leaderView.pollError || leaderProjection?.error) && h('div', { className: 'gta-banner gta-warn', role: 'status' },
                 `${t(leaderView.pollError && !leaderView.error ? 'leaderSnapshotError' : 'leaderError')}${colon()}${leaderView.error || leaderView.pollError || leaderProjection.error}`),
               (leaderBusy || leaderFeedback) && h('div', { className: 'gta-feedback gta-muted', role: 'status' }, leaderBusy ? t('leaderWorking') : leaderFeedback),
-              leaderFresh && leaderRunState === 'never-started' && h('div', { className: 'gta-banner gta-warn', role: 'status' }, t('leaderNeverStartedHint')),
-              leaderFresh && leaderRunState === 'paused' && h('p', { className: 'gta-muted' }, t('leaderPausedHint')),
-              leaderFresh && leaderRunState === 'running' && h('p', { className: 'gta-muted' }, t('leaderMainWindow')),
               leaderCreationUnresolved && h('div', { className: 'gta-banner gta-warn gta-leader-confirm', role: 'region', 'aria-label': t('leaderCreateUncertain') },
                 h('p', null, t('leaderCreationUnresolved')),
                 h('div', { className: 'gta-form-actions' },
@@ -1981,9 +1796,8 @@ window.__ModuleLoader__.load({
                 h('strong', null, `${t('leaderDeliveries')} ${leaderDeliveries.length}`),
                 h('p', null, t('leaderDeliveriesHint')),
                 leaderDeliveries.map((entry) => h('div', { key: entry.requestId, className: 'gta-form-actions' },
-                  h('span', { className: 'gta-muted gta-meta' }, `${entry.kind === 'notify' ? t('leaderTitle') : entry.taskId} · ${entry.sessionId || ''}${entry.createdAt ? ` · ${formatTime(entry.createdAt, '')}` : ''}`),
-                  entry.sessionId && h(Button, { onClick: (event) => entry.kind === 'notify' ? openLeader(event.currentTarget)
-                    : openManagedIssue({ taskId: entry.taskId, sessionId: entry.sessionId, title: entry.taskId, url: '' }, event.currentTarget) }, t('leaderDeliveryOpen')),
+                  h('span', { className: 'gta-muted gta-meta' }, `${entry.taskId || ''} · ${entry.sessionId || ''}${entry.at ? ` · ${formatTime(entry.at, '')}` : ''}`),
+                  entry.sessionId && h(Button, { onClick: (event) => openManagedIssue({ taskId: entry.taskId, sessionId: entry.sessionId, title: entry.taskId, url: '' }, event.currentTarget) }, t('leaderDeliveryOpen')),
                   h(Button, { disabled: Boolean(leaderBusy),
                     onClick: () => { void runLeader('resolveDelivery', { requestId: entry.requestId, resolution: 'delivered' }); } }, t('leaderDelivered')),
                   h(Button, { disabled: Boolean(leaderBusy),
@@ -2002,90 +1816,27 @@ window.__ModuleLoader__.load({
                   !leaderEffortAdvertised && h('option', { value: leaderEffort }, `${t('reasoningEffortUnavailable')}${colon()}${leaderEffort}`),
                   leaderReasoning.efforts.map((effort) => h('option', { key: effort.id, value: effort.id, title: effort.description ?? '' }, `${effort.name} · ${effort.id}`)),
                 )),
-                h('label', { title: t('leaderMaxRunningHint') }, t('leaderMaxRunning'), h('input', {
-                  type: 'number', min: 1, max: 10, value: leaderSettings.maxRunningWorkers ?? 3, disabled: !leaderCanConfigure,
-                  onChange: (event) => {
-                    const value = Number(event.target.value);
-                    if (Number.isSafeInteger(value) && value >= 1 && value <= 10) void runLeader('configure', { settings: { maxRunningWorkers: value } });
-                  },
-                })),
-                h('label', { className: 'gta-check', title: t('leaderArchiveOnCompleteHint') }, h('input', {
-                  type: 'checkbox', checked: leaderSettings.archiveOnComplete !== false, disabled: !leaderCanConfigure,
-                  onChange: (event) => { void runLeader('configure', { settings: { archiveOnComplete: event.target.checked } }); },
-                }), t('leaderArchiveOnComplete')),
-                h('label', { className: 'gta-check', title: t('leaderGitlabWriteHint') }, h('input', {
-                  type: 'checkbox', checked: leaderSettings.gitlabWrite === true, disabled: !leaderCanConfigure,
-                  onChange: (event) => event.target.checked
-                    ? setLeaderConfirm({ operation: 'configure', payload: { settings: { gitlabWrite: true } }, title: t('leaderGitlabWrite') })
-                    : void runLeader('configure', { settings: { gitlabWrite: false } }),
-                }), t('leaderGitlabWrite')),
-                leaderSettings.gitlabWrite === true && h('label', null, t('leaderCommentSignature'), h('input', {
-                  key: leaderSettings.commentSignature, type: 'text', maxLength: 100, defaultValue: leaderSettings.commentSignature, disabled: !leaderCanConfigure,
-                  onBlur: (event) => {
-                    const value = event.target.value.trim();
-                    if (value && value !== leaderSettings.commentSignature) void runLeader('configure', { settings: { commentSignature: value } });
-                  },
-                })),
-              ),
-              leaderConfirm && h('div', { className: 'gta-banner gta-warn gta-leader-confirm', role: 'region', 'aria-label': t('leaderConfirm') },
-                h('strong', null, leaderConfirm.title || t('leaderStart')),
-                leaderConfirm.payload.taskId && h('div', { className: 'gta-muted' }, `${leaderConfirm.payload.taskId} · ${leaderConfirm.payload.sessionId}`),
-                h('p', null, t('leaderScope')),
-                leaderConfirm.operation === 'start' && h('p', null, t('leaderStartHint')),
-                leaderConfirm.operation === 'configure' && h('p', null,
-                  t(leaderConfirm.payload.settings?.gitlabWrite === true ? 'leaderGitlabWriteConfirm' : 'leaderAutoEnrollConfirm')),
-                leaderConfirm.operation === 'handoff' && h('p', null, t('leaderHandoffConfirm')),
-                h('div', { className: 'gta-form-actions' },
-                  h(Button, { primary: true, disabled: leaderConfirm.operation === 'configure' ? !leaderCanConfigure
-                    : leaderConfirm.operation === 'handoff' ? !leaderCanHandoff : !leaderCanGrant,
-                    onClick: () => { void runLeader(leaderConfirm.operation, leaderConfirm.payload); } }, t('leaderConfirm')),
-                  h(Button, { onClick: () => setLeaderConfirm(null) }, t('cancel')),
-                ),
               ),
               leaderUncertainTasks.length > 0 && h('div', { className: 'gta-banner gta-warn', role: 'status' },
                 h('strong', null, t('leaderTasksUncertain')), h('p', { className: 'gta-muted' }, t('leaderTasksUncertainHint')),
                 leaderUncertainTasks.map((task) => h('div', { key: task.taskId, className: 'gta-form-actions' },
                   h('span', null, [task.title || task.taskId, task.sessionId, task.error].filter(Boolean).join(' · ')),
-                  h(Button, { disabled: !leaderFresh, onClick: () => { void runLeader('resolveTask', { taskId: task.taskId, action: 'dismiss' }); } }, t('leaderTaskDismiss'))))),
-              leaderQueue.length > 0 && h('div', { className: 'gta-leader-queue', role: 'region', 'aria-label': t('leaderQueue') },
-                h('div', { className: 'gta-section-title gta-subsection-title' }, h('h2', null, t('leaderQueue')), h('span', { className: 'gta-muted' }, leaderQueue.length)),
-                h('p', { className: 'gta-muted' }, t('leaderQueueHint')),
-                h('div', { className: 'gta-list', role: 'list', 'aria-label': t('leaderQueue') }, leaderQueue.map((entry) =>
-                  h('div', { key: entry.id, role: 'listitem', className: 'gta-form-actions' },
-                    h('span', { className: 'gta-muted gta-meta' }, [`${entry.position ?? ''}.`, t(entry.kind === 'create' ? 'leaderQueueCreate' : 'leaderQueueContinue'),
-                      entry.taskId, entry.title || entry.reason, entry.queuedAt ? formatTime(entry.queuedAt, '') : ''].filter(Boolean).join(' · ')),
-                    h(Button, { disabled: !leaderFresh || Boolean(leaderBusy),
-                      onClick: () => { void runLeader('cancelQueued', { queueId: entry.id }); } }, t('leaderQueueCancel')))))),
-              leaderUncertainComments.length > 0 && h('div', { className: 'gta-banner gta-warn', role: 'status' },
-                h('strong', null, t('leaderCommentsUncertain')), h('p', { className: 'gta-muted' }, t('leaderCommentsUncertainHint')),
-                leaderUncertainComments.map((entry) => h('div', { key: entry.requestId, className: 'gta-muted gta-meta' },
-                  [entry.taskId, entry.at ? formatTime(entry.at, '') : '', entry.error].filter(Boolean).join(' · ')))),
+                  h(Button, { disabled: !leaderFresh || Boolean(leaderBusy), onClick: () => { void runLeader('resolveTask', { taskId: task.taskId, action: 'dismiss' }); } }, t('leaderTaskDismiss'))))),
+              leaderTasks.length > 0 && h('details', { className: 'gta-advanced gta-leader-audit' },
+                h('summary', null, `${t('leaderTasks')} · ${leaderTasks.length}`),
+                h('div', { className: 'gta-list', role: 'list', 'aria-label': t('leaderTasks') }, leaderTasks.map((task) =>
+                  h('div', { key: task.taskId, role: 'listitem', className: 'gta-form-actions' },
+                    h('span', { className: 'gta-tag gta-tag-mention' }, t('leaderTaskTag')),
+                    h('span', { className: 'gta-muted gta-meta' }, [task.title || task.taskId, t(LEADER_TASK_STATUS_LABELS[task.status] || 'leaderTaskCreated'),
+                      task.createdAt ? formatTime(task.createdAt, '') : ''].filter(Boolean).join(' · ')),
+                    task.sessionId && h(Button, { onClick: (event) => openManagedIssue({ taskId: task.taskId, sessionId: task.sessionId, title: task.title, url: '' }, event.currentTarget) }, t('openSession')))))),
               leaderReports.length > 0 && h('details', { className: 'gta-advanced gta-leader-audit' },
                 h('summary', null, `${t('leaderReports')} · ${leaderReports.length}`),
                 h('p', { className: 'gta-muted' }, t('leaderReportsHint')),
                 h('div', { className: 'gta-list', role: 'list', 'aria-label': t('leaderReports') }, leaderReports.map((entry, index) =>
                   h('div', { key: entry.id || `${entry.at}:${index}`, role: 'listitem', className: 'gta-muted gta-meta' },
                     [entry.at ? formatTime(entry.at, '') : '', entry.taskId, `[${t(LEADER_REPORT_LABELS[entry.kind])}]`,
-                      entry.toTaskId && `→ ${entry.toTaskId}`, entry.text.slice(0, 300)].filter(Boolean).join(' · '))))),
-              leaderCompleted.length > 0 && h('details', { className: 'gta-advanced gta-leader-audit' },
-                h('summary', null, `${t('leaderCompleted')} · ${leaderCompleted.length}`),
-                h('div', { className: 'gta-list', role: 'list', 'aria-label': t('leaderCompleted') }, leaderCompleted.map((entry) =>
-                  h('div', { key: `${entry.taskId}:${entry.completedAt}`, role: 'listitem', className: 'gta-muted gta-meta' },
-                    [entry.completedAt ? formatTime(entry.completedAt, '') : '', entry.title || entry.taskId, entry.summary,
-                      entry.acceptWithoutMr && `${t('leaderAcceptWithoutMr')}${entry.reason ? `：${entry.reason}` : ''}`].filter(Boolean).join(' · '))))),
-              leaderPrevious.length > 0 && h('details', { className: 'gta-advanced gta-leader-audit' },
-                h('summary', null, `${t('leaderPreviousSessions')} · ${leaderPrevious.length}`),
-                h('div', { className: 'gta-list', role: 'list', 'aria-label': t('leaderPreviousSessions') }, leaderPrevious.map((entry) =>
-                  h('div', { key: entry.sessionId, role: 'listitem', className: 'gta-muted gta-meta' },
-                    [entry.handedOffAt ? formatTime(entry.handedOffAt, '') : '', entry.sessionId,
-                      t(entry.archived ? 'leaderArchived' : 'leaderPreviousNotArchived')].filter(Boolean).join(' · '))))),
-              leaderAudit.length > 0 && h('details', { className: 'gta-advanced gta-leader-audit' },
-                h('summary', null, `${t('leaderAudit')} · ${leaderAudit.length}`),
-                h('p', { className: 'gta-muted' }, t('leaderAuditHint')),
-                h('div', { className: 'gta-list', role: 'list', 'aria-label': t('leaderAudit') }, leaderAudit.map((entry, index) =>
-                  h('div', { key: `${entry.at}:${index}`, role: 'listitem', className: 'gta-muted gta-meta' },
-                    [entry.at ? formatTime(entry.at, '') : '', LEADER_AUDIT_LABELS[entry.action] ? t(LEADER_AUDIT_LABELS[entry.action]) : entry.action,
-                      entry.taskId, leaderAuditDetail(entry.detail)].filter(Boolean).join(' · '))))),
+                      !entry.seen && t('leaderReportUnseen'), entry.text.slice(0, 300)].filter(Boolean).join(' · '))))),
             ),
           ),
           h('div', { className: 'gta-issue-toolbar' },
@@ -2152,7 +1903,6 @@ window.__ModuleLoader__.load({
                       }, `+${issue.labels.length - 2}`),
                     ] : []),
                     issue.handled && h('span', { className: `gta-tag ${recordStatusClass(issue)}` }, handledStatusLabel(issue, t)),
-                    leaderItemForSession(leaderProjection, issue.id, issue.sessionId) && h('span', { className: 'gta-tag gta-tag-mention' }, t('leaderEnrolled')),
                     routedLabel(issue, t) && h('span', { className: 'gta-tag gta-tag-routed' }, routedLabel(issue, t)),
                   ),
                   h('div', { className: 'gta-muted gta-meta' }, [
@@ -2164,7 +1914,6 @@ window.__ModuleLoader__.load({
                 ),
                 h('div', { className: 'gta-todo-actions' },
                   issue.sessionId && h(Button, { onClick: (event) => openSession({ sessionId: issue.sessionId, taskId: issue.id, title: issue.title, url: issue.url, manualHandoffs: issue.manualHandoffs }, event.currentTarget) }, t('openSession')),
-                  issueLeaderControl(issue),
                   h(Button, {
                     primary: !issue.handled,
                     disabled: busySet.has('settings') || busySet.has(`dispatch:${issue.id}`) || issue.executionStatus === 'running' || issue.executionStatus === 'starting',
@@ -2188,7 +1937,6 @@ window.__ModuleLoader__.load({
                       ? h('a', { href: issue.url, target: '_blank', rel: 'noreferrer' }, issue.title)
                       : h('span', null, issue.title),
                     h('span', { className: `gta-tag ${recordStatusClass(issue)}` }, handledStatusLabel(issue, t)),
-                    leaderItemForSession(leaderProjection, issue.id, issue.sessionId) && h('span', { className: 'gta-tag gta-tag-mention' }, t('leaderEnrolled')),
                   ),
                   h('div', { className: 'gta-muted gta-meta' }, [
                     `#${issue.iid ?? ''}`, issue.project,
@@ -2198,7 +1946,6 @@ window.__ModuleLoader__.load({
                 ),
                 h('div', { className: 'gta-todo-actions' },
                   issue.sessionId && h(Button, { onClick: (event) => openSession({ sessionId: issue.sessionId, taskId: issue.id, title: issue.title, url: issue.url, manualHandoffs: issue.manualHandoffs }, event.currentTarget) }, t('openSession')),
-                  issueLeaderControl(issue),
                 ),
               ))),
         ),
