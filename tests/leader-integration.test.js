@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { GitlabTodoRuntime, apply } from '../index.js';
+import { GitlabTodoRuntime, apply, inject as requiredInject } from '../index.js';
 import { initialState, initialLeaderState, normalizeIssue } from '../core.js';
 
 function rpcFixture() {
@@ -53,12 +53,15 @@ test('HTTP Leader bridge is snapshot-only even with self-reported human confirma
 });
 
 test('an old optional-service cleanup cannot erase a newly loaded Leader service context', async () => {
-  let injectCallback; let startEffect; let runtime;
+  let injectCallback; let runtime;
+  const effects = new Map(); let unregistered = 0;
   const originalStart = GitlabTodoRuntime.prototype.start;
   GitlabTodoRuntime.prototype.start = async function () { runtime = this; this.leaderState = initialLeaderState(); this.saveLeaderStrict = async () => {}; };
   try {
-    apply({ logger: {}, inject: (_keys, callback) => { injectCallback = callback; }, effect: (callback) => { startEffect = callback; } });
-    await startEffect();
+    apply({ logger: {}, connection: { rpc: { handle: () => async () => { unregistered += 1; } } },
+      inject: (_keys, callback) => { injectCallback = callback; }, effect: (callback, label) => { effects.set(label, callback); } });
+    const unregisterLeader = effects.get('gitlab-todo-agent: Leader RPC')();
+    await effects.get('gitlab-todo-agent: runtime')();
     const firstContext = {}; const secondContext = {};
     const cleanupFirst = injectCallback(firstContext);
     const firstAdapter = runtime.leaderAdapter;
@@ -73,7 +76,44 @@ test('an old optional-service cleanup cannot erase a newly loaded Leader service
     assert.equal(runtime.leaderServicesContext, secondContext);
     assert.equal(runtime.leaderAdapter, secondAdapter);
     await cleanupSecond();
+    await unregisterLeader(); assert.equal(unregistered, 1);
   } finally { GitlabTodoRuntime.prototype.start = originalStart; }
+});
+
+test('Leader RPC registers during plugin setup and rejects a Host without native RPC', () => {
+  assert.ok(requiredInject.includes('webServer'));
+  let handler; let unregister = 0;
+  const effects = new Map();
+  const ctx = { logger: {}, connection: { rpc: { handle(channel, callback) {
+    assert.equal(channel, '/gitlab-workstation-leader'); handler = callback;
+    return async () => { unregister += 1; };
+  } } }, inject() {}, effect(callback, label) { effects.set(label, callback); } };
+  apply(ctx);
+  const dispose = effects.get('gitlab-todo-agent: Leader RPC')();
+  assert.equal(typeof handler, 'function'); assert.equal(unregister, 0);
+  return dispose().then(() => {
+    assert.equal(unregister, 1);
+    const missing = { logger: {}, connection: { rpc: {} }, inject() {}, effect(callback) { callback(); } };
+    assert.throws(() => apply(missing), /原生 Connection RPC/);
+  });
+});
+
+test('Leader RPC works around the rc.3 Connection webServer inject defect without changing its handler', async () => {
+  const effects = new Map(); let handler; let unregister = 0;
+  const ctx = { logger: {}, inject() {}, effect(callback, label) { effects.set(label, callback); } };
+  ctx.connection = {
+    rpc: { handle() { throw new Error('cannot get property "webServer" without inject'); } },
+    register(owner, channel, callback) {
+      assert.equal(owner, ctx); assert.equal(channel, '/gitlab-workstation-leader'); handler = callback;
+      return async () => { unregister += 1; };
+    },
+  };
+  apply(ctx);
+  const dispose = effects.get('gitlab-todo-agent: Leader RPC')();
+  assert.equal(typeof handler, 'function'); await dispose(); assert.equal(unregister, 1);
+  const other = { ...ctx, connection: { rpc: { handle() { throw new Error('duplicate route'); } } } };
+  apply(other);
+  assert.throws(() => effects.get('gitlab-todo-agent: Leader RPC')(), /duplicate route/);
 });
 
 test('runtime startup reuses the shared early Leader journal load rather than loading twice', async () => {

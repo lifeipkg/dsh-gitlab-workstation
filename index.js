@@ -152,8 +152,6 @@ export class GitlabTodoRuntime {
       requestBody: 'buffered',
       fetch: (request) => this.handleFetch(request),
     });
-    this.unregisterLeaderRpc = this.ctx.connection.rpc?.handle?.(LEADER_RPC_CHANNEL,
-      (endpoint, payload, signal, peer) => this.handleLeaderUiRpc(endpoint, payload, signal, peer)) ?? null;
     await this.reconcileSessions();
     this.resetTimer();
     this.logger.info(`运行时已启动：${this.state.settings.enabled ? `自动轮询开启（间隔 ${this.state.settings.intervalSeconds}s）` : '自动轮询关闭（仅手动动作）'}。`);
@@ -170,8 +168,6 @@ export class GitlabTodoRuntime {
     clearTimeout(this.initialTimer);
     if (this.unregisterRoute) await this.unregisterRoute();
     this.unregisterRoute = null;
-    if (this.unregisterLeaderRpc) await this.unregisterLeaderRpc();
-    this.unregisterLeaderRpc = null;
     // 逐个终止所有在飞的 glab 子进程（poll 与核对可能并发，单槽引用会漏杀先前的进程）。
     for (const child of this.activeChildren) child.kill();
     this.activeChildren.clear();
@@ -408,10 +404,36 @@ attachRuntimeMethods(GitlabTodoRuntime, [
   leaderMethods,
 ]);
 
-export const inject = ['connection', 'typertGateway', 'workspaceRegistry'];
+export const inject = ['connection', 'webServer', 'typertGateway', 'workspaceRegistry'];
 
 export function apply(ctx, config = {}) {
   const runtime = new GitlabTodoRuntime(ctx, config);
+  // Register with the plugin lifetime, before asynchronous journal/session startup.
+  // A missing native RPC capability is explicit; silently skipping it makes the
+  // browser fall through to the static-resource route and report a misleading 405.
+  ctx.effect(() => {
+    const rpc = ctx.connection?.rpc;
+    if (typeof rpc?.handle !== 'function') throw new Error('当前 Host 不提供原生 Connection RPC，无法启用 Issue Leader。');
+    const handler = (endpoint, payload, signal, peer) => runtime.handleLeaderUiRpc(endpoint, payload, signal, peer);
+    let unregister;
+    try {
+      unregister = rpc.handle(LEADER_RPC_CHANNEL, handler);
+    } catch (error) {
+      // dsh 0.2.2-rc.3's public wrapper evaluates webServer on Connection's
+      // own Context, which only injects credentials. Use the same registration
+      // implementation with this plugin's declared webServer Context instead.
+      // No authentication or Peer check is reimplemented or relaxed here.
+      if (errorMessage(error) !== 'cannot get property "webServer" without inject'
+        || typeof ctx.connection?.register !== 'function') throw error;
+      unregister = ctx.connection.register(ctx, LEADER_RPC_CHANNEL, handler);
+    }
+    runtime.unregisterLeaderRpc = unregister;
+    runtime.logger.info(`Leader 原生 RPC 通道已注册：${LEADER_RPC_CHANNEL}。`);
+    return async () => {
+      if (runtime.unregisterLeaderRpc === unregister) runtime.unregisterLeaderRpc = null;
+      await unregister();
+    };
+  }, 'gitlab-todo-agent: Leader RPC');
   // Install the awaited creation barrier before any startup I/O or optional-service arrival.
   runtime.leaderAdapter = createLeaderAgentAdapter(runtime);
   // Leader capabilities are optional; profiles without them keep the existing Todo/Issue workbench.
