@@ -6,7 +6,6 @@ import test from 'node:test';
 import {
   assessClosure,
   buildBatchJudgePrompt,
-  buildDigest,
   buildInbox,
   buildIssueProjection,
   buildIssuePrompt,
@@ -2806,7 +2805,7 @@ test('handled GC drops settled records past retention and caps the survivors', (
   // HANDLED_SETTLED_MAX=500 只约束已结算记录，活跃记录不占名额。\n  assert.equal(505 + 1 - capped.deleted.length, 500);
 });
 
-test('digest summarizes the last day and the inbox lists unacknowledged needs-human only', () => {
+test('the inbox lists unacknowledged needs-human only', () => {
   const base = initialState();
   const now = Date.now();
   base.handled.recent1 = {
@@ -2827,25 +2826,13 @@ test('digest summarizes the last day and the inbox lists unacknowledged needs-hu
     closure: 'needs-human', closureNote: '等确认', title: 'T4', url: '', acknowledgedAt: now - 100,
   };
   base.handled.fu = { id: 'fu', sessionId: 's5', acceptedAt: now - 1500, completedAt: now - 1400, closure: 'follow-up', title: 'T5', url: '' };
-  // 仍在跑的记录（completedAt 缺失）不进晨报结算数。
   base.handled.running = { id: 'running', sessionId: 's6', acceptedAt: now - 800, closure: '', title: 'T6', url: '' };
-  const digest = buildDigest(base, now);
-  assert.equal(digest.counts.total, 4);
-  assert.equal(digest.counts.closed, 1);
-  assert.equal(digest.counts.needsHuman, 2);
-  assert.equal(digest.counts.followUp, 1);
-  assert.equal(digest.items[0].todoId, 'recent1');
-  assert.equal(digest.items[0].replyExcerpt, '回复正文');
-  assert.equal(digest.items[0].replyUrl, 'https://gitlab.local/a#note_n1');
-  assert.equal(digest.open.needsHuman, 1);
-  assert.equal(digest.open.followUp, 1);
-  assert.equal(digest.items.some((entry) => entry.todoId === 'running'), false);
   const inbox = buildInbox(base);
   assert.deepEqual(inbox.map((item) => item.todoId), ['human1']);
   assert.equal(inbox[0].closureNote, '需要授权');
-  // publicState 带出 digest，闭环统计排除已确认的需人工记录。
+  // 闭环统计排除已确认的需人工记录；24 小时摘要已移除，publicState 不再带 digest。
   const view = publicState(base, false, null);
-  assert.equal(view.digest.counts.total, 4);
+  assert.equal(view.digest, undefined);
   assert.equal(view.closure.needsHuman, 1);
 });
 

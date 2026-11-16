@@ -215,10 +215,9 @@ Host 每次轮询先通过 `glab api user` 获取并缓存当前用户 ID，再�
 - **配置继承**：路由不改目标会话标题、模型、工作区或预设。危险操作护栏、原 note 回复、Todo 完成标记、结案报告与闭环核对全部照旧。
 - **失败重试**：路由 pending 记录保存目标与 `requestId`，重试复用同一标识，由 Host 幂等去重；pending 未结算前禁止改投其他会话或另开会话，避免双执行。自动 pending 在后续轮询中跳过二次预检、直接重试，手动 pending 等人工重试。
 
-## 收件箱、晨报与回复预览（v2.18）
+## 收件箱与回复预览（v2.18）
 
 - **需人工收件箱**：面板第一个 Tab。所有闭环结论为“需人工”且尚未确认的 Todo 集中列出，卡片给出原因（closureNote）、轮次、会话名与“旧消息未确认”标记，并提供两个动作：**打开会话接手**（直接跳到对应 DSH 会话继续做）与**我已处理**（把 Todo 标记完成、记录确认时间、闭环并按设置归档会话；标记失败不阻塞确认，原因写入结论）。
-- **晨报卡片**：面板顶部“过去 24 小时”摘要——结算总数与闭环/待续办/需人工分布、当前仍待处理的开环数量，展开后逐条列出每条记录的一句话结论与我方回复节选（可直达回复 note）。
 - **回复预览**：闭环核对时会捕获本轮我方账号发到原讨论串的最新回复正文快照（`lastReply`），Todo 列表、最近会话与收件箱卡片均可展开查看——不用再去 GitLab 翻“以我名义说了什么”。快照正文限长 2000 字符，本轮没有新回复时保留上一轮的快照。
 
 ## 批量预检（v2.18）
@@ -325,3 +324,4 @@ MIT License。发布到 npm（`npm publish`，scoped 包需公开访问，`publi
 - v2.36.0（Todo 状态版本与 Leader journal 版本不变，旧 `leader.json` 直接兼容）：统一 Leader 能力为 9 个受限工具。新增 Issue worker 会话管理（为待办 Issue 创建/接管、重命名、归档、更换模型，均留审计）；`read_issue` 合并 worker 日志、待回答问题原文与 GitLab Issue/MR/流水线只读信息，续办改用 `evidenceToken`；新增 `relay_reply` 原样转达人类在 Leader 会话中的回复；`update_issue` 结构化笔记取代原进度/阻塞上报。worker 运行中 20 分钟无新日志时提醒 Leader 一次；唤醒通知改为每个 Issue 一行；托管到期时在 Leader 会话留言。面板显示 Leader 笔记、纳管来源和会话操作记录。移除旧工具 readManaged/advanceManaged/reportBlocker/reportProgress。既有 Leader 保留旧 persona 文本，新工具说明随启动简报下发。
 - v2.37.0（Todo 状态版本与 Leader journal 版本不变）：默认数据目录从 `~/.dsh-plugins/gitlabtodo/` 改为与其它 DSH 插件一致的 `<DSH_HOME>/storages/gitlab-workstation/`（默认 `~/.dsh/storages/gitlab-workstation/`）。未配置 `storageDirectory` 时首次启动把旧 `state.json`、`leader.json` 复制到新目录，只补缺失文件、从不覆盖，旧目录保留供人工确认后删除；显式配置的目录不受影响。
 - v2.38.0（状态版本不变）：工作台默认打开 **Issue** Tab。Leader 的 `gitlab_leader_session_create` 不传 `taskId`、改传 `title`＋`brief`（可选 `workingDirectory`）即可开**临时任务**会话，处理没有对应 GitLab Issue 的工作；临时任务自动纳管，可读取、续办、重命名、换模型、转达和归档，不限数量；创建结果不确定时只由人类在面板放弃，绝不自动重建。Leader journal 新增 `tasks` 记录，旧 journal 自动补空。
+- v2.39.0（状态版本不变）：移除工作台顶部的「过去 24 小时」摘要卡片及其明细展开；快照不再计算和携带 `digest` 字段。闭环统计、收件箱与回复预览不受影响。
