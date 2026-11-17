@@ -152,7 +152,7 @@ export const closuresMethods = {
     if (cleanWait) record.waitRounds = waitRounds + 1;
     // 本轮有新的我方回复时更新快照（面板回复预览/收件箱展示）；本轮没回复保留旧值。
     if (replyInfo?.reply) record.lastReply = replyInfo.reply;
-    if (mentionOnly && verdict.closure === 'closed') verdict.note = `仅被提及，无需处理：${record.reportSummary || '会话判定无行动要求'}`.slice(0, 500);
+    if (mentionOnly && verdict.closure === 'closed') verdict.note = `无需回复：${record.reportSummary || '会话判定无行动要求'}`.slice(0, 500);
     record.closure = verdict.closure;
     record.closureNote = verdict.note;
     record.nextAttemptAt = verdict.closure === 'follow-up' ? Date.now() + verdict.delayMinutes * 60000 : null;

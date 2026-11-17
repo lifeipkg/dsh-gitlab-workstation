@@ -202,16 +202,18 @@ test('prompt identifies the todo as data and defers mark-as-done until completio
   assert.match(prompt, /glab api -X POST todos\/direct\/mark_as_done/);
   assert.match(prompt, /原 note（ID: 10）/);
   assert.match(prompt, /@other-user/);
-  // 回复是硬性要求，且必须汇报 MR 清单与未合并 MR 的阻塞原因和继续时机。
-  assert.match(prompt, /每条被处理的评论都必须获得回复/);
-  assert.match(prompt, /不要只把结论留在 Session 里/);
+  // 回复默认不发，只在必要情形回复；需要回复时必须汇报 MR 清单与未合并 MR 的阻塞原因和继续时机。
+  assert.match(prompt, /非必要不要回复任何人的 note/);
+  assert.match(prompt, /默认不回复/);
+  assert.match(prompt, /禁止发送仅表示“已收到\/已处理\/已完成\/已查看”的回复/);
+  assert.doesNotMatch(prompt, /硬性要求/);
   assert.match(prompt, /MR 清单/);
   assert.match(prompt, /未合并的 MR/);
   assert.match(prompt, /阻塞原因/);
   assert.match(prompt, /建议什么时候继续处理/);
   assert.match(prompt, /提醒继续推进该 MR/);
-  assert.match(prompt, /仍必须按第 4 条回复原 note/);
-  assert.match(prompt, /不要只新建顶层评论/);
+  assert.match(prompt, /属于第 4 条的回复情形③，必须回复原 note/);
+  assert.match(prompt, /不要新建顶层评论/);
   assert.match(prompt, /--reply <discussion-id>/);
   assert.match(prompt, /discussions\/<discussion-id>\/notes/);
   // 讨论串纪律：增量回复、@ 只给行动人、同一人工动作只 @ 一次（防止多自动化账号互踢复读）。
@@ -1806,7 +1808,7 @@ test('a mention-only session closes without a thread reply', async () => {
   const record = runtime.state.handled.direct;
   assert.equal(record.closure, 'closed');
   assert.equal(record.replied, null);
-  assert.match(record.closureNote, /仅被提及，无需处理：cc 知会/);
+  assert.match(record.closureNote, /无需回复：cc 知会/);
   assert.equal(record.archived, true);
   // 没有 noAction 标记时，同样的无回复仍判缺回复。
   const strict = autoRuntime();

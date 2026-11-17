@@ -1,6 +1,6 @@
 {
   "name": "@lifeipkg/dsh-gitlab-workstation",
-  "version": "3.1.0",
+  "version": "3.1.1",
   "description": "GitLab Workstation for DSH: automate Todo mentions, process assigned issues, optionally supervise Issue sessions with a scoped Leader, and surface human follow-up in a compact workbench.",
   "type": "module",
   "license": "MIT",
