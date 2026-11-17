@@ -1666,20 +1666,6 @@ function normalizeManualHandoffs(value) {
     }));
 }
 
-/**
- * 同对象合并派发的关联字段（仅在存在时写出，旧记录形状不变）：
- * batchId 标识同一回合处理的一组 Todo，mergedWith 为组内全部 todoId（含自身）。
- * 旧版本写入的 leaderTaskId 不再保留。
- */
-function normalizeDispatchLinks(record) {
-  const id = (value) => (typeof value === 'string' && value && value.trim() === value && value.length <= 200
-    && !/[\u0000-\u001f]/u.test(value) ? value : '');
-  const batchId = id(record.batchId);
-  const mergedWith = batchId && Array.isArray(record.mergedWith)
-    ? [...new Set(record.mergedWith.map(id).filter(Boolean))].slice(0, 20) : [];
-  return batchId ? { batchId, mergedWith } : {};
-}
-
 export function normalizeState(value) {
   if (!isRecord(value)) {
     throw new Error(`插件状态必须是 JSON 对象，期望 version=${STATE_VERSION}。`);
@@ -1760,16 +1746,11 @@ export function normalizeState(value) {
         waitRounds: Number.isSafeInteger(record.waitRounds) && record.waitRounds >= 0 ? record.waitRounds : 0,
         // 续办派发失败计数：连续失败按指数退避并最终升级需人工。
         dispatchFailures: Number.isSafeInteger(record.dispatchFailures) && record.dispatchFailures >= 0 ? record.dispatchFailures : 0,
-        // 等待探测：连续“无变化而推迟续办”的次数（达到上限后放行一次心跳会话）。
-        waitProbes: Number.isSafeInteger(record.waitProbes) && record.waitProbes >= 0 ? record.waitProbes : 0,
         // 会话复用：本会话已被后续轮次接力复用的次数；reused 表示当前轮是复用上一轮会话。
         reuseCount: Number.isSafeInteger(record.reuseCount) && record.reuseCount >= 0 ? record.reuseCount : 0,
         reused: record.reused === true,
-        // 预检重复折叠：本记录被并入的主条目 todoId（供主条目会话提示词带出被折叠内容）。
-        mergedInto: text(record.mergedInto).slice(0, 100),
         author: text(record.author).slice(0, 200),
         excerpt: text(record.excerpt).slice(0, 300),
-        ...normalizeDispatchLinks(record),
         // 本轮结算时捕获的“我方最新回复”快照：面板回复预览与收件箱展示用。
         lastReply: normalizeReplyCapture(record.lastReply),
         // 事件驱动续办监视器：waiting + openMrs 时建立，MR 状态翻转即提前续办。
@@ -1847,7 +1828,6 @@ export function normalizeState(value) {
             note: text(entry.note).slice(0, 500),
           })),
         openMrs: normalizeMrUrls(record.openMrs, item.url),
-        ...normalizeDispatchLinks(record),
         item,
         };
       } catch {}
@@ -2233,7 +2213,6 @@ export function publicState(state, running = false, currentUserId = null) {
       sessionId: state.ledger?.threads?.[state.ledger?.todos?.[todo.id]?.threadKey]?.sessionId ?? state.handled[todo.id]?.sessionId ?? state.pending[todo.id]?.sessionId ?? null,
       routed: state.handled[todo.id]?.routed === true || state.pending[todo.id]?.routed === true,
       routeMode: state.handled[todo.id]?.routeMode ?? state.pending[todo.id]?.routeMode ?? '',
-      batchSize: (state.handled[todo.id]?.mergedWith ?? state.pending[todo.id]?.mergedWith ?? []).length,
       round: state.handled[todo.id]?.round ?? 1,
       closure: state.handled[todo.id]?.closure ?? '',
       closureNote: state.handled[todo.id]?.closureNote ?? '',
