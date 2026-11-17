@@ -278,6 +278,8 @@ export class GitlabTodoRuntime {
   async persistQuietly(area) {
     try {
       await this.persist();
+      // 新建的 worker 会话在这里才进入“插件创建”集合；同步给它们挂上 gitlab_leader_report。
+      this.syncLeaderWorkerTools?.();
     } catch (error) {
       // 持久化故障与派发错误分账：写进独立字段，不污染面板上“最近派发错误”的语义。
       const message = `保存${area}状态失败：${errorMessage(error)}`;

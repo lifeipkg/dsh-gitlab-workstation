@@ -9,6 +9,18 @@ export const LEADER_MESSAGE_SOURCE = 'gitlab-workstation-leader';
 // v3: the Leader keeps the Host's standard tools. The plugin adds exactly two tools to it (name ↔ Host operation).
 export const LEADER_TOOLS = Object.freeze([['gitlab_leader_board', 'board'], ['gitlab_leader_session', 'session']].map((entry) => Object.freeze(entry)));
 export const LEADER_TOOL_NAMES = Object.freeze(LEADER_TOOLS.map(([name]) => name));
+// Standard DSH tools hidden from the Leader (it coordinates; workers do the work). Each name is optional: a host without
+// that tool simply skips it. Kept: shell (glab, read-only inspection), read/glob/grep, skill, todo, web_fetch,
+// ask_user_question, background jobs, and everything the plugin adds.
+export const LEADER_DENIED_TOOLS = Object.freeze([
+  'subagent', 'subagent_fork', 'workflow',                                    // untracked agents bypass the board
+  'team_task_create', 'team_task_get', 'team_task_list', 'team_task_update',  // Agent Teams
+  'send_message', 'list_agents', 'wait_agent', 'list_subagent_models',        // subagent control
+  'plugin_manager', 'create_skill',                                           // installs/changes code and profile
+  'schedule_create', 'schedule_edit', 'schedule_list', 'schedule_view',       // standing autonomy beyond the human's ask
+  'create_goal', 'get_goal', 'update_goal',                                   // self-assigned long runs
+  'edit', 'write',                                                            // code changes belong to workers
+]);
 export const LEADER_SESSION_ACTIONS = Object.freeze(['create', 'send', 'steer', 'rename', 'model', 'archive', 'resolve_delivery']);
 // The only tool added to plugin-created worker sessions (Host operation workerReport).
 export const LEADER_WORKER_TOOL = 'gitlab_leader_report';
@@ -56,6 +68,8 @@ export function createLeaderAgentAdapter(runtime, options = {}) {
   let stopped = false;
   let dependencyPromise;
   let bindingPromise;
+  let lastUnready = '';
+  const unready = (reason) => { lastUnready = reason; return false; };
   let disposalPromise;
   const bindings = new Map();
   // Worker report bindings live apart from Leader bindings: the Leader guard trusts bindings.has(exec.agent).
@@ -179,7 +193,7 @@ export function createLeaderAgentAdapter(runtime, options = {}) {
         const result = await serviceContext().sessionController.resolveAgent(sessionId);
         if (result?.error || !result?.agent || result.agent !== live(sessionId)) return failure(null, String(result?.error?.message ?? '原生 Leader 激活身份不可验证。'));
       }
-      if (!await refreshBindings()) return failure(null, 'unavailable：Leader 工具不能绑定，未准备就绪。');
+      if (!await refreshBindings()) return failure(null, `unavailable：Leader 工具不能绑定，未准备就绪（${lastUnready || '原因未知'}）。`);
       return { ok: true, status: 'prepared', sessionId };
     } catch (error) { return failure(null, String(error?.message ?? error).slice(0, 1000)); }
   }
@@ -210,15 +224,17 @@ export function createLeaderAgentAdapter(runtime, options = {}) {
     bindingPromise = (async () => {
       const agent = live(selected());
       for (const [old, dispose] of bindings) if (old !== agent) { dispose(); bindings.delete(old); }
-      if (!sameLeader(agent) || !agent.ctx) return false;
+      if (!selected()) return unready('尚未记录 Leader 会话 ID');
+      if (!agent) return unready('Leader agent 当前不在宿主 agent 注册表中（未常驻）');
+      if (!sameLeader(agent) || !agent.ctx) return unready('Leader agent 身份与会话 ID 不一致或缺少 ctx');
       if (bindings.has(agent)) return true;
       const deps = await dependencies();
-      if (!sameLeader(agent)) return false;
+      if (!sameLeader(agent)) return unready('绑定期间 Leader agent 已变化');
       const raw = serviceContext()?.agentPresets?.serviceFor?.(agent, 'tools') ?? agent.ctx.tools;
-      if (!raw || typeof deps.getTraceable !== 'function') return false;
+      if (!raw || typeof deps.getTraceable !== 'function') return unready('宿主未提供 tools 服务或 getTraceable');
       // serviceFor returns raw implementation: bind to agent.ctx, never register in preset/global scope.
       const tools = deps.getTraceable(agent.ctx, raw);
-      if (typeof tools?.register !== 'function') return false;
+      if (typeof tools?.register !== 'function') return unready('tools 服务不支持 register');
       const disposes = [];
       let disposed = false;
       const dispose = () => { if (disposed) return; disposed = true; for (const remove of disposes.reverse()) remove?.(); };
@@ -238,7 +254,17 @@ export function createLeaderAgentAdapter(runtime, options = {}) {
           };
           disposes.push(tools.register(definition, { when: ({ agent: caller }) => caller === agent && sameLeader(caller) }));
         });
+        // The Leader coordinates; it must not spawn untracked agents, install code, schedule work or edit files itself.
+        // restrict() throws for names this host does not have, so each name is tried on its own.
+        const denied = [];
+        if (typeof tools.restrict === 'function') {
+          for (const name of LEADER_DENIED_TOOLS) {
+            try { disposes.push(tools.restrict({ deny: [name] })); denied.push(name); } catch { /* tool not present in this preset */ }
+          }
+        }
         agent.ctx.effect?.(() => dispose, 'gitlab-workstation.leader-tools');
+        lastUnready = '';
+        runtime.logger?.info?.(`Leader 工具已绑定：${LEADER_TOOLS.map(([name]) => name).join('、')}；已对 Leader 隐藏：${denied.join('、') || '（无）'}`);
         bindings.set(agent, dispose);
         return true;
       } catch (error) { dispose(); throw error; }
@@ -404,7 +430,7 @@ export function createLeaderAgentAdapter(runtime, options = {}) {
         if (runtime.isLeaderManagedSession?.(sessionOf(agent)) === true) await refreshWorkerBindings();
         return;
       }
-      try { await refreshBindings(); }
+      try { if (!await refreshBindings()) runtime.logger?.warn?.(`Leader 工具未绑定：${lastUnready || '原因未知'}`); }
       catch (error) { runtime.logger?.warn?.(`Leader 工具绑定失败：${String(error?.message ?? error).slice(0, 300)}`); }
       await refreshWorkerBindings();
     }));
@@ -428,5 +454,7 @@ export function createLeaderAgentAdapter(runtime, options = {}) {
   return {
     get capabilities() { const enabled = infrastructure() && bindings.has(live(selected())); return { atomicIdleDelivery: enabled, nonHumanSource: enabled }; },
     observe, deliver: send, questions, prepare, prepareWorker, refreshBindings, refreshWorkerBindings, state, dispose,
+    /** Why the last refreshBindings() returned false ('' when bound or never tried). */
+    get bindingStatus() { return lastUnready; },
   };
 }

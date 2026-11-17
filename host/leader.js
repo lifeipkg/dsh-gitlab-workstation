@@ -361,6 +361,9 @@ export const leaderMethods = {
     await this.saveLeaderStrict();
     try {
       this.markLeaderSideEffect();
+      // The Host fires agent/created inside createSession, before the new ID is recorded, so that hook cannot recognise
+      // the Leader. Bind the two plugin tools here, now that the ID is durable and before any prompt reaches the agent.
+      await this.bindLeaderTools(state.sessionId);
       await this.host.renameSession(state.sessionId, 'WorkStation Leader');
       if (state.settings.model) await this.host.selectModel({ sessionId: state.sessionId, ...state.settings.model });
       else if (state.configuredModel) await this.resetLeaderModel(state.sessionId);
@@ -381,6 +384,17 @@ export const leaderMethods = {
       try { await this.saveLeaderStrict(); } catch { /* keep the original error */ }
       return failure(state.error, this.leaderProjection());
     }
+  },
+
+  /** Binds gitlab_leader_board/gitlab_leader_session to the resident Leader agent. A cold session binds when it is opened (agent/created). */
+  async bindLeaderTools(sessionId) {
+    if (typeof this.leaderAdapter?.refreshBindings !== 'function') return;
+    if (await this.leaderAdapter.refreshBindings()) return;
+    const reason = this.leaderAdapter.bindingStatus || '原因未知';
+    if (this.leaderServicesContext?.agents?.get?.(sessionId)) {
+      throw new Error(`Leader 已在运行，但插件工具未能绑定（${reason}）；Leader 将只有宿主标准工具。`);
+    }
+    this.logger?.warn?.(`Leader 会话尚未常驻，工具将在会话打开时绑定（${reason}）。`);
   },
 
   async resetLeaderModel(sessionId) {

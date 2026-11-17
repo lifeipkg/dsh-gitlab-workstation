@@ -75,7 +75,7 @@ export function fixture(options = {}) {
     },
     leaderAdapter: {
       capabilities: { atomicIdleDelivery: true, nonHumanSource: true },
-      async prepare() {}, refreshBindings() {}, refreshWorkerBindings() { calls.refresh.push('workers'); },
+      async prepare() {}, refreshBindings() { calls.refresh.push('leader'); return options.bindLeader ?? true; }, get bindingStatus() { return options.bindStatus ?? ''; }, refreshWorkerBindings() { calls.refresh.push('workers'); },
       async prepareWorker() { return { ok: true }; },
       async observe(sessionId, cursor) { return options.observe ? options.observe(sessionId, cursor) : { cursor: 10, events: [], truncated: false }; },
       async questions() { return options.questions ?? []; },

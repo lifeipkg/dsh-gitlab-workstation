@@ -28,6 +28,15 @@ function setup(options = {}) {
   // v3: the tools stub deliberately has no restrict()/guard(); calling them would throw.
   const tools = { register(definition, config) { registered.push(definition.name); definitions.set(definition.name, { definition, config });
     return () => { removals.push(definition.name); definitions.delete(definition.name); }; } };
+  // Like the real tools service, restrict() throws for names the host does not have. Only present when a test asks for it.
+  const hidden = new Set();
+  if (options.knownTools) {
+    tools.restrict = ({ deny }) => {
+      for (const name of deny) if (!options.knownTools.includes(name)) throw new Error(`tools.restrict() names unknown global tool "${name}"`);
+      for (const name of deny) hidden.add(name);
+      return () => { for (const name of deny) hidden.delete(name); };
+    };
+  }
   const ctx = { agents: { get: (id) => residents.get(id) }, typertGateway: { getPendingRemoteEvents: () => pending },
     workspaceRegistry: { archivedSessionIds: [] },
     sessionProjections: { snapshot: (session) => ({ asOfSeq: session.seq - 1, values: { userQuestions: { active: [], settled: [] } } }) },
@@ -45,7 +54,7 @@ function setup(options = {}) {
   const adapter = createLeaderAgentAdapter(runtime, { dependencies: options.dependencies ?? dependencies });
   const request = (values = {}) => Object.freeze({ sessionId: 'worker', leaderSessionId: 'leader', taskId: 'issue', requestId: randomUUID(),
     body: '继续原 Issue 已授权范围；无法判断则反馈。', expectedCursor: 19, ...values });
-  return { adapter, runtime, ctx, residents, leader, worker, listeners, definitions, registered, removals, pending, calls, operations, warnings, request, tools,
+  return { hidden, info: (runtime.infos = []), adapter, runtime, ctx, residents, leader, worker, listeners, definitions, registered, removals, pending, calls, operations, warnings, request, tools,
     setAdmitted: (value) => { admitted = value; }, setBusy: (value) => { maintenanceBusy = value; } };
 }
 
@@ -185,7 +194,7 @@ test('the Leader cannot deliver to itself and the adapter has no notify entry po
   assert.equal(fixture.calls.length, 0);
   assert.equal(fixture.adapter.notify, undefined);
   assert.equal(fixture.adapter.humanMessages, undefined);
-  assert.deepEqual(Object.keys(fixture.adapter).sort(), ['capabilities', 'deliver', 'dispose', 'observe', 'prepare', 'prepareWorker', 'questions',
+  assert.deepEqual(Object.keys(fixture.adapter).sort(), ['bindingStatus', 'capabilities', 'deliver', 'dispose', 'observe', 'prepare', 'prepareWorker', 'questions',
     'refreshBindings', 'refreshWorkerBindings', 'state']);
 });
 
@@ -478,4 +487,38 @@ test('Leader replacement rebinds tools to the new Leader and drops the old regis
   assert.equal(current.config.when({ agent: fixture.leader }), false);
   assert.equal(old.config.when({ agent: fixture.leader }), false);
   assert.ok(fixture.removals.length >= LEADER_TOOL_NAMES.length);
+});
+test('the Leader hides only the denied standard tools the host really has, and restores them on unbind', async () => {
+  const { LEADER_DENIED_TOOLS } = await import('../host/leader-agent.js');
+  assert.ok(LEADER_DENIED_TOOLS.includes('subagent') && LEADER_DENIED_TOOLS.includes('plugin_manager'));
+  for (const kept of ['pwsh', 'bash', 'read', 'glob', 'grep', 'skill', 'todo_write', 'web_fetch']) assert.equal(LEADER_DENIED_TOOLS.includes(kept), false, kept);
+  // The host has only these two of the denied tools; the rest must be skipped silently instead of aborting the binding.
+  const fixture = await ready({ knownTools: ['subagent', 'schedule_create', 'pwsh', 'read'] });
+  assert.deepEqual([...fixture.hidden].sort(), ['schedule_create', 'subagent']);
+  assert.deepEqual([...fixture.definitions.keys()], [...LEADER_TOOL_NAMES]);
+  fixture.listeners.get('agent/disposed')({ agent: fixture.leader });
+  assert.equal(fixture.hidden.size, 0);
+});
+
+test('an unbound Leader reports why: not resident, no Leader recorded', async () => {
+  const fixture = setup();
+  fixture.residents.delete('leader');
+  assert.equal(await fixture.adapter.refreshBindings(), false);
+  assert.match(fixture.adapter.bindingStatus, /不在宿主 agent 注册表/);
+  fixture.runtime.leaderState = { sessionId: null };
+  assert.equal(await fixture.adapter.refreshBindings(), false);
+  assert.match(fixture.adapter.bindingStatus, /尚未记录/);
+  const prepared = await fixture.adapter.prepare('leader');
+  assert.equal(prepared.ok, false);
+});
+
+test('agent/created warns with the reason when the selected Leader cannot be bound', async () => {
+  const fixture = setup();
+  fixture.runtime.leaderState = { sessionId: 'leader' };
+  fixture.residents.delete('leader'); // agent/created fires, but the registry does not return it yet
+  await fixture.listeners.get('agent/created')({ agent: fixture.leader });
+  assert.ok(fixture.warnings.some((line) => /Leader 工具未绑定：.*不在宿主 agent 注册表/.test(line)), fixture.warnings.join('|'));
+  fixture.residents.set('leader', fixture.leader);
+  await fixture.listeners.get('agent/created')({ agent: fixture.leader });
+  assert.ok(LEADER_TOOL_NAMES.every((name) => fixture.definitions.has(name)));
 });
