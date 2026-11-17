@@ -130,15 +130,10 @@ export const precheckMethods = {
     for (const todo of todos) {
       const key = targetKey(todo?.url ?? '');
       if (!key) continue;
-      const candidates = Object.values(this.state.handled)
-        .filter((record) => record?.sessionId && record.archived !== true && targetKey(record.url) === key)
-        .sort((a, b) => (b.acceptedAt ?? 0) - (a.acceptedAt ?? 0))
-        .slice(0, 2)
-        .map((record) => ({
-          title: record.sessionTitle || record.title,
-          status: record.reportStatus || record.closure,
-          note: record.closureNote || record.reportSummary,
-        }));
+      const thread = this.state.ledger?.threads?.[key];
+      const candidates = thread?.sessionId && thread.archived !== true
+        ? [{ title: thread.sessionTitle || thread.title, status: thread.lastReport?.status, note: thread.lastReport?.summary }]
+        : [];
       if (candidates.length > 0) context[todo.id] = candidates;
     }
     return context;
@@ -309,35 +304,18 @@ export const precheckMethods = {
       }
       const target = foldableInto(todo, verdict);
       const duplicate = Boolean(target) && !referencedPrimaries.has(todo.id);
-      if (!verdict.needsProcessing || duplicate) {
-        const reason = duplicate
-          ? `与 Todo ${verdict.duplicateOf} 是同一请求，随主条目合并处理`
-          : verdict.reason;
+      if (duplicate) {
+        // 同一请求的重复提及：不再单独跳过，按同对象线程与主条目同批处理，原文不丢。
+        ready.push(todo);
+        continue;
+      }
+      if (!verdict.needsProcessing) {
         try {
-          await this.markTodoDone(todo);
-          this.state.handled[todo.id] = {
-            id: todo.id,
-            sessionId: null,
-            outcome: 'precheck-skipped',
-            automatic: true,
-            acceptedAt: Date.now(),
-            skipReason: reason,
-            title: todo.title,
-            url: todo.url,
-            project: todo.project,
-            // 折叠进主条目的提及：保留作者与正文摘录，主条目会话提示词会带出并要求覆盖处理。
-            ...(duplicate ? {
-              mergedInto: target.id,
-              author: todo.author,
-              excerpt: String(todo.body ?? '').slice(0, 300),
-            } : {}),
-          };
+          await this.ledgerSkipTodo(todo, verdict.reason);
         } catch (error) {
           this.logger.warn(`预检跳过 Todo ${todo.id} 标记完成失败：${errorMessage(error)}`);
           // 标记失败时不丢判定：下一轮该 Todo 仍在待办列表，避免周期性重复调用预检模型。
-          continue;
         }
-        this.judgeVerdicts.delete(todo.id);
         continue;
       }
       this.judgeVerdicts.set(todo.id, verdict);

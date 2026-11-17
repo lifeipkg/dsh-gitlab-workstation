@@ -4,8 +4,8 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DshHostClient } from './dsh-host.js';
+import { buildLedgerInbox } from './core/todo-machine.js';
 import {
-  buildInbox,
   createLogBuffer,
   initialState,
   normalizeState,
@@ -33,6 +33,8 @@ import { dispatchMethods } from './host/dispatch.js';
 import { sessionEntryMethods } from './host/session-entries.js';
 import { leaderMethods, createLeaderUiCaller } from './host/leader.js';
 import { createLeaderAgentAdapter } from './host/leader-agent.js';
+import { todoCycleMethods } from './host/todo-cycle.js';
+import { createTodoReportBinder } from './host/todo-tools.js';
 
 const PACKAGE_DIR = dirname(fileURLToPath(import.meta.url));
 // 与其它 DSH 插件一致：数据放在 Harness home（DSH_HOME，默认 ~/.dsh）下的 storages/<插件>/。
@@ -103,6 +105,12 @@ export class GitlabTodoRuntime {
     this.sessionRosterKnown = false;
     this.reconcilePromise = null;
     this.sessionTimer = null;
+    this.todoTimer = null;
+    this.todoDispatchPromise = null;
+    this.todoReconcilePromise = null;
+    this.todoDeliveryBusy = new Set();
+    this.todoPolls = new Map();
+    this.todoBinder = null;
     this.dispatchQueue = [];
     this.pumpPromise = null;
     // 本轮批量预检的判定（todoId → verdict）：派发时消费（preferSession 决定路由、priority 排序）。
@@ -190,6 +198,11 @@ export class GitlabTodoRuntime {
     try {
       const stored = JSON.parse(await readFile(this.stateFile(), 'utf8'));
       migrated = typeof stored?.version === 'number' && stored.version !== STATE_VERSION;
+      if (migrated) {
+        // 升级前备份旧状态（v6 台账迁移不可逆）；已有备份不覆盖。
+        const backup = join(this.storageDirectory(), `state.v${stored.version}.bak.json`);
+        if (!await pathExists(backup)) await copyFile(this.stateFile(), backup);
+      }
       this.state = normalizeState(stored);
     } catch (error) {
       if (error?.code !== 'ENOENT') throw new Error(`读取插件状态失败：${errorMessage(error)}`);
@@ -209,6 +222,7 @@ export class GitlabTodoRuntime {
     await (this.leaderLoadPromise ??= this.loadLeader());
     this.leaderAdapter ??= createLeaderAgentAdapter(this);
     await this.leaderAdapter.refreshBindings();
+    await this.todoBinder?.refresh?.();
     this.unregisterRoute = this.ctx.connection.fetch.register({
       path: BRIDGE_PATH,
       methods: ['GET', 'POST'],
@@ -216,6 +230,7 @@ export class GitlabTodoRuntime {
       fetch: (request) => this.handleFetch(request),
     });
     await this.reconcileSessions();
+    this.ensureTodoTimer();
     this.resetTimer();
     this.logger.info(`运行时已启动：${this.state.settings.enabled ? `自动轮询开启（间隔 ${this.state.settings.intervalSeconds}s）` : '自动轮询关闭（仅手动动作）'}。`);
   }
@@ -224,6 +239,9 @@ export class GitlabTodoRuntime {
     this.stopping = true;
     this.stopLeader();
     await this.leaderAdapter?.dispose?.();
+    await this.todoBinder?.dispose?.();
+    clearInterval(this.todoTimer);
+    this.todoTimer = null;
     this.dispatchQueue = [];
     this.wakeWaiters();
     clearInterval(this.timer);
@@ -237,6 +255,8 @@ export class GitlabTodoRuntime {
     await Promise.allSettled([
       this.reconcilePromise?.catch(() => {}),
       this.pumpPromise?.catch(() => {}),
+      this.todoDispatchPromise?.catch(() => {}),
+      this.todoReconcilePromise?.catch(() => {}),
       this.pollPromise?.catch(() => {}),
       this.writeChain.catch(() => {}),
       this.leaderOperationChain?.catch(() => {}),
@@ -417,11 +437,23 @@ export class GitlabTodoRuntime {
         return jsonResponse(200, { ok: true, state });
       }
       if (body.action === 'inbox') {
-        // 需人工收件箱：未确认的 needs-human 记录全集（面板轮询刷新）。
-        return jsonResponse(200, { ok: true, items: buildInbox(this.state) });
+        // 收件箱：台账中 attention + waiting 的 Todo（面板轮询刷新）。
+        return jsonResponse(200, { ok: true, items: buildLedgerInbox(this.state.ledger) });
       }
       if (body.action === 'acknowledge' && (typeof body.todoId === 'string' || typeof body.todoId === 'number')) {
         const result = await this.acknowledgeNeedsHuman(String(body.todoId));
+        return jsonResponse(200, { ok: true, result, state: this.snapshot() });
+      }
+      if (body.action === 'todoRetry' && (typeof body.todoId === 'string' || typeof body.todoId === 'number')) {
+        const ok = await this.todoRetry(String(body.todoId));
+        return jsonResponse(200, { ok: true, result: { ok }, state: this.snapshot() });
+      }
+      if (body.action === 'todoClose' && (typeof body.todoId === 'string' || typeof body.todoId === 'number')) {
+        const result = await this.todoClose(String(body.todoId), 'human');
+        return jsonResponse(200, { ok: true, result, state: this.snapshot() });
+      }
+      if (body.action === 'todoResume') {
+        const result = { resumed: await this.todoResume() };
         return jsonResponse(200, { ok: true, result, state: this.snapshot() });
       }
       if (body.action === 'setSessionArchived' && typeof body.sessionId === 'string') {
@@ -463,6 +495,7 @@ attachRuntimeMethods(GitlabTodoRuntime, [
   dispatchMethods,
   sessionEntryMethods,
   leaderMethods,
+  todoCycleMethods,
 ]);
 
 export const inject = ['connection', 'webServer', 'typertGateway', 'workspaceRegistry'];
@@ -497,12 +530,14 @@ export function apply(ctx, config = {}) {
   }, 'gitlab-todo-agent: Leader RPC');
   // Install the awaited creation barrier before any startup I/O or optional-service arrival.
   runtime.leaderAdapter = createLeaderAgentAdapter(runtime);
+  runtime.todoBinder = createTodoReportBinder(runtime);
   // Leader capabilities are optional; profiles without them keep the existing Todo/Issue workbench.
   ctx.inject?.(['agents', 'agentPresets', 'sessionController', 'sessionProjections'], (leaderCtx) => {
     runtime.leaderServicesContext = leaderCtx;
     if (!runtime.stopping) {
       runtime.leaderAdapter ??= createLeaderAgentAdapter(runtime);
       void runtime.leaderAdapter.refreshBindings().catch((error) => runtime.logger.warn(`Leader 绑定失败：${errorMessage(error)}`));
+      try { runtime.todoBinder?.refresh?.(); } catch (error) { runtime.logger.warn(`Todo 报告工具绑定失败：${errorMessage(error)}`); }
       // Resident managed workers gain gitlab_leader_report once the native services arrive.
       runtime.syncLeaderWorkerTools?.(true);
     }

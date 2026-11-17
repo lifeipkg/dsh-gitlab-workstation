@@ -136,65 +136,14 @@ export const dispatchMethods = {
     this.state.lastRunAt = Date.now();
     this.state.lastPollError = null;
     try {
-      const fetchStartedAt = Date.now();
       const todos = await this.fetchTodos();
       this.state.todos = todos;
       this.state.lastSuccessAt = Date.now();
-      // 闭环核对不依赖自动处理开关：它只更新记录状态和归档，不会开新会话。
-      await this.assessClosures(todos, fetchStartedAt);
-      const candidates = selectPendingTodos(todos, this.state.handled, todos.length)
-        .filter((todo) => !this.dispatches.has(todo.id) && !this.state.pending[todo.id]);
-      this.state.lastNewCount = candidates.length;
-      this.logger.info(`轮询完成（${source}）：待办 ${todos.length} 条，新候选 ${candidates.length} 条，自动处理 ${this.state.settings.enabled ? '开启' : '关闭'}。`);
+      // v4.0：Todo 全部交给台账周期（对账→入账→规则跳过/预检→组批投递）；不再有闭环核对与续办。
+      await this.runTodoCycle(todos, source);
+      // Issue 路径遗留的 pending 重试仍走旧派发队列。
       if (this.state.settings.enabled) {
-        // 上轮残留的预检判定：Todo 已由其他路径出结果时清掉，避免派发时误用。
-        for (const todoId of [...this.judgeVerdicts.keys()]) {
-          const handled = this.state.handled[todoId];
-          if (handled && (!handled.sessionId || handled.outcome !== 'session-accepted')) this.judgeVerdicts.delete(todoId);
-        }
-        // 0) 事件驱动续办：waiting 记录监视的 MR 状态翻转即把续办提前到本轮；定时器仍作兜底。
-        if (this.state.settings.followUpEnabled !== false) await this.refreshWatches();
-        // 0.1) 到期的续办先入队：先把已经开了头的事收尾，再开新的。
-        if (this.state.settings.followUpEnabled !== false) {
-          await this.probeWaitingFollowUps();
-          await this.enqueueFollowUps();
-        }
-        // 0.1) pending 是可能已被 Host 接受的消息：不参与下面的二次预检，但必须自动重试。
         this.enqueuePendingRetries();
-        // 1) 规则跳过：流水线通知、自己 @ 自己——零模型调用，程序内直接标记完成。
-        if (this.state.settings.ruleSkipEnabled !== false) {
-          const classified = new Map(candidates.map((todo) => [todo.id, classifyTodo(todo, this.gitlabUserId)]));
-          const noise = candidates
-            .filter((todo) => RULE_SKIP_REASONS[classified.get(todo.id)])
-            .slice(0, MAX_RULE_SKIPS_PER_POLL);
-          for (const todo of noise) {
-            try {
-              await this.markTodoDone(todo);
-              this.state.handled[todo.id] = {
-                id: todo.id,
-                sessionId: null,
-                outcome: 'rule-skipped',
-                automatic: true,
-                acceptedAt: Date.now(),
-                skipReason: RULE_SKIP_REASONS[classified.get(todo.id)],
-                title: todo.title,
-                url: todo.url,
-                project: todo.project,
-              };
-            } catch (error) {
-              this.logger.warn(`规则跳过 Todo ${todo.id} 标记完成失败：${errorMessage(error)}`);
-            }
-          }
-        }
-        // 2) LLM 批量预检：一次判定本批全部提及（优先级/重复/类型/路由倾向），
-        //    批量解析失败自动退回逐条预检；只有判定需要处理的 Todo 进入派发队列。
-        let mentions = candidates
-          .filter((todo) => !this.state.handled[todo.id] && classifyTodo(todo, this.gitlabUserId) === 'direct-mention')
-          .slice(0, this.state.settings.maxSessionsPerPoll);
-        if (this.state.settings.precheckEnabled && mentions.length > 0) {
-          mentions = await this.precheckMentions(mentions);
-        }
-        this.enqueueDispatch(mentions);
         void this.pump();
       }
     } catch (error) {
@@ -286,6 +235,7 @@ export const dispatchMethods = {
   async dispatchById(id) {
     const todo = this.itemById(id);
     if (!todo) return { ok: false, error: '当前列表中找不到该对象，请刷新后重试。' };
+    if (!isIssueItem(todo)) return this.todoManualDispatch(todo);
     return this.dispatch(todo, Boolean(this.state.handled[id]));
   },
 
@@ -293,6 +243,7 @@ export const dispatchMethods = {
     const todo = this.itemById(id);
     if (!todo) return { ok: false, error: '当前列表中找不到该对象，请刷新后重试。' };
     if (typeof sessionId !== 'string' || !sessionId.trim()) return { ok: false, error: '缺少目标 sessionId。' };
+    if (!isIssueItem(todo)) return { ok: false, error: 'Todo 按线程自动归并到同一会话，不再支持手动路由。' };
     return this.dispatch(todo, Boolean(this.state.handled[id]), { route: { sessionId: sessionId.trim() } });
   },
 

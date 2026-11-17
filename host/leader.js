@@ -220,6 +220,10 @@ export const leaderMethods = {
         if (validId(record?.sessionId) && record.routed !== true) pairs.push([taskId, record.sessionId]);
       }
     }
+    for (const thread of Object.values(this.state?.ledger?.threads ?? {})) {
+      const taskId = `thread:${thread.key}`;
+      if (validId(taskId) && validId(thread.sessionId)) pairs.push([taskId, thread.sessionId]);
+    }
     return pairs.filter(([, sessionId]) => sessionId !== this.leaderState?.sessionId);
   },
 
@@ -240,6 +244,10 @@ export const leaderMethods = {
     if (isLeaderTaskId(taskId)) {
       const task = this.leaderState?.tasks?.find((entry) => entry.taskId === taskId && entry.status === 'created');
       return task?.sessionId ?? null;
+    }
+    if (taskId.startsWith('thread:')) {
+      const thread = this.state?.ledger?.threads?.[taskId.slice(7)];
+      return validId(thread?.sessionId) ? thread.sessionId : null;
     }
     const issue = this.leaderIssueEntries().find((entry) => entry.id === taskId && !entry.routed && validId(entry.sessionId));
     if (issue) return issue.sessionId;
@@ -266,6 +274,11 @@ export const leaderMethods = {
 
   leaderTodoMapping(taskId, sessionId) {
     if (/^issue-/u.test(taskId)) return null;
+    if (taskId.startsWith('thread:')) {
+      const thread = this.state?.ledger?.threads?.[taskId.slice(7)];
+      if (!thread || thread.sessionId !== sessionId) return null;
+      return { id: taskId, sessionId, title: String(thread.title ?? '').slice(0, 1000), url: String(thread.url ?? ''), kind: 'todo', sessionTitle: thread.sessionTitle ?? '' };
+    }
     const record = this.state?.handled?.[taskId] ?? this.state?.pending?.[taskId];
     if (!record || record.sessionId !== sessionId || record.routed === true) return null;
     const todo = this.state?.todos?.find((entry) => entry.id === taskId) ?? record.item ?? {};

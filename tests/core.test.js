@@ -302,6 +302,23 @@ test('judge prompt and reply parsing are conservative', () => {
   assert.equal(parseJudgeReply('{"foo":1}'), null);
 });
 
+/** 台账线程：Todo 所在线程（在途批次在 thread.inflight，Todo 本身仍是 queued）。 */
+function ledgerThread(runtime, todoId) {
+  const ledger = runtime.state.ledger;
+  return ledger.threads[ledger.todos[todoId]?.threadKey];
+}
+
+function assertInflight(runtime, todoId) {
+  assert.ok(ledgerThread(runtime, todoId)?.inflight?.todoIds.includes(todoId), `Todo ${todoId} 应在途`);
+}
+
+/** 模拟会话上报并结束回合：handleTodoReport 报告后让会话完成，再对账在途批次。 */
+async function settleTodoSession(runtime, calls, sessionId, { status = 'done', complete = 'completed' } = {}) {
+  if (status) await runtime.handleTodoReport(sessionId, { status, summary: 'ok' });
+  calls.complete(sessionId, complete);
+  await runtime.reconcileTodoInflight();
+}
+
 function runtimeWithLlmJudge(reply) {
   const harness = runtimeWithPrompt(async () => ({ accepted: true }));
   harness.runtime.ctx.llm = {
@@ -331,8 +348,8 @@ test('precheck marks a todo done without a session when the judge declines', asy
   assert.equal(calls.create, 0);
   assert.equal(calls.prompt, 0);
   assert.equal(marked, 1);
-  assert.equal(runtime.state.handled.direct.outcome, 'precheck-skipped');
-  assert.equal(runtime.state.handled.direct.skipReason, '纯感谢，无需处理');
+  assert.equal(runtime.state.ledger.todos.direct.state, 'skipped');
+  assert.equal(runtime.state.ledger.todos.direct.reason, '纯感谢，无需处理');
   assert.equal(runtime.occupiedSlots(), 0);
 });
 
@@ -343,7 +360,7 @@ test('precheck opens the session when the judge requires handling; judge failure
   await required.runtime.executePoll('test');
   await required.runtime.pump();
   assert.equal(required.calls.create, 1);
-  assert.equal(required.runtime.state.handled.direct.outcome, 'session-accepted');
+  assertInflight(required.runtime, 'direct');
 
   // 预检输出不可解析：本轮跳过（不标记、不开会话），Todo 留在待办列表等待下一轮。
   const broken = runtimeWithLlmJudge('模型输出的不是 JSON');
@@ -352,7 +369,7 @@ test('precheck opens the session when the judge requires handling; judge failure
   await broken.runtime.executePoll('test');
   await broken.runtime.pump();
   assert.equal(broken.calls.create, 0);
-  assert.equal(broken.runtime.state.handled.direct, undefined);
+  assert.equal(broken.runtime.state.ledger.todos.direct, undefined);
 
   // 无 llm 服务：同样跳过本轮。
   const noLlm = runtimeWithPrompt(async () => ({ accepted: true }));
@@ -361,7 +378,7 @@ test('precheck opens the session when the judge requires handling; judge failure
   await noLlm.runtime.executePoll('test');
   await noLlm.runtime.pump();
   assert.equal(noLlm.calls.create, 0);
-  assert.equal(noLlm.runtime.state.handled.direct, undefined);
+  assert.equal(noLlm.runtime.state.ledger.todos.direct, undefined);
   await Promise.all([required.runtime.stop(), broken.runtime.stop(), noLlm.runtime.stop()]);
 });
 
@@ -399,12 +416,11 @@ test('pipeline notifications are marked done by rule without any model call', as
   assert.equal(marked, 1);
   assert.equal(judged, 1);
   assert.equal(calls.create, 1);
-  assert.equal(runtime.state.handled['9001'].outcome, 'rule-skipped');
-  assert.equal(runtime.state.handled['9001'].sessionId, null);
-  assert.match(runtime.state.handled['9001'].skipReason, /流水线通知/);
-  assert.equal(runtime.state.handled.direct.outcome, 'session-accepted');
+  assert.equal(runtime.state.ledger.todos['9001'].state, 'skipped');
+  assert.match(runtime.state.ledger.todos['9001'].reason, /流水线通知/);
+  assertInflight(runtime, 'direct');
   const restored = normalizeState(JSON.parse(JSON.stringify(runtime.state)));
-  assert.equal(restored.handled['9001'].outcome, 'rule-skipped');
+  assert.equal(restored.ledger.todos['9001'].state, 'skipped');
   await runtime.stop();
 });
 
@@ -419,7 +435,7 @@ test('disabling rule skip keeps pipeline notifications untouched', async () => {
   await runtime.pump();
   assert.equal(marked, 0);
   assert.equal(calls.create, 0);
-  assert.equal(runtime.state.handled['9001'], undefined);
+  assert.equal(runtime.state.ledger.todos['9001'], undefined);
   await runtime.stop();
 });
 
@@ -442,9 +458,9 @@ test('poll-stage precheck judges mentions in place and only enqueues the needed 
   await runtime.pump();
   // 每条提及只预检一次（派发路径不再重复调用模型）。
   assert.equal(judged, 2);
-  assert.equal(runtime.state.handled.direct.outcome, 'precheck-skipped');
-  assert.equal(runtime.state.handled.direct.skipReason, '纯感谢，无需处理');
-  assert.equal(runtime.state.handled.direct2.outcome, 'session-accepted');
+  assert.equal(runtime.state.ledger.todos.direct.state, 'skipped');
+  assert.equal(runtime.state.ledger.todos.direct.reason, '纯感谢，无需处理');
+  assertInflight(runtime, 'direct2');
   assert.equal(calls.create, 1);
   assert.equal(calls.prompt, 1);
   assert.equal(marked, 1);
@@ -549,7 +565,7 @@ test('state normalization migrates v1 and v2 script states to v3', () => {
       lastNewCount: 0,
     };
     const state = normalizeState(legacy);
-    assert.equal(state.version, 6);
+    assert.equal(state.version, 7);
     assert.equal('shell' in state.settings, false);
     assert.equal('script' in state.settings, false);
     assert.equal(state.settings.enabled, true);
@@ -563,14 +579,14 @@ test('v3 states are prefilled with the legacy workflow rules; fresh installs kee
   const v3 = { ...initialState(), version: 3 };
   delete v3.settings.customRules;
   const migrated = normalizeState(JSON.parse(JSON.stringify(v3)));
-  assert.equal(migrated.version, 6);
+  assert.equal(migrated.version, 7);
   assert.equal(migrated.settings.customRules, LEGACY_WORKFLOW_RULES);
   assert.match(migrated.settings.customRules, /JEV-GATE\.md/);
   // 已自行配置过 customRules 的 v3 状态不会被覆盖。
   const customized = normalizeState(JSON.parse(JSON.stringify({ ...v3, settings: { ...v3.settings, customRules: '我的规则' } })));
   assert.equal(customized.settings.customRules, '我的规则');
   // 全新安装（initialState 即 v4）：customRules 为空，会话提示词保持通用。
-  assert.equal(initialState().version, 6);
+  assert.equal(initialState().version, 7);
   assert.equal(initialState().settings.customRules, '');
 });
 
@@ -792,25 +808,6 @@ test('dispatch resolves workspaceId and applies the fixed model before prompting
   assert.ok(methods.indexOf('selectModel') < methods.indexOf('prompt'));
 });
 
-test('a failed prompt reuses its pending session on the next dispatch', async () => {
-  const { runtime, calls } = runtimeWithPrompt(async () => {
-    
-    if (calls.prompt === 1) throw new Error('temporary failure');
-    return { accepted: true };
-  });
-  const [todo] = normalizeTodos([sessionTodo]);
-  runtime.state.todos = [todo];
-  const failed = await runtime.dispatchById(todo.id);
-  assert.equal(runtime.state.pending[todo.id].sessionTitle, 'TODO-issue-7');
-  const retried = await runtime.dispatchById(todo.id);
-  assert.equal(failed.ok, false);
-  assert.equal(retried.ok, true);
-  assert.equal(calls.create, 1);
-  assert.equal(calls.prompt, 2);
-  assert.equal(retried.sessionId, 'session-1');
-  assert.equal(runtime.state.pending[todo.id], undefined);
-});
-
 test('legacy pending retry preserves the actual Host title without creating or renaming', async () => {
   for (const extra of [{}, { sessionTitle: '[协助]-issue-7-note-10' }, { reused: true }, { routed: true, routeMode: 'queue' }]) {
     const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
@@ -887,10 +884,7 @@ test('a failed rename does not journal an unconfirmed new title for pending retr
 });
 
 test('non-mention MR dispatch marks GitLab done without a Session and survives reload', async () => {
-  const { runtime, calls } = runtimeWithPrompt(async () => {
-    
-    return { accepted: true };
-  });
+  const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
   let marked = 0;
   runtime.markTodoDone = async () => { marked += 1; };
   const [todo] = normalizeTodos([gitlabTodo]);
@@ -901,34 +895,32 @@ test('non-mention MR dispatch marks GitLab done without a Session and survives r
   assert.equal(marked, 1);
   assert.equal(calls.create, 0);
   assert.equal(calls.prompt, 0);
-  // 指派类 MR：手动派发同样只标记完成，不开会话。
-  assert.equal(runtime.state.handled[todo.id].outcome, 'rule-skipped');
-  assert.match(runtime.state.handled[todo.id].skipReason, /指派通知/);
+  // 指派类 MR：手动派发同样只标记完成，台账记为 skipped，不开会话。
+  assert.equal(runtime.state.ledger.todos[todo.id].state, 'skipped');
+  assert.match(runtime.state.ledger.todos[todo.id].reason, /指派通知/);
   const restored = normalizeState(JSON.parse(JSON.stringify(runtime.state)));
-  assert.equal(restored.handled[todo.id].outcome, 'rule-skipped');
-  assert.equal(publicState(restored, false, '106').todos[0].outcome, 'rule-skipped');
+  assert.equal(restored.ledger.todos[todo.id].state, 'skipped');
+  assert.equal(publicState(restored, false, '106').todos[0].ledgerState, 'skipped');
 });
 
-test('assigned issues are rule-skipped in polls and marked done on manual dispatch', async () => {
+test('assigned issues are rule-skipped in polls; a skipped todo needs no manual dispatch', async () => {
   const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
   let marked = 0;
   runtime.markTodoDone = async () => { marked += 1; };
   const assignedIssue = { ...gitlabTodo, target_type: 'Issue', target_url: 'https://gitlab.local/group/project/-/issues/7', target: { ...gitlabTodo.target, web_url: 'https://gitlab.local/group/project/-/issues/7' } };
   const [todo] = normalizeTodos([assignedIssue]);
   runtime.state.todos = [todo];
-  // 轮询：规则直接标记完成。
   runtime.state.settings.enabled = true;
   runtime.fetchTodos = async () => [todo];
   await runtime.executePoll('test');
   assert.equal(marked, 1);
   assert.equal(calls.create, 0);
-  assert.equal(runtime.state.handled[todo.id].outcome, 'rule-skipped');
-  assert.match(runtime.state.handled[todo.id].skipReason, /指派通知/);
-  // 手动派发（强制重跑）也只标记完成。
+  assert.equal(runtime.state.ledger.todos[todo.id].state, 'skipped');
+  assert.match(runtime.state.ledger.todos[todo.id].reason, /指派通知/);
+  // 已 skipped 的 Todo 手动派发不再重跑（台账状态机只允许 attention/waiting 重试）。
   const result = await runtime.dispatchById(todo.id);
-  assert.equal(result.ok, true);
-  assert.equal(result.skipped, true);
-  assert.equal(marked, 2);
+  assert.equal(result.ok, false);
+  assert.equal(marked, 1);
   assert.equal(calls.create, 0);
   await runtime.stop();
 });
@@ -956,18 +948,13 @@ test('direct MR note mention dispatch creates a Session instead of marking done'
 });
 
 test('automatic poll only dispatches direct note mentions from other users', async () => {
-  const { runtime, calls } = runtimeWithPrompt(async () => {
-    
-    return { accepted: true };
-  });
+  const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
   let marked = 0;
   runtime.markTodoDone = async () => { marked += 1; };
   runtime.state.settings.enabled = true;
   // 本测试关注“哪些类别进入派发”，预检判定本身另测；关闭预检模拟“判定均需处理”。
   runtime.state.settings.precheckEnabled = false;
   runtime.state.settings.maxSessionsPerPoll = 4;
-  // 关注“哪些类别进入派发”：关闭同对象合并，保持一 Todo 一会话的基线。
-  runtime.state.settings.mergeSameTarget = false;
   const directMr = {
     ...directNoteTodo,
     id: 'direct-mr',
@@ -979,111 +966,96 @@ test('automatic poll only dispatches direct note mentions from other users', asy
   const ordinaryMention = { ...directNoteTodo, id: 'mentioned', action_name: 'mentioned' };
   runtime.fetchTodos = async () => normalizeTodos([gitlabTodo, directNoteTodo, directMr, selfMention, descriptionMention, ordinaryMention]);
   await runtime.executePoll('test');
-  await runtime.pump();
   // 自己 @ 自己、正文 @ 提及、指派通知：规则直接标记完成，零模型零会话。
+  const { todos } = runtime.state.ledger;
   assert.equal(marked, 3);
-  assert.equal(runtime.state.handled.self.outcome, 'rule-skipped');
-  assert.match(runtime.state.handled.self.skipReason, /自己 @ 自己/);
-  assert.equal(runtime.state.handled.description.outcome, 'rule-skipped');
-  assert.match(runtime.state.handled.description.skipReason, /正文 @ 提及/);
-  assert.equal(runtime.state.handled['12345'].outcome, 'rule-skipped');
-  assert.match(runtime.state.handled['12345'].skipReason, /指派通知/);
-  // 三种他人评论提及（开头 @ / MR 评论 @ / 文中 @）都开会话。
-  assert.equal(calls.create, 3);
-  assert.equal(calls.prompt, 3);
-  assert.equal(runtime.state.handled.direct.outcome, 'session-accepted');
-  assert.equal(runtime.state.handled['direct-mr'].outcome, 'session-accepted');
-  assert.equal(runtime.state.handled.mentioned.outcome, 'session-accepted');
+  assert.equal(todos.self.state, 'skipped');
+  assert.match(todos.self.reason, /自己 @ 自己/);
+  assert.equal(todos.description.state, 'skipped');
+  assert.match(todos.description.reason, /正文 @ 提及/);
+  assert.equal(todos['12345'].state, 'skipped');
+  assert.match(todos['12345'].reason, /指派通知/);
+  // 他人评论提及入队；同一 Issue 的 direct 与 mentioned 归入同一线程，MR 单独一个线程 → 2 个会话。
+  assert.equal(calls.create, 2);
+  assert.equal(calls.prompt, 2);
+  assert.equal(todos.direct.threadKey, todos.mentioned.threadKey);
+  assert.notEqual(todos.direct.threadKey, todos['direct-mr'].threadKey);
+  for (const id of ['direct', 'direct-mr', 'mentioned']) assertInflight(runtime, id);
 });
 
 test('auto dispatch holds concurrency slots until sessions actually settle', async () => {
-  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const waitFor = async (predicate) => {
-    for (let i = 0; i < 400 && !predicate(); i += 1) await delay(5);
-  };
   const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }), { autoComplete: false });
-  runtime.config.slotWaitMs = 20;
-  runtime.config.sessionPollMs = 20;
   runtime.state.settings.enabled = true;
   runtime.state.settings.precheckEnabled = false;
   runtime.state.settings.maxSessionsPerPoll = 4;
   runtime.state.settings.maxConcurrentSessions = 2;
-  // 同一 Issue 上的 4 条：关闭同对象合并，验证一 Todo 一会话时的槽位节流。
-  runtime.state.settings.mergeSameTarget = false;
+  runtime.markTodoDone = async () => {};
+  // 每条 Todo 在不同 Issue 上（同一对象会归并为一个线程/会话）。
   const directTodos = Array.from({ length: 4 }, (_, index) => ({
     ...directNoteTodo,
     id: `slot-${index}`,
-    target_url: `https://gitlab.local/group/project/-/issues/7#note_${200 + index}`,
+    target_url: `https://gitlab.local/group/project/-/issues/${100 + index}#note_${200 + index}`,
   }));
   runtime.fetchTodos = async () => normalizeTodos(directTodos);
   await runtime.executePoll('test');
-  await waitFor(() => calls.create >= 2);
   assert.equal(calls.create, 2);
-  assert.equal(runtime.occupiedSlots(), 2);
 
-  // 第 1 个会话回合完成并结算后，槽位释放，队列启动第 3 个。
-  calls.complete('session-1');
-  await waitFor(() => calls.create >= 3);
+  // 第 1 个会话上报并结算后，名额释放，对账立即补投第 3 个。
+  await settleTodoSession(runtime, calls, 'session-1');
   assert.equal(calls.create, 3);
-  assert.equal(runtime.occupiedSlots(), 2);
+  assert.equal(runtime.state.ledger.todos['slot-0'].state, 'done');
 
-  calls.complete('session-2');
-  calls.complete('session-3');
-  await waitFor(() => calls.create >= 4);
+  await settleTodoSession(runtime, calls, 'session-2');
+  await settleTodoSession(runtime, calls, 'session-3');
   assert.equal(calls.create, 4);
 
-  calls.complete('session-4');
-  await waitFor(() => runtime.occupiedSlots() === 0);
-  await runtime.pump();
-  assert.equal(runtime.dispatchQueue.length, 0);
+  await settleTodoSession(runtime, calls, 'session-4');
+  assert.equal(Object.values(runtime.state.ledger.threads).filter((thread) => thread.inflight).length, 0);
+  assert.deepEqual(Object.values(runtime.state.ledger.todos).map((todo) => todo.state), ['done', 'done', 'done', 'done']);
   await runtime.stop();
 });
 
-test('reconcile settles executions by turn/end verdict and never misreads roster failures', async () => {
-  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const waitFor = async (predicate) => {
-    for (let i = 0; i < 400 && !predicate(); i += 1) await delay(5);
-  };
+test('reconcile settles ledger turns by end verdict and never misreads roster failures', async () => {
   const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }), { autoComplete: false });
   runtime.config.sessionPollMs = 20;
   runtime.state.settings.enabled = true;
   runtime.state.settings.precheckEnabled = false;
+  runtime.markTodoDone = async () => {};
   runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
   await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(runtime.state.handled.direct.executionStatus, 'running');
+  assertInflight(runtime, 'direct');
 
-  // 名册读取失败不是空闲：结算保持 running，不释放槽位。
+  // 名册读取失败不是空闲：在途批次保持，不结算。
   calls.failList = true;
-  await runtime.reconcileSessions();
-  assert.equal(runtime.state.handled.direct.executionStatus, 'running');
-  assert.equal(runtime.occupiedSlots(), 1);
+  await runtime.reconcileTodoInflight();
+  assertInflight(runtime, 'direct');
 
-  // 回合完成：结算 completed、自动归档并释放槽位。
+  // 已上报 + 回合完成：Todo done，线程收尾并自动归档。
   calls.failList = false;
-  calls.complete('session-1');
-  await runtime.reconcileSessions();
-  assert.equal(runtime.state.handled.direct.executionStatus, 'completed');
+  await settleTodoSession(runtime, calls, 'session-1');
+  assert.equal(runtime.state.ledger.todos.direct.state, 'done');
   assert.deepEqual(calls.archives, ['session-1']);
-  assert.equal(runtime.state.handled.direct.archived, true);
-  assert.equal(runtime.occupiedSlots(), 0);
+  assert.equal(ledgerThread(runtime, 'direct').archived, true);
+  assert.equal(ledgerThread(runtime, 'direct').inflight, null);
 
-  // 回合失败：结算 failed，不归档。
-  const [retry] = normalizeTodos([{ ...directNoteTodo, id: 'failing', target_url: 'https://gitlab.local/group/project/-/issues/7#note_77' }]);
-  await runtime.dispatch(retry, true);
+  // 回合失败（未报告）：attempts+1 退回 queued，不归档。关掉自动投递以便观察。
+  runtime.state.settings.enabled = false;
+  const [failing] = normalizeTodos([{ ...directNoteTodo, id: 'failing', target_url: 'https://gitlab.local/group/project/-/issues/8#note_77' }]);
+  assert.equal((await runtime.todoManualDispatch(failing)).ok, true);
   calls.complete('session-2', 'error');
-  await runtime.reconcileSessions();
-  assert.equal(runtime.state.handled.failing.executionStatus, 'failed');
-  assert.equal(runtime.state.handled.failing.archived, false);
+  await runtime.reconcileTodoInflight();
+  assert.equal(runtime.state.ledger.todos.failing.state, 'queued');
+  assert.equal(runtime.state.ledger.todos.failing.attempts, 1);
+  assert.match(runtime.state.ledger.todos.failing.reason, /回合失败/);
   assert.deepEqual(calls.archives, ['session-1']);
 
-  // 会话从名册消失：结算 failed 而不是永久占槽。
-  const [vanishing] = normalizeTodos([{ ...directNoteTodo, id: 'vanishing', target_url: 'https://gitlab.local/group/project/-/issues/7#note_78' }]);
-  await runtime.dispatch(vanishing, true);
+  // 会话从名册消失：按取消处理（同样 attempts+1），而不是永久在途。
+  const [vanishing] = normalizeTodos([{ ...directNoteTodo, id: 'vanishing', target_url: 'https://gitlab.local/group/project/-/issues/9#note_78' }]);
+  assert.equal((await runtime.todoManualDispatch(vanishing)).ok, true);
   calls.sessions.delete('session-3');
-  await runtime.reconcileSessions();
-  assert.equal(runtime.state.handled.vanishing.executionStatus, 'failed');
-  assert.equal(runtime.occupiedSlots(), 0);
+  await runtime.reconcileTodoInflight();
+  assert.equal(runtime.state.ledger.todos.vanishing.attempts, 1);
+  assert.equal(ledgerThread(runtime, 'vanishing').inflight, null);
   await runtime.stop();
 });
 
@@ -1092,29 +1064,27 @@ test('archive refusal and the switch never affect settlement', async () => {
   refused.calls.failArchive = true;
   refused.runtime.state.settings.enabled = true;
   refused.runtime.state.settings.precheckEnabled = false;
+  refused.runtime.markTodoDone = async () => {};
   refused.runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
   await refused.runtime.executePoll('test');
-  await refused.runtime.pump();
-  refused.calls.complete('session-1');
-  await refused.runtime.reconcileSessions();
-  assert.equal(refused.runtime.state.handled.direct.executionStatus, 'completed');
-  assert.equal(refused.runtime.state.handled.direct.archived, false);
-  assert.match(refused.runtime.state.handled.direct.archiveError, /session-active/);
-  assert.equal(refused.runtime.occupiedSlots(), 0);
+  await settleTodoSession(refused.runtime, refused.calls, 'session-1');
+  assert.equal(refused.runtime.state.ledger.todos.direct.state, 'done');
+  assert.equal(ledgerThread(refused.runtime, 'direct').archived, false);
+  assert.equal(ledgerThread(refused.runtime, 'direct').inflight, null);
+  assert.ok(refused.runtime.state.ledger.events.some((event) => event.kind === 'archive-failed' && /session-active/.test(event.message)));
   await refused.runtime.stop();
 
   const off = runtimeWithPrompt(async () => ({ accepted: true }), { autoComplete: false });
   off.runtime.state.settings.enabled = true;
   off.runtime.state.settings.precheckEnabled = false;
   off.runtime.state.settings.autoArchive = false;
+  off.runtime.markTodoDone = async () => {};
   off.runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
   await off.runtime.executePoll('test');
-  await off.runtime.pump();
-  off.calls.complete('session-1');
-  await off.runtime.reconcileSessions();
-  assert.equal(off.runtime.state.handled.direct.executionStatus, 'completed');
+  await settleTodoSession(off.runtime, off.calls, 'session-1');
+  assert.equal(off.runtime.state.ledger.todos.direct.state, 'done');
   assert.deepEqual(off.calls.archives, []);
-  assert.equal(off.runtime.state.handled.direct.archived, false);
+  assert.equal(ledgerThread(off.runtime, 'direct').archived, false);
   await off.runtime.stop();
 });
 
@@ -1152,15 +1122,13 @@ test('built-in fetch reads the current user once and paginates todos', async () 
 
 test('bridge no longer serves the handled tab while archive toggling remains', async () => {
   const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }), { autoComplete: false });
-  runtime.state.settings.enabled = true;
-  runtime.state.settings.precheckEnabled = false;
-  runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
-  await runtime.executePoll('test');
-  await runtime.pump();
-  calls.complete('session-1', 'completed', `完成\n[TODO-CLOSURE] {"status":"done","summary":"已处理","resumeAfterMinutes":0,"openMrs":[]}`);
-  runtime.fetchTodos = async () => [];
-  await runtime.reconcileSessions();
-  // 再补 31 条历史会话记录，凑够两页。
+  // Todo 会话由台账管理；归档切换只作用于 handled 里的 Issue 会话，这里直接播种一条已归档的 Issue 记录。
+  const issue = normalizeIssue(gitlabIssue);
+  runtime.state.handled[issue.id] = {
+    id: issue.id, sessionId: 'session-1', acceptedAt: 1, executionStatus: 'completed', archived: true,
+    automatic: false, title: issue.title, url: issue.url, project: '',
+  };
+  calls.sessions.set('session-1', { running: false, events: [] });
   for (let index = 0; index < 31; index += 1) {
     runtime.state.handled[`hist-${index}`] = {
       id: `hist-${index}`, sessionId: `hist-session-${index}`, acceptedAt: 100 + index,
@@ -1172,31 +1140,26 @@ test('bridge no longer serves the handled tab while archive toggling remains', a
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
   }));
-  // v2.41：已处理 Tab 及其 bridge action 已移除；handled 账本仍保留用于去重与 Issue 映射。
+  // v2.41：已处理 Tab 及其 bridge action 已移除；handled 账本仍保留用于 Issue 映射。
   const removed = await post({ action: 'handled', offset: 0, limit: 30 });
   assert.equal(removed.status, 400);
   assert.equal(Object.keys(runtime.state.handled).length, 32);
 
   // 归档切换：完成态会话可归档、可取消归档；状态随持久化记录保留。
-  const record = runtime.state.handled.direct;
-  assert.equal(record.archived, true); // 闭环时已自动归档
   const restore = await (await post({ action: 'setSessionArchived', sessionId: 'session-1', archived: false })).json();
   assert.equal(restore.ok, true);
   assert.deepEqual(calls.unarchives, ['session-1']);
-  assert.equal(runtime.state.handled.direct.archived, false);
+  assert.equal(runtime.state.handled[issue.id].archived, false);
   const rearchive = await (await post({ action: 'setSessionArchived', sessionId: 'session-1', archived: true })).json();
   assert.equal(rearchive.ok, true);
-  assert.equal(runtime.state.handled.direct.archived, true);
+  assert.equal(runtime.state.handled[issue.id].archived, true);
   // 非插件会话拒绝；执行中的插件会话拒绝归档。
   const foreign = await (await post({ action: 'setSessionArchived', sessionId: 'not-mine', archived: true })).json();
   assert.equal(foreign.ok, true);
   assert.equal(foreign.result.ok, false);
   const busy = runtimeWithPrompt(async () => ({ accepted: true }), { autoComplete: false });
-  busy.runtime.state.settings.enabled = true;
-  busy.runtime.state.settings.precheckEnabled = false;
-  busy.runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
-  await busy.runtime.executePoll('test');
-  await busy.runtime.pump();
+  busy.runtime.state.issues = [issue];
+  await busy.runtime.dispatchById(issue.id);
   const busyResponse = await busy.runtime.handleFetch(new Request('http://127.0.0.1/api/gitlab-todo-agent', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -1456,288 +1419,110 @@ test('closure verdict trusts GitLab facts over the session report', () => {
   assert.match(blocked.note, /回合未正常结束（error）.*已达自动处理上限/);
 });
 
-test('a session that marks the todo done closes the loop and is archived', async () => {
-  const { runtime, calls, prompts } = autoRuntime();
-  let pending = [directNoteTodo];
-  runtime.fetchTodos = async () => normalizeTodos(pending);
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.match(prompts[0], /@me（用户 ID 106）/);
-  assert.match(prompts[0], /第 1 轮，自动处理预算约 4 轮/);
-  pending = [];
-  calls.complete('session-1', 'completed', closureLine({ status: 'done', summary: '已回复并合并 !12', resumeAfterMinutes: 0, openMrs: [] }));
-  await runtime.reconcileSessions();
-  const record = runtime.state.handled.direct;
-  assert.equal(record.closure, 'closed');
-  // 测试桩里 discussions 不可读（replied=null）：闭环成立，但结论注明“回复未核对”。
-  assert.equal(record.closureNote, '已回复并合并 !12（讨论串回复未核对）');
-  assert.equal(record.nextAttemptAt, null);
-  assert.equal(record.archived, true);
-  // 之后的轮询不会再为它开会话。
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.create, 1);
-  assert.equal(runtime.snapshot().closure.followUp, 0);
-  await runtime.stop();
-});
-
-test('an open loop schedules a follow-up session that inherits the handover', async () => {
-  const { runtime, calls, prompts } = autoRuntime();
-  let pending = [directNoteTodo];
-  runtime.fetchTodos = async () => normalizeTodos(pending);
-  await runtime.executePoll('test');
-  await runtime.pump();
-  calls.complete('session-1', 'completed', closureLine({
-    status: 'waiting',
-    summary: '等待 !12 的 CI',
-    resumeAfterMinutes: 30,
-    openMrs: ['https://gitlab.local/group/project/-/merge_requests/12'],
-  }));
-  await runtime.reconcileSessions();
-  const first = runtime.state.handled.direct;
-  assert.equal(first.executionStatus, 'completed');
-  assert.equal(first.closure, 'follow-up');
-  assert.match(first.closureNote, /等待外部条件：等待 !12 的 CI/);
-  assert.ok(first.nextAttemptAt - Date.now() > 29 * 60000);
-  assert.equal(first.archived, true);
-  assert.equal(runtime.snapshot().closure.followUp, 1);
-
-  // 未到期：轮询不续办。
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.create, 1);
-
-  // 到期：新开第 2 轮会话，标题带 -续1，提示词带前序结论与 MR 清单。
-  first.nextAttemptAt = Date.now() - 1;
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.create, 2);
-  assert.deepEqual(calls.renames.at(-1), { sessionId: 'session-2', title: 'TODO-issue-7-note-10-续1' });
-  assert.match(prompts[1], /续办背景（本会话是第 2 轮/);
-  assert.match(prompts[1], /第 1 轮 TODO-issue-7-note-10（.*结论 waiting；说明：等待外部条件：等待 !12 的 CI）/);
-  assert.match(prompts[1], /- https:\/\/gitlab\.local\/group\/project\/-\/merge_requests\/12/);
-  const second = runtime.state.handled.direct;
-  assert.equal(second.sessionId, 'session-2');
-  assert.equal(second.round, 2);
-  assert.equal(second.history.length, 1);
-  assert.equal(second.history[0].sessionId, 'session-1');
-  assert.equal(second.closure, '');
-  assert.equal(runtime.occupiedSlots(), 1);
-
-  // 第 2 轮完成并标记 Todo → 闭环。
-  pending = [];
-  calls.complete('session-2', 'completed', closureLine({ status: 'done', summary: '已合并 !12', resumeAfterMinutes: 0, openMrs: [] }));
-  await runtime.reconcileSessions();
-  assert.equal(runtime.state.handled.direct.closure, 'closed');
-  assert.deepEqual(calls.archives, ['session-1', 'session-2']);
-  // 链路字段在状态回读后保留。
-  const restored = normalizeState(JSON.parse(JSON.stringify(runtime.state)));
-  assert.equal(restored.handled.direct.round, 2);
-  assert.equal(restored.handled.direct.closure, 'closed');
-  assert.equal(restored.handled.direct.history[0].sessionTitle, 'TODO-issue-7-note-10');
-  assert.equal(restored.handled.direct.item.project, 'group/project');
-  await runtime.stop();
-});
-
-test('needs-human stays unarchived until explicit acknowledgement even when the todo disappears', async () => {
+test('a session that reports done settles the todo and archives its thread session', async () => {
   const { runtime, calls } = autoRuntime();
   let pending = [directNoteTodo];
+  let marked = 0;
+  runtime.markTodoDone = async () => { marked += 1; };
   runtime.fetchTodos = async () => normalizeTodos(pending);
   await runtime.executePoll('test');
-  await runtime.pump();
-  calls.complete('session-1', 'completed', closureLine({ status: 'needs-human', summary: '需要 @other-user 选择方案', resumeAfterMinutes: 0, openMrs: [] }));
-  await runtime.reconcileSessions();
-  const record = runtime.state.handled.direct;
-  assert.equal(record.closure, 'needs-human');
-  assert.equal(record.closureNote, '需要 @other-user 选择方案');
-  assert.equal(record.archived, false);
-  assert.deepEqual(calls.archives, []);
-  assert.equal(runtime.snapshot().closure.needsHuman, 1);
-  // 不自动续办；Todo 消失也不会越过需人工状态自动闭环归档。
+  assertInflight(runtime, 'direct');
   pending = [];
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.create, 1);
-  assert.equal(record.closure, 'needs-human');
-  assert.equal(record.archived, false);
-  assert.deepEqual(calls.archives, []);
-  assert.equal(runtime.snapshot().closure.needsHuman, 1);
-  // 只有明确的“我已处理”才闭环并按设置归档。
-  runtime.markTodoDone = async () => {};
-  const acknowledged = await runtime.acknowledgeNeedsHuman(record.id, { note: 'Leader 确认已处理：MR 已合并' });
-  assert.equal(acknowledged.ok, true);
-  assert.equal(record.closure, 'closed');
-  assert.equal(record.closureNote, 'Leader 确认已处理：MR 已合并');
-  assert.ok(record.acknowledgedAt > 0);
+  await settleTodoSession(runtime, calls, 'session-1');
+  const todo = runtime.state.ledger.todos.direct;
+  assert.equal(todo.state, 'done');
+  assert.equal(todo.reason, 'plugin');
+  assert.equal(marked, 1);
+  assert.equal(ledgerThread(runtime, 'direct').archived, true);
   assert.deepEqual(calls.archives, ['session-1']);
+  // 之后的轮询不会再为它开会话。
+  await runtime.executePoll('test');
+  assert.equal(calls.create, 1);
   await runtime.stop();
 });
 
-test('follow-ups stop at the configured limit and failed turns are retried quickly', async () => {
-  const { runtime, calls, prompts } = autoRuntime({ settings: { maxFollowUps: 1 } });
-  runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.match(prompts[0], /第 1 轮，自动处理预算约 2 轮/);
-  // 第 1 轮回合失败：不归档，2 分钟后重试。
-  calls.complete('session-1', 'error');
-  await runtime.reconcileSessions();
-  const first = runtime.state.handled.direct;
-  assert.equal(first.executionStatus, 'failed');
-  assert.equal(first.closure, 'follow-up');
-  assert.ok(first.nextAttemptAt - Date.now() <= 2 * 60000);
-  assert.equal(first.archived, false);
-  first.nextAttemptAt = Date.now() - 1;
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.create, 2);
-  // 第 2 轮是最后一轮：提示词改为“不会再自动续办”。
-  assert.match(prompts[1], /不会再自动续办/);
-  assert.match(prompts[1], /这是最后一轮自动处理，在同一讨论串追加一条简短回复/);
-  assert.doesNotMatch(prompts[1], /不要重复发布内容相同的回复/);
-  // 第 2 轮再次失败（补救轮）：补救预算用尽，转需人工而不是继续重试。
-  calls.complete('session-2', 'error');
-  await runtime.reconcileSessions();
-  const second = runtime.state.handled.direct;
-  assert.equal(second.closure, 'needs-human');
-  assert.match(second.closureNote, /已达自动补救轮数上限（补救 2 轮）/);
-  assert.equal(second.archived, false);
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.create, 2);
-  await runtime.stop();
-});
-
-test('pure waiting rounds do not burn the follow-up round budget', async () => {
-  const { runtime, calls } = autoRuntime({ settings: { maxFollowUps: 1 } });
-  runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
-  await runtime.executePoll('test');
-  await runtime.pump();
-  // 第 1、2 轮都是纯等待（waiting + 回合正常 + 无缺回复证据）：不消耗轮数预算，链路继续。
-  for (let round = 1; round <= 2; round += 1) {
-    calls.complete(`session-${round}`, 'completed', closureLine({
-      status: 'waiting',
-      summary: `等待 CI（第 ${round} 轮）`,
-      resumeAfterMinutes: 30,
-      openMrs: [],
-    }));
-    await runtime.reconcileSessions();
-    const record = runtime.state.handled.direct;
-    assert.equal(record.closure, 'follow-up');
-    assert.equal(record.round, round);
-    record.nextAttemptAt = Date.now() - 1;
-    await runtime.executePoll('test');
-    await runtime.pump();
-  }
-  // 两个纯等待轮之后仍允许开第 3 轮（补救预算 1 轮未动，改受 72 小时总时限约束）。
-  assert.equal(calls.create, 3);
-  assert.equal(runtime.state.handled.direct.waitRounds, 2);
-  await runtime.stop();
-});
-
-test('a missing thread reply keeps the loop open even when the todo is marked done', async () => {
-  const { runtime, calls, prompts } = autoRuntime();
-  let pending = [directNoteTodo];
-  let replyPosted = false;
-  runtime.fetchTodos = async () => normalizeTodos(pending);
-  const requests = [];
-  runtime.runGlab = async (args) => {
-    requests.push(args);
-    assert.equal(args[3], 'projects/group%2Fproject/issues/7/discussions');
-    return JSON.stringify([
-      { id: 'd0', notes: [{ id: 1, author: { id: 106 } }] },
-      { id: 'd1', notes: [
-        { id: 9, author: { id: 106 } },
-        { id: 10, author: { id: 52 } },
-        { id: 11, system: true, author: { id: 106 } },
-        ...(replyPosted ? [{ id: 12, author: { id: 106 } }] : []),
-      ] },
-    ]);
-  };
-  await runtime.executePoll('test');
-  await runtime.pump();
-  pending = [];
-  calls.complete('session-1', 'completed', closureLine({ status: 'done', summary: '已处理', resumeAfterMinutes: 0, openMrs: [] }));
-  await runtime.reconcileSessions();
-  const first = runtime.state.handled.direct;
-  assert.equal(first.replied, false);
-  assert.equal(first.closure, 'follow-up');
-  assert.match(first.closureNote, /没有我方回复/);
-  assert.equal(requests.length, 1);
-  // Todo 已不在待办列表，但缺回复的记录不会被当成闭环。
-  first.nextAttemptAt = Date.now() - 1;
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.create, 2);
-  assert.match(prompts[1], /补上回复是本轮的首要任务/);
-  replyPosted = true;
-  calls.complete('session-2', 'completed', closureLine({ status: 'done', summary: '已补回复', resumeAfterMinutes: 0, openMrs: [] }));
-  await runtime.reconcileSessions();
-  assert.equal(runtime.state.handled.direct.replied, true);
-  assert.equal(runtime.state.handled.direct.closure, 'closed');
-  await runtime.stop();
-});
-
-test('a new mention on the same target is told about the open todo left behind', async () => {
-  const { runtime, calls, prompts } = autoRuntime();
+test('a waiting report parks the todo and a new mention on the same thread wakes it into the same session', async () => {
+  const { runtime, calls } = autoRuntime();
   const followOn = { ...directNoteTodo, id: 'reply', target_url: 'https://gitlab.local/group/project/-/issues/7#note_20' };
   let pending = [directNoteTodo];
+  runtime.markTodoDone = async () => {};
   runtime.fetchTodos = async () => normalizeTodos(pending);
   await runtime.executePoll('test');
-  await runtime.pump();
-  calls.complete('session-1', 'completed', closureLine({
-    status: 'needs-human',
-    summary: '等待 @other-user 选择方案',
-    resumeAfterMinutes: 0,
-    openMrs: ['https://gitlab.local/group/project/-/merge_requests/12'],
-  }));
-  await runtime.reconcileSessions();
-  // 对方在同一 Issue 上回复并 @ 我：产生新 Todo，新会话拿到遗留 Todo 和它的 MR。
+  await runtime.handleTodoReport('session-1', { status: 'waiting', summary: '等待 !12 的 CI' });
+  calls.complete('session-1');
+  await runtime.reconcileTodoInflight();
+  const waiting = runtime.state.ledger.todos.direct;
+  assert.equal(waiting.state, 'waiting');
+  assert.equal(waiting.reason, '等待 !12 的 CI');
+  assert.equal(ledgerThread(runtime, 'direct').inflight, null);
+  // waiting 不消耗尝试次数、不归档，轮询也不会重新派发。
+  assert.equal(waiting.attempts, 0);
+  assert.deepEqual(calls.archives, []);
+  await runtime.executePoll('test');
+  assert.equal(calls.create, 1);
+  assert.equal(calls.prompt, 1);
+  // 同一对象上出现新 Todo：waiting 的那条被唤醒，两条同批发给同一个会话。
   pending = [directNoteTodo, followOn];
   await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.create, 2);
-  assert.match(prompts[1], /同一对象上遗留的未闭环 Todo/);
-  assert.match(prompts[1], /Todo direct：https:\/\/gitlab\.local\/group\/project\/-\/issues\/7#note_10（上次结论：等待 @other-user 选择方案）/);
-  assert.match(prompts[1], /- https:\/\/gitlab\.local\/group\/project\/-\/merge_requests\/12/);
-  // 新会话完成新 Todo；旧需人工记录仍须由人确认，不能因关联会话标记完成而静默归档。
-  pending = [];
-  calls.complete('session-2', 'completed', closureLine({ status: 'done', summary: '按方案 A 完成', resumeAfterMinutes: 0, openMrs: [] }));
-  await runtime.reconcileSessions();
-  assert.equal(runtime.state.handled.reply.closure, 'closed');
-  assert.equal(runtime.state.handled.direct.closure, 'needs-human');
-  assert.equal(runtime.state.handled.direct.archived, false);
-  runtime.markTodoDone = async () => {};
-  await runtime.acknowledgeNeedsHuman('direct');
-  assert.equal(runtime.state.handled.direct.closure, 'closed');
-  assert.equal(runtime.state.handled.direct.archived, true);
+  assert.equal(calls.create, 1);
+  assert.equal(calls.prompt, 2);
+  assert.deepEqual(ledgerThread(runtime, 'reply').inflight.todoIds.sort(), ['direct', 'reply']);
   await runtime.stop();
 });
 
-test('manual sessions and disabled follow-up never schedule automatic follow-ups', async () => {
-  const manual = autoRuntime();
-  const [todo] = normalizeTodos([directNoteTodo]);
-  manual.runtime.state.todos = [todo];
-  manual.runtime.fetchTodos = async () => [todo];
-  await manual.runtime.dispatchById(todo.id);
-  assert.match(manual.prompts[0], /不会再自动续办/);
-  manual.calls.complete('session-1', 'completed', closureLine({ status: 'waiting', summary: '等 CI', resumeAfterMinutes: 5, openMrs: [] }));
-  await manual.runtime.reconcileSessions();
-  assert.equal(manual.runtime.state.handled.direct.closure, 'needs-human');
-  assert.match(manual.runtime.state.handled.direct.closureNote, /手动派发的会话不自动续办/);
-  await manual.runtime.stop();
+test('needs-human parks the todo as waiting until a human retries or closes it', async () => {
+  const { runtime, calls } = autoRuntime();
+  runtime.markTodoDone = async () => {};
+  runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
+  await runtime.executePoll('test');
+  await runtime.handleTodoReport('session-1', { status: 'needs-human', summary: '需要 @other-user 选择方案' });
+  calls.complete('session-1');
+  await runtime.reconcileTodoInflight();
+  const todo = runtime.state.ledger.todos.direct;
+  assert.equal(todo.state, 'waiting');
+  assert.equal(todo.reason, '等人：需要 @other-user 选择方案');
+  assert.equal(ledgerThread(runtime, 'direct').archived, false);
+  assert.deepEqual(calls.archives, []);
+  // 不自动重试。
+  await runtime.executePoll('test');
+  assert.equal(calls.create, 1);
+  assert.equal(calls.prompt, 1);
+  // 人工重试：回到 queued 并清零 attempts，同一会话再投一批。
+  assert.equal(await runtime.todoRetry('direct'), true);
+  await runtime.dispatchTodoBatches();
+  assert.equal(calls.prompt, 2);
+  assertInflight(runtime, 'direct');
+  assert.equal(calls.create, 1);
+  await runtime.handleTodoReport('session-1', { status: 'needs-human', summary: '仍需决策' });
+  calls.complete('session-1');
+  await runtime.reconcileTodoInflight();
+  // 人工关闭：GitLab 标记完成后台账 done。
+  assert.deepEqual(await runtime.todoClose('direct', 'human'), { ok: true });
+  assert.equal(todo.state, 'done');
+  assert.equal(todo.reason, 'human');
+  await runtime.stop();
+});
 
-  const off = autoRuntime({ settings: { followUpEnabled: false } });
-  off.runtime.state.settings.precheckEnabled = false;
-  off.runtime.fetchTodos = async () => [todo];
-  await off.runtime.executePoll('test');
-  await off.runtime.pump();
-  assert.match(off.prompts[0], /不会再自动续办/);
-  off.calls.complete('session-1', 'completed');
-  await off.runtime.reconcileSessions();
-  assert.equal(off.runtime.state.handled.direct.closure, 'needs-human');
-  assert.match(off.runtime.state.handled.direct.closureNote, /没有输出结案报告.*自动续办未开启/);
-  await off.runtime.stop();
+test('failed turns are retried until the attempt limit, then the todo needs attention', async () => {
+  const { runtime, calls } = autoRuntime();
+  runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
+  await runtime.executePoll('test');
+  const todo = runtime.state.ledger.todos.direct;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    assertInflight(runtime, 'direct');
+    calls.complete('session-1', 'error');
+    await runtime.reconcileTodoInflight();
+    assert.equal(todo.attempts, attempt);
+  }
+  assert.equal(todo.state, 'attention');
+  assert.match(todo.reason, /回合失败.*已尝试 3 次/);
+  assert.equal(ledgerThread(runtime, 'direct').inflight, null);
+  assert.equal(calls.prompt, 3);
+  assert.equal(calls.create, 1);
+  assert.deepEqual(calls.archives, []);
+  await runtime.executePoll('test');
+  assert.equal(calls.prompt, 3);
+  await runtime.stop();
 });
 
 test('sessions interrupted by a restart are adopted and settled instead of staying running forever', async () => {
@@ -1795,36 +1580,6 @@ test('mention-only rule appears in both the judge prompt and the session prompt'
   assert.equal(parseClosureReport('[TODO-CLOSURE] {"status":"waiting","summary":"x","noAction":true}').noAction, false);
 });
 
-test('a mention-only session closes without a thread reply', async () => {
-  const { runtime, calls } = autoRuntime();
-  let pending = [directNoteTodo];
-  runtime.fetchTodos = async () => normalizeTodos(pending);
-  runtime.runGlab = async () => JSON.stringify([{ id: 'd1', notes: [{ id: 10, author: { id: 52 } }] }]);
-  await runtime.executePoll('test');
-  await runtime.pump();
-  pending = [];
-  calls.complete('session-1', 'completed', closureLine({ status: 'done', summary: 'cc 知会，无需行动', noAction: true, resumeAfterMinutes: 0, openMrs: [] }));
-  await runtime.reconcileSessions();
-  const record = runtime.state.handled.direct;
-  assert.equal(record.closure, 'closed');
-  assert.equal(record.replied, null);
-  assert.match(record.closureNote, /无需回复：cc 知会/);
-  assert.equal(record.archived, true);
-  // 没有 noAction 标记时，同样的无回复仍判缺回复。
-  const strict = autoRuntime();
-  let pendingStrict = [directNoteTodo];
-  strict.runtime.fetchTodos = async () => normalizeTodos(pendingStrict);
-  strict.runtime.runGlab = async () => JSON.stringify([{ id: 'd1', notes: [{ id: 10, author: { id: 52 } }] }]);
-  await strict.runtime.executePoll('test');
-  await strict.runtime.pump();
-  pendingStrict = [];
-  strict.calls.complete('session-1', 'completed', closureLine({ status: 'done', summary: '已处理', resumeAfterMinutes: 0, openMrs: [] }));
-  await strict.runtime.reconcileSessions();
-  assert.equal(strict.runtime.state.handled.direct.closure, 'follow-up');
-  await runtime.stop();
-  await strict.runtime.stop();
-});
-
 test('settings validation covers the follow-up controls', () => {
   const next = validateSettings({ followUpEnabled: false, maxFollowUps: 0, followUpDelayMinutes: 60 });
   assert.equal(next.followUpEnabled, false);
@@ -1860,7 +1615,7 @@ test('startup upgrades script-era state without creating script files', async ()
     assert.equal('scriptPath' in state.storage, false);
     assert.equal(state.todos[0].id, 'direct');
     const stored = JSON.parse(await readFile(join(directory, 'state.json'), 'utf8'));
-    assert.equal(stored.version, 6);
+    assert.equal(stored.version, 7);
     assert.equal('script' in stored.settings, false);
     assert.equal('shell' in stored.settings, false);
     await assert.rejects(readFile(join(directory, 'gitlab-todos.py'), 'utf8'), /ENOENT/);
@@ -1999,7 +1754,7 @@ test('route settings default safely and validate scope, busy mode and queue cap'
   delete v4.settings.busyRouteMode;
   delete v4.settings.maxQueuePerSession;
   const migrated = normalizeState(v4);
-  assert.equal(migrated.version, 6);
+  assert.equal(migrated.version, 7);
   assert.equal(migrated.settings.routeScope, 'plugin');
   assert.equal(migrated.settings.autoRoute, true);
 });
@@ -2067,8 +1822,8 @@ test('manual route honors any-session scope, steer mode and never auto-archives 
   runtime.state.settings.routeScope = 'any';
   runtime.state.settings.busyRouteMode = 'steer';
   runtime.state.settings.sessionModel = { provider: 'deepseek', model: 'must-not-override' };
-  const [todo] = normalizeTodos([directNoteTodo]);
-  runtime.state.todos = [todo];
+  const todo = normalizeIssue(gitlabIssue);
+  runtime.state.issues = [todo];
   const result = await runtime.routeById(todo.id, 'external');
   assert.equal(result.ok, true);
   assert.equal(result.routed, true);
@@ -2078,7 +1833,7 @@ test('manual route honors any-session scope, steer mode and never auto-archives 
   const prompt = calls.invocations.find((call) => call.method === 'prompt').args.request;
   assert.equal(prompt.sessionId, 'external');
   assert.equal(prompt.mode, 'steer');
-  assert.match(prompt.content[0].text, /插入引导/);
+  assert.match(prompt.content[0].text, /开始处理/);
   const record = runtime.state.handled[todo.id];
   assert.equal(record.routed, true);
   record.executionStatus = 'completed';
@@ -2090,8 +1845,8 @@ test('manual route honors any-session scope, steer mode and never auto-archives 
 test('plugin-only route scope rejects a foreign session without prompting it', async () => {
   const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
   calls.sessions.set('external', { running: false, events: [] });
-  const [todo] = normalizeTodos([directNoteTodo]);
-  runtime.state.todos = [todo];
+  const todo = normalizeIssue(gitlabIssue);
+  runtime.state.issues = [todo];
   const result = await runtime.routeById(todo.id, 'external');
   assert.equal(result.ok, false);
   assert.match(result.error, /仅允许插件创建过的会话/);
@@ -2318,8 +2073,8 @@ test('route retry reuses the pending requestId and rejects changing its target',
   calls.sessions.set('external', { running: false, events: [] });
   calls.sessions.set('other-target', { running: false, events: [] });
   runtime.state.settings.routeScope = 'any';
-  const [todo] = normalizeTodos([directNoteTodo]);
-  runtime.state.todos = [todo];
+  const todo = normalizeIssue(gitlabIssue);
+  runtime.state.issues = [todo];
   const first = await runtime.routeById(todo.id, 'external');
   assert.equal(first.ok, false);
   const pendingRequestId = runtime.state.pending[todo.id].requestId;
@@ -2371,8 +2126,8 @@ test('automatic routing falls back to the next candidate when the newest fails h
 
 test('route target listing filters archived and child sessions and manual queue cap fails closed', async () => {
   const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }), { autoComplete: false });
-  const [todo] = normalizeTodos([{ ...directNoteTodo, id: 'new-todo' }]);
-  runtime.state.todos = [todo];
+  const todo = normalizeIssue(gitlabIssue);
+  runtime.state.issues = [todo];
   runtime.state.settings.routeScope = 'any';
   calls.sessions.set('plugin-session', { running: false, events: [] });
   calls.sessions.set('external', { running: true, events: [], title: '外部架构会话' });
@@ -2396,35 +2151,6 @@ test('route target listing filters archived and child sessions and manual queue 
   assert.equal(result.ok, false);
   assert.match(result.error, /达到单会话上限/);
   assert.equal(calls.prompt, 0);
-  await runtime.stop();
-});
-
-test('poll skips repeated precheck but automatically retries pending with the same requestId', async () => {
-  const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }), { autoComplete: false });
-  const [todo] = normalizeTodos([directNoteTodo]);
-  calls.sessions.set('session-pending', { running: false, events: [] });
-  runtime.state.pending[todo.id] = {
-    sessionId: 'session-pending', createdAt: Date.now(), automatic: true, routed: false,
-    routeMode: '', requestId: 'pending-request', item: todo,
-  };
-  runtime.state.settings.enabled = true;
-  runtime.state.settings.precheckEnabled = true;
-  runtime.fetchTodos = async () => [todo];
-  let judged = 0;
-  let marked = 0;
-  runtime.judgeNeedsProcessing = async () => { judged += 1; return { needsProcessing: false, reason: '不应再次裁决' }; };
-  runtime.markTodoDone = async () => { marked += 1; };
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(judged, 0);
-  assert.equal(marked, 0);
-  assert.equal(calls.prompt, 1);
-  const prompt = calls.invocations.find((call) => call.method === 'prompt').args.request;
-  assert.equal(prompt.sessionId, 'session-pending');
-  assert.equal(prompt.requestId, 'pending-request');
-  assert.equal(runtime.state.handled[todo.id].requestId, 'pending-request');
-  assert.equal(runtime.state.pending[todo.id], undefined);
-  assert.equal(runtime.state.lastNewCount, 0);
   await runtime.stop();
 });
 
@@ -2473,49 +2199,6 @@ test('idle timeout supersedes the previous same-session handled round', async ()
   assert.equal(record.round, 2);
   assert.equal(record.executionStatus, 'failed');
   assert.equal(runtime.trackedSessions.size, 0);
-  await runtime.stop();
-});
-
-test('externally completed initial pending stops retrying but requires human verification', async () => {
-  const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
-  const [todo] = normalizeTodos([directNoteTodo]);
-  runtime.state.pending[todo.id] = {
-    sessionId: 'unconfirmed', createdAt: Date.now(), automatic: true, routed: false,
-    requestId: 'unconfirmed-request', item: todo,
-  };
-  runtime.state.settings.enabled = true;
-  runtime.fetchTodos = async () => [];
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.prompt, 0);
-  assert.equal(runtime.state.pending[todo.id], undefined);
-  assert.equal(runtime.state.handled[todo.id].closure, 'needs-human');
-  assert.match(runtime.state.handled[todo.id].closureNote, /人工核对原会话与讨论串/);
-  assert.match(runtime.state.handled[todo.id].executionError, /尚未确认/);
-  await runtime.stop();
-});
-
-test('pending follow-up retry survives normalization and respects nextAttemptAt backoff', async () => {
-  const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
-  const [todo] = normalizeTodos([directNoteTodo]);
-  runtime.state.todos = [];
-  runtime.state.handled[todo.id] = {
-    id: todo.id, sessionId: 'old-session', acceptedAt: Date.now() - 1000,
-    executionStatus: 'failed', automatic: true, closure: 'follow-up',
-    nextAttemptAt: Date.now() + 60000, url: todo.url, title: todo.title,
-  };
-  runtime.state.pending[todo.id] = {
-    sessionId: 'follow-up-session', createdAt: Date.now(), automatic: true, followUp: true,
-    requestId: 'follow-up-request', item: todo,
-  };
-  runtime.state = normalizeState({ ...runtime.state, version: 5 });
-  assert.equal(runtime.state.pending[todo.id].followUp, true);
-  assert.equal(runtime.enqueuePendingRetries(), 0);
-  assert.equal(calls.prompt, 0);
-  runtime.state.handled[todo.id].nextAttemptAt = Date.now() - 1;
-  assert.equal(runtime.enqueuePendingRetries(), 1);
-  assert.equal(runtime.dispatchQueue[0].pendingRetry, true);
-  assert.equal(runtime.dispatchQueue[0].todo.id, todo.id);
   await runtime.stop();
 });
 
@@ -2625,31 +2308,35 @@ test('signature and model settings validate strictly', () => {
   assert.throws(() => validateSettings({ replySignature: 'yes' }), /replySignature/);
 });
 
-test('v5 states migrate to v6 and new record fields survive round-trips', () => {
+test('v5 states migrate to v7 (ledger legacyPending) and Issue record fields survive round-trips', () => {
   const base = initialState();
   base.version = 5;
   delete base.settings.replySignature;
   delete base.settings.signatureText;
   const mrUrl = 'https://gitlab.local/g/p/-/merge_requests/3';
-  base.handled.x = {
-    id: 'x', sessionId: 's1', acceptedAt: 10, url: 'https://gitlab.local/g/p/-/issues/1',
+  base.handled['issue-1-1'] = {
+    id: 'issue-1-1', sessionId: 's1', acceptedAt: 10, url: 'https://gitlab.local/g/p/-/issues/1',
     lastReply: { id: '99', body: '已处理，见 MR', url: 'https://gitlab.local/g/p/-/issues/1#note_99', createdAt: 20 },
     watch: { mrs: [mrUrl], lastStates: { [mrUrl]: 'running' } },
     acknowledgedAt: 30,
   };
+  // v7 起 Todo 记录由台账接管：非 Issue 的 handled 记录迁移后被丢弃。
+  base.handled.todoX = { id: 'todoX', sessionId: 's2', acceptedAt: 10, url: 'https://gitlab.local/g/p/-/issues/2#note_1' };
   const migrated = normalizeState(JSON.parse(JSON.stringify(base)));
-  assert.equal(migrated.version, 6);
+  assert.equal(migrated.version, 7);
+  assert.equal(migrated.ledger.legacyPending, true);
+  assert.equal(migrated.handled.todoX, undefined);
   assert.equal(migrated.settings.replySignature, false);
   assert.equal(migrated.settings.signatureText, '—— 由 AI 助手代复');
-  assert.equal(migrated.handled.x.taskType, undefined);
-  assert.equal(migrated.handled.x.lastReply.body, '已处理，见 MR');
-  assert.equal(migrated.handled.x.watch.mrs[0], mrUrl);
-  assert.equal(migrated.handled.x.watch.lastStates[mrUrl], 'running');
-  assert.equal(migrated.handled.x.acknowledgedAt, 30);
+  assert.equal(migrated.handled['issue-1-1'].taskType, undefined);
+  assert.equal(migrated.handled['issue-1-1'].lastReply.body, '已处理，见 MR');
+  assert.equal(migrated.handled['issue-1-1'].watch.mrs[0], mrUrl);
+  assert.equal(migrated.handled['issue-1-1'].watch.lastStates[mrUrl], 'running');
+  assert.equal(migrated.handled['issue-1-1'].acknowledgedAt, 30);
   // 坏字段归位：空 watch / 空回复归 null；旧记录的 taskType 字段在新版本中被丢弃。
   const dirty = normalizeState(JSON.parse(JSON.stringify({
     ...migrated,
-    handled: { ...migrated.handled, y: { ...migrated.handled.x, id: 'y', taskType: 'bogus', watch: { mrs: [] }, lastReply: { body: '' } } },
+    handled: { ...migrated.handled, y: { ...migrated.handled['issue-1-1'], id: 'y', taskType: 'bogus', watch: { mrs: [] }, lastReply: { body: '' } } },
   })));
   assert.equal(dirty.handled.y.watch, null);
   assert.equal(dirty.handled.y.lastReply, null);
@@ -2724,7 +2411,10 @@ test('the inbox lists unacknowledged needs-human only', () => {
   // 闭环统计排除已确认的需人工记录；24 小时摘要已移除，publicState 不再带 digest。
   const view = publicState(base, false, null);
   assert.equal(view.digest, undefined);
-  assert.equal(view.closure.needsHuman, 1);
+  assert.equal(view.closure.needsHuman, 0);
+  // 台账里 waiting / attention 的 Todo 才计入“需人工”。
+  base.ledger.todos.w = { id: 'w', state: 'waiting', threadKey: 'k', attempts: 0, createdAt: now, reason: '等人：x' };
+  assert.equal(publicState(base, false, null).closure.needsHuman, 1);
 });
 
 test('MR watch state classifies pipelines and terminal outcomes', () => {
@@ -2752,7 +2442,7 @@ test('signature line appears in the reply rules only when configured', () => {
   assert.match(signed, /AI 助手代发/);
 });
 
-test('batch precheck dispatches by priority and folds duplicates into the primary', async () => {
+test('batch precheck merges duplicates into the primary thread instead of skipping them', async () => {
   const reply = JSON.stringify([
     { todoId: 'dup', needsProcessing: true, reason: '重复', duplicateOf: 'main' },
     { todoId: 'main', needsProcessing: true, reason: '主条目', taskType: 'question', priority: 2 },
@@ -2778,19 +2468,14 @@ test('batch precheck dispatches by priority and folds duplicates into the primar
     { ...directNoteTodo, id: 'urgent', target_url: 'https://gitlab.local/group/project/-/issues/9#note_30' },
   ]);
   await runtime.executePoll('test');
-  await runtime.pump();
-  assert.deepEqual(marked, ['dup']);
-  assert.equal(runtime.state.handled.dup.outcome, 'precheck-skipped');
-  assert.match(runtime.state.handled.dup.skipReason, /随主条目合并处理/);
-  assert.equal(runtime.state.handled.dup.mergedInto, 'main');
-  assert.equal(runtime.state.handled.dup.excerpt, directNoteTodo.body);
-  const restored = normalizeState(JSON.parse(JSON.stringify(runtime.state)));
-  assert.equal(restored.handled.dup.mergedInto, 'main');
-  assert.equal(restored.handled.dup.author, directNoteTodo.author.username);
+  const { todos } = runtime.state.ledger;
+  // 重复项不再单独跳过：与主条目同一对象线程、同批处理，原文不丢。
+  assert.deepEqual(marked, []);
+  assert.equal(todos.dup.threadKey, todos.main.threadKey);
+  assert.notEqual(todos.urgent.threadKey, todos.main.threadKey);
+  for (const id of ['dup', 'main', 'urgent']) assertInflight(runtime, id);
   assert.equal(calls.create, 2);
-  // priority 1（urgent）先派发，priority 2（main）随后。
-  assert.deepEqual(calls.renames.map((request) => request.title), ['TODO-issue-9-note-30', 'TODO-issue-8-note-20']);
-  assert.equal(runtime.judgeVerdicts.size, 0);
+  assert.equal(calls.prompt, 2);
   await runtime.stop();
 });
 
@@ -2815,15 +2500,13 @@ test('mutual duplicate references never fold both sides of a pair', async () => 
     { ...directNoteTodo, id: 'b', target_url: 'https://gitlab.local/group/project/-/issues/7#note_2' },
   ]);
   await runtime.executePoll('test');
-  await runtime.pump();
-  // 互相指向属于判定矛盾：不折叠任何一边，两条都正常派发，交给会话自行处理。
-  // 二者同一 Issue：按同对象合并进同一个会话与回合，各自保有 handled 记录。
+  // 互相指向属于判定矛盾：不折叠任何一边；二者同一 Issue，归并进同一线程的同一个会话与批次。
   assert.deepEqual(marked, []);
   assert.equal(calls.create, 1);
   assert.equal(calls.prompt, 1);
-  assert.equal(runtime.state.handled.a.outcome, 'session-accepted');
-  assert.equal(runtime.state.handled.b.outcome, 'session-accepted');
-  assert.equal(runtime.state.handled.a.batchId, runtime.state.handled.b.batchId);
+  assertInflight(runtime, 'a');
+  assertInflight(runtime, 'b');
+  assert.equal(ledgerThread(runtime, 'a'), ledgerThread(runtime, 'b'));
   await runtime.stop();
 });
 
@@ -2871,17 +2554,15 @@ test('missing batch verdicts skip the round instead of dispatching blindly', asy
     { ...directNoteTodo, id: 'unknown', target_url: 'https://gitlab.local/group/project/-/issues/8#note_20' },
   ]);
   await runtime.executePoll('test');
-  await runtime.pump();
-  // 有判定的 known 正常开会话；缺失判定的 unknown 本轮跳过（不标记、不开会话），留待下一轮。
+  // 有判定的 known 正常入账并开会话；缺失判定的 unknown 本轮不入账（不标记、不开会话），留待下一轮。
   assert.equal(calls.create, 1);
-  assert.equal(runtime.state.handled.known.outcome, 'session-accepted');
-  assert.equal(runtime.state.handled.unknown, undefined);
+  assertInflight(runtime, 'known');
+  assert.equal(runtime.state.ledger.todos.unknown, undefined);
   assert.equal(runtime.precheckFailures.get('unknown'), 1);
   assert.match(runtime.state.lastPrecheckError, /预检失败 1\/2/);
-  // 连续失败达到上限：降级为直接派发，不再让自动处理永久停摆。
+  // 连续失败达到上限：降级为直接入账，不再让自动处理永久停摆。
   await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(runtime.state.handled.unknown?.outcome, 'session-accepted');
+  assert.equal(runtime.state.ledger.todos.unknown?.state, 'queued');
   assert.equal(calls.create, 2);
   await runtime.stop();
 });
@@ -3028,15 +2709,15 @@ test('acknowledging a needs-human record closes it and archives the session', as
 test('manual dispatch ignores leftover batch verdicts', async () => {
   const { runtime, calls } = runtimeWithPrompt(async () => ({ accepted: true }));
   runtime.state.settings.sessionModel = { provider: 'deepseek', model: 'deepseek-chat' };
-  // 预检留下的判定（pump 等待并发槽时用户点了手动“开 Session 处理”）。
+  // 预检留下的判定（等待并发槽时用户点了手动“开 Session 处理”）。
   runtime.judgeVerdicts.set('direct', { needsProcessing: true, preferSession: 'reuse' });
   const [todo] = normalizeTodos([directNoteTodo]);
   runtime.state.todos = [todo];
   const result = await runtime.dispatchById(todo.id);
   assert.equal(result.ok, true);
-  // 手动派发用会话模型；判定被丢弃不再残留。
+  // 手动派发入账并用会话模型投递。
   assert.deepEqual(calls.modelSelections, [{ sessionId: 'session-1', provider: 'deepseek', model: 'deepseek-chat' }]);
-  assert.equal(runtime.judgeVerdicts.has(todo.id), false);
+  assertInflight(runtime, todo.id);
   await runtime.stop();
 });
 
@@ -3049,68 +2730,6 @@ test('reply signature setting flows into dispatched prompts', async () => {
   assert.equal(result.ok, true);
   const promptCall = calls.invocations.find((call) => call.method === 'prompt');
   assert.match(promptCall.args.request.content[0].text, /署名「—— 由 AI 助手代复」/);
-  await runtime.stop();
-});
-
-test('follow-up dispatch failures back off and escalate to needs-human instead of retrying forever', async () => {
-  const { runtime, calls } = autoRuntime();
-  runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
-  await runtime.executePoll('test');
-  await runtime.pump();
-  calls.complete('session-1', 'completed', closureLine({ status: 'done', summary: '漏标记', openMrs: [] }));
-  await runtime.reconcileSessions();
-  const record = runtime.state.handled.direct;
-  assert.equal(record.executionStatus, 'completed');
-  assert.equal(record.closure, 'follow-up');
-  assert.equal(record.archived, true);
-  // 续办会话创建持续失败。
-  runtime.host.createSession = async () => { throw new Error('host down'); };
-  let previousDelay = 0;
-  for (let attempt = 1; attempt <= 4; attempt += 1) {
-    record.nextAttemptAt = Date.now() - 1;
-    await runtime.executePoll('test');
-    await runtime.pump();
-    assert.equal(record.dispatchFailures, attempt);
-    assert.equal(record.closure, 'follow-up');
-    const delay = record.nextAttemptAt - Date.now();
-    assert.ok(delay > previousDelay, `退避应递增：第 ${attempt} 次 ${delay}ms`);
-    previousDelay = delay;
-  }
-  // 第 5 次失败：升级需人工，进入收件箱，不再重试。
-  record.nextAttemptAt = Date.now() - 1;
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(record.closure, 'needs-human');
-  assert.match(record.closureNote, /连续 5 次派发失败.*host down/);
-  assert.equal(record.nextAttemptAt, null);
-  assert.equal(record.archived, false);
-  assert.deepEqual(calls.unarchives, ['session-1']);
-  assert.equal(runtime.snapshot().closure.needsHuman, 1);
-  await runtime.stop();
-});
-
-test('an archived completed follow-up is unarchived when age escalates it to needs-human', async () => {
-  const { runtime, calls } = autoRuntime();
-  runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
-  await runtime.executePoll('test');
-  await runtime.pump();
-  // 正常完成但漏标记：follow-up 阶段先按既有规则归档。
-  calls.complete('session-1', 'completed', closureLine({ status: 'done', summary: '漏标记', openMrs: [] }));
-  await runtime.reconcileSessions();
-  const record = runtime.state.handled.direct;
-  assert.equal(record.executionStatus, 'completed');
-  assert.equal(record.closure, 'follow-up');
-  assert.equal(record.archived, true);
-  assert.deepEqual(calls.archives, ['session-1']);
-  record.firstAcceptedAt = Date.now() - 73 * 60 * 60 * 1000;
-  record.nextAttemptAt = Date.now() - 1;
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(record.closure, 'needs-human');
-  assert.match(record.closureNote, /超出自动续办时限/);
-  assert.equal(record.archived, false);
-  assert.deepEqual(calls.unarchives, ['session-1']);
-  assert.equal(calls.create, 1);
   await runtime.stop();
 });
 
@@ -3129,43 +2748,6 @@ test('a follow-up missing todo data is unarchived when it becomes needs-human', 
   assert.equal(record.nextAttemptAt, null);
   assert.equal(record.watch, null);
   assert.equal(record.archived, false);
-  assert.deepEqual(calls.unarchives, ['session-1']);
-  await runtime.stop();
-});
-
-test('needs-human unarchive failures preserve the real state and retry on the next poll', async () => {
-  const { runtime, calls } = autoRuntime();
-  runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
-  await runtime.executePoll('test');
-  await runtime.pump();
-  calls.complete('session-1', 'completed', closureLine({ status: 'done', summary: '漏标记', openMrs: [] }));
-  await runtime.reconcileSessions();
-  const record = runtime.state.handled.direct;
-  assert.equal(record.closure, 'follow-up');
-  assert.equal(record.archived, true);
-  record.firstAcceptedAt = Date.now() - 73 * 60 * 60 * 1000;
-  record.nextAttemptAt = Date.now() - 1;
-  calls.failUnarchive = true;
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(record.closure, 'needs-human');
-  assert.equal(record.archived, true);
-  assert.match(record.archiveError, /取消归档失败.*unarchive unavailable/);
-  assert.deepEqual(calls.unarchives, []);
-  const inbox = buildInbox(runtime.state).find((item) => item.todoId === record.id);
-  assert.equal(inbox.archived, true);
-  assert.match(inbox.archiveError, /取消归档失败/);
-
-  // 状态序列化/恢复后仍保留下轮重试所需的真实 archived 与错误标记。
-  runtime.state = normalizeState(JSON.parse(JSON.stringify(runtime.state)));
-  const restored = runtime.state.handled.direct;
-  assert.equal(restored.archived, true);
-  assert.match(restored.archiveError, /取消归档失败/);
-  calls.failUnarchive = false;
-  await runtime.executePoll('test');
-  assert.equal(restored.closure, 'needs-human');
-  assert.equal(restored.archived, false);
-  assert.equal(restored.archiveError, '');
   assert.deepEqual(calls.unarchives, ['session-1']);
   await runtime.stop();
 });
@@ -3251,189 +2833,6 @@ test('enabling polling while a disabled poll is in flight still runs a full poll
 });
 
 const reuseMr = 'https://gitlab.local/group/project/-/merge_requests/12';
-
-test('a remedial follow-up reuses the previous session instead of opening a new one', async () => {
-  const { runtime, calls, prompts } = autoRuntime({ settings: { followUpReuseSession: true } });
-  runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
-  await runtime.executePoll('test');
-  await runtime.pump();
-  // 回合正常但没标记完成、没输出报告 → 补救类续办。
-  calls.complete('session-1', 'completed', closureLine({ status: 'done', summary: '处理了', resumeAfterMinutes: 0, openMrs: [] }));
-  await runtime.reconcileSessions();
-  const first = runtime.state.handled.direct;
-  assert.equal(first.closure, 'follow-up');
-  assert.equal(first.archived, true);
-  first.nextAttemptAt = Date.now() - 1;
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.create, 1);
-  assert.equal(calls.prompt, 2);
-  assert.deepEqual(calls.unarchives, ['session-1']);
-  assert.equal(calls.renames.length, 1);
-  const second = runtime.state.handled.direct;
-  assert.equal(second.sessionId, 'session-1');
-  assert.equal(second.round, 2);
-  assert.equal(second.reused, true);
-  assert.equal(second.reuseCount, 1);
-  assert.equal(second.archived, false);
-  assert.equal(second.history[0].archived, false);
-  assert.match(prompts[1], /同一条 Todo 的续办回合，运行在上一轮的同一个会话里/);
-  assert.match(prompts[1], /前序回合的上下文仍在本会话中/);
-  assert.match(prompts[1], /在原会话中追加的续办回合/);
-  // 复用后仍按各自 requestId 结算并重新归档。
-  calls.complete('session-1', 'completed', closureLine({ status: 'done', summary: '补上了', resumeAfterMinutes: 0, openMrs: [] }));
-  await runtime.reconcileSessions();
-  assert.equal(runtime.state.handled.direct.executionStatus, 'completed');
-  assert.equal(runtime.state.handled.direct.reused, true);
-  const restored = normalizeState(JSON.parse(JSON.stringify(runtime.state)));
-  assert.equal(restored.handled.direct.reuseCount, 1);
-  assert.equal(restored.handled.direct.reused, true);
-  await runtime.stop();
-});
-
-test('session reuse falls back to a new session when the limit, the turn state or the switch forbids it', async () => {
-  for (const scenario of ['limit', 'failed', 'off', 'running']) {
-    const { runtime, calls } = autoRuntime({ settings: { followUpReuseSession: scenario !== 'off' } });
-    runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
-    await runtime.executePoll('test');
-    await runtime.pump();
-    calls.complete('session-1', scenario === 'failed' ? 'failed' : 'completed', closureLine({ status: 'done', summary: 'x', resumeAfterMinutes: 0, openMrs: [] }));
-    await runtime.reconcileSessions();
-    const first = runtime.state.handled.direct;
-    assert.equal(first.closure, 'follow-up', scenario);
-    if (scenario === 'limit') first.reuseCount = 2;
-    if (scenario === 'running') calls.sessions.get('session-1').running = true;
-    first.nextAttemptAt = Date.now() - 1;
-    if (scenario === 'running') {
-      // 会话仍在跑：reconcile 看到 running 不会结算；直接验证复用判定。
-      assert.equal(await runtime.pickReusableSession(first, directNoteTodo), null);
-      await runtime.stop();
-      continue;
-    }
-    await runtime.executePoll('test');
-    await runtime.pump();
-    assert.equal(calls.create, 2, scenario);
-    assert.equal(runtime.state.handled.direct.sessionId, 'session-2', scenario);
-    assert.equal(runtime.state.handled.direct.reused, false, scenario);
-    assert.equal(runtime.state.handled.direct.reuseCount, 0, scenario);
-    await runtime.stop();
-  }
-});
-
-test('pure waiting follow-ups are probed with glab and deferred without opening a session', async () => {
-  const { runtime, calls } = autoRuntime({ settings: { waitProbeEnabled: true } });
-  runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
-  let otherReplied = false;
-  let pipeline = 'running';
-  runtime.runGlab = async (args) => {
-    if (args[3] === 'projects/group%2Fproject/merge_requests/12') {
-      return JSON.stringify({ state: 'opened', head_pipeline: { status: pipeline } });
-    }
-    assert.equal(args[3], 'projects/group%2Fproject/issues/7/discussions');
-    return JSON.stringify([{ id: 'd1', notes: [
-      { id: 9, author: { id: 106 } },
-      { id: 10, author: { id: 52 } },
-      { id: 12, author: { id: 106 } },
-      ...(otherReplied ? [{ id: 13, author: { id: 52 } }] : []),
-    ] }]);
-  };
-  await runtime.executePoll('test');
-  await runtime.pump();
-  calls.complete('session-1', 'completed', closureLine({ status: 'waiting', summary: '等 CI', resumeAfterMinutes: 30, openMrs: [reuseMr] }));
-  await runtime.reconcileSessions();
-  const record = runtime.state.handled.direct;
-  assert.equal(record.closure, 'follow-up');
-  assert.ok(record.watch);
-  // 到期但 MR 没翻转、讨论串也没人回应：不开会话，顺延。
-  record.nextAttemptAt = Date.now() - 1;
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.create, 1);
-  assert.equal(record.waitProbes, 1);
-  assert.ok(record.nextAttemptAt - Date.now() > 29 * 60000);
-  // 有人在讨论串里回应：放行续办。
-  otherReplied = true;
-  record.nextAttemptAt = Date.now() - 1;
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.create, 2);
-  assert.equal(runtime.state.handled.direct.waitProbes, 0);
-  await runtime.stop();
-});
-
-test('wait probes fail open: no evidence, heartbeat cap, MR events and remedial rounds all dispatch', async () => {
-  const mk = async () => {
-    const built = autoRuntime({ settings: { waitProbeEnabled: true } });
-    const { runtime, calls } = built;
-    runtime.fetchTodos = async () => normalizeTodos([directNoteTodo]);
-    runtime.runGlab = async (args) => {
-      if (args[3].includes('merge_requests')) return JSON.stringify({ state: 'opened', head_pipeline: { status: 'running' } });
-      return JSON.stringify([{ id: 'd1', notes: [{ id: 10, author: { id: 52 } }, { id: 12, author: { id: 106 } }] }]);
-    };
-    await runtime.executePoll('test');
-    await runtime.pump();
-    return built;
-  };
-  const waiting = (openMrs) => closureLine({ status: 'waiting', summary: '等', resumeAfterMinutes: 30, openMrs });
-  // 心跳上限：已推迟 4 次后放行。
-  {
-    const { runtime, calls } = await mk();
-    calls.complete('session-1', 'completed', waiting([]));
-    await runtime.reconcileSessions();
-    const record = runtime.state.handled.direct;
-    record.waitProbes = 4;
-    record.nextAttemptAt = Date.now() - 1;
-    await runtime.executePoll('test');
-    await runtime.pump();
-    assert.equal(calls.create, 2);
-    await runtime.stop();
-  }
-  // 无 MR 的纯等待：讨论串安静即推迟。
-  {
-    const { runtime, calls } = await mk();
-    calls.complete('session-1', 'completed', waiting([]));
-    await runtime.reconcileSessions();
-    runtime.state.handled.direct.nextAttemptAt = Date.now() - 1;
-    await runtime.executePoll('test');
-    await runtime.pump();
-    assert.equal(calls.create, 1);
-    assert.equal(runtime.state.handled.direct.waitProbes, 1);
-    await runtime.stop();
-  }
-  // 讨论串读取失败：无证据，放行。
-  {
-    const { runtime, calls } = await mk();
-    calls.complete('session-1', 'completed', waiting([]));
-    await runtime.reconcileSessions();
-    runtime.runGlab = async () => { throw new Error('glab down'); };
-    runtime.state.handled.direct.nextAttemptAt = Date.now() - 1;
-    await runtime.executePoll('test').catch(() => {});
-    await runtime.pump();
-    assert.equal(runtime.state.handled.direct.waitProbes ?? 0, 0);
-    await runtime.stop();
-  }
-  // 补救类续办（回合失败）不探测，直接放行。
-  {
-    const { runtime, calls } = await mk();
-    calls.complete('session-1', 'failed', '');
-    await runtime.reconcileSessions();
-    runtime.state.handled.direct.nextAttemptAt = Date.now() - 1;
-    assert.equal(await runtime.probeWaitingFollowUps(), 0);
-    await runtime.stop();
-  }
-  // 有 MR 但监视器尚无观测：无证据，放行。
-  {
-    const { runtime, calls } = await mk();
-    calls.complete('session-1', 'completed', waiting([reuseMr]));
-    await runtime.reconcileSessions();
-    const record = runtime.state.handled.direct;
-    record.nextAttemptAt = Date.now() - 1;
-    assert.equal(await runtime.probeWaitingFollowUps(), 0);
-    record.watch.lastStates[reuseMr] = 'running';
-    assert.equal(await runtime.probeWaitingFollowUps(), 1);
-    await runtime.stop();
-  }
-});
 
 test('settings validation accepts the follow-up saving switches', () => {
   assert.equal(defaultSettings().waitProbeEnabled, true);
@@ -3572,10 +2971,9 @@ test('auto engine marks Jev-skipped todos done with the mapped skip reason', asy
   });
   runtime.markTodoDone = async () => {};
   await runtime.executePoll('test');
-  await runtime.pump();
   assert.equal(calls.create, 0);
-  assert.equal(runtime.state.handled.direct.outcome, 'precheck-skipped');
-  assert.equal(runtime.state.handled.direct.skipReason, '纯感谢/客套/附和，无需处理');
+  assert.equal(runtime.state.ledger.todos.direct.state, 'skipped');
+  assert.equal(runtime.state.ledger.todos.direct.reason, '纯感谢/客套/附和，无需处理');
   await runtime.stop();
 });
 
@@ -3635,10 +3033,9 @@ test('uncertain Jev verdicts are escalated to the LLM in auto mode', async () =>
     stream() { throw new Error('unused'); },
   };
   await runtime.executePoll('test');
-  await runtime.pump();
-  // LLM 复核翻案为需要处理 → 开会话而不是标完成。
+  // LLM 复核翻案为需要处理 → 入账并开会话而不是标完成。
   assert.equal(calls.create, 1);
-  assert.equal(runtime.state.handled.direct?.outcome, 'session-accepted');
+  assertInflight(runtime, 'direct');
   await runtime.stop();
 });
 
@@ -4135,82 +3532,28 @@ test('merged prompt lists every todo with its own reply, mark-done command and c
   assert.equal(buildMergedTodoPrompt([todos[0]], {}), buildTodoPrompt(todos[0], {}));
 });
 
-test('same-target mentions in one poll share one session, prompt and slot but settle independently', async () => {
+test('same-target mentions in one poll share one session and prompt but settle independently', async () => {
   const { runtime, calls, prompts } = autoRuntime();
-  let pending = sameTargetTodos(2);
-  runtime.fetchTodos = async () => normalizeTodos(pending);
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.create, 1);
-  assert.equal(calls.prompt, 1);
-  assert.match(prompts[0], /"todoId":"m1"/);
-  assert.match(prompts[0], /"todoId":"m2"/);
-  const first = runtime.state.handled.m1;
-  const second = runtime.state.handled.m2;
-  assert.equal(first.sessionId, 'session-1');
-  assert.equal(second.sessionId, 'session-1');
-  assert.equal(first.requestId, second.requestId);
-  assert.ok(first.batchId);
-  assert.equal(first.batchId, second.batchId);
-  assert.deepEqual(first.mergedWith, ['m2']);
-  assert.deepEqual(second.mergedWith, ['m1']);
-  assert.equal(first.leaderTaskId, undefined);
-  assert.equal(runtime.occupiedSlots(), 1);
-  const restored = normalizeState(JSON.parse(JSON.stringify(runtime.state)));
-  assert.equal(restored.handled.m2.batchId, first.batchId);
-  assert.deepEqual(restored.handled.m2.mergedWith, ['m1']);
-
-  // m1 输出了报告且已标记完成；m2 没有报告、Todo 仍在 → 各自结算，m2 待续办。
-  pending = pending.filter((todo) => todo.id !== 'm1');
-  calls.complete('session-1', 'completed', closureLine({ todoId: 'm1', status: 'done', summary: 'm1 已处理', resumeAfterMinutes: 0, openMrs: [] }));
-  await runtime.reconcileSessions();
-  assert.equal(runtime.state.handled.m1.closure, 'closed');
-  assert.equal(runtime.state.handled.m1.reportSummary, 'm1 已处理');
-  assert.equal(runtime.state.handled.m2.executionStatus, 'completed');
-  assert.equal(runtime.state.handled.m2.reportSummary, '');
-  assert.equal(runtime.state.handled.m2.closure, 'follow-up');
-  assert.equal(runtime.occupiedSlots(), 0);
-
-  // 续办仍按单条处理：只为 m2 开新会话，不再合并。
-  runtime.state.handled.m2.nextAttemptAt = Date.now() - 1;
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.create, 2);
-  assert.doesNotMatch(prompts[1], /合并承载/);
-  assert.match(prompts[1], /"todoId":"m2"/);
-  assert.doesNotMatch(prompts[1], /todos\/m1\/mark_as_done/);
-  assert.equal(runtime.state.handled.m2.round, 2);
-  assert.equal(runtime.state.handled.m2.batchId, undefined);
-  await runtime.stop();
-});
-
-test('merged groups are capped at maxQueuePerSession and overflow forms the next unit', async () => {
-  const { runtime, calls, prompts } = autoRuntime({ settings: { maxSessionsPerPoll: 4, maxConcurrentSessions: 4, maxQueuePerSession: 3 } });
-  runtime.fetchTodos = async () => normalizeTodos(sameTargetTodos(4));
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.create, 2);
-  assert.equal(calls.prompt, 2);
-  assert.match(prompts[0], /合并承载同一对象上的 3 条/);
-  for (const id of ['m1', 'm2', 'm3']) assert.match(prompts[0], new RegExp(`"todoId":"${id}"`));
-  assert.doesNotMatch(prompts[0], /"todoId":"m4"/);
-  assert.doesNotMatch(prompts[1], /合并承载/);
-  assert.equal(runtime.state.handled.m3.sessionId, 'session-1');
-  assert.equal(runtime.state.handled.m4.sessionId, 'session-2');
-  assert.equal(runtime.state.handled.m4.batchId, undefined);
-  assert.deepEqual(runtime.state.handled.m1.mergedWith, ['m2', 'm3']);
-  await runtime.stop();
-});
-
-test('mergeSameTarget=false keeps one session per same-target todo', async () => {
-  const { runtime, calls } = autoRuntime({ settings: { mergeSameTarget: false } });
+  runtime.markTodoDone = async () => {};
   runtime.fetchTodos = async () => normalizeTodos(sameTargetTodos(2));
   await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.create, 2);
-  assert.equal(calls.prompt, 2);
-  assert.equal(runtime.state.handled.m1.batchId, undefined);
-  assert.notEqual(runtime.state.handled.m1.sessionId, runtime.state.handled.m2.sessionId);
+  assert.equal(calls.create, 1);
+  assert.equal(calls.prompt, 1);
+  assert.match(prompts[0], /m1/);
+  assert.match(prompts[0], /m2/);
+  assert.equal(ledgerThread(runtime, 'm1'), ledgerThread(runtime, 'm2'));
+  assert.deepEqual(ledgerThread(runtime, 'm1').inflight.todoIds.sort(), ['m1', 'm2']);
+  assert.equal(runtime.occupiedSlots() + runtime.todoInflightThreads().length, 1);
+
+  // m1 上报完成；m2 没有报告 → 各自结算：m1 done，m2 attempts+1 退回 queued 并在同一会话重投。
+  const reported = await runtime.handleTodoReport('session-1', { status: 'done', summary: 'm1 已处理', todoIds: ['m1'] });
+  assert.equal(reported.ok, true);
+  calls.complete('session-1');
+  await runtime.reconcileTodoInflight();
+  assert.equal(runtime.state.ledger.todos.m1.state, 'done');
+  assert.equal(runtime.state.ledger.todos.m2.state, 'queued');
+  assert.equal(runtime.state.ledger.todos.m2.attempts, 1);
+  assert.equal(calls.create, 1);
   await runtime.stop();
 });
 
@@ -4240,9 +3583,7 @@ test('same-target todos are routed by the normal autoRoute path only to plugin-c
   calls.sessions.set('foreign-1', { running: false, events: [] });
   runtime.fetchTodos = async () => normalizeTodos(sameTargetTodos(1));
   await runtime.executePoll('test');
-  await runtime.pump();
   assert.equal(calls.create, 1);
-  assert.notEqual(runtime.state.handled.m1.sessionId, 'foreign-1');
-  assert.notEqual(runtime.state.handled.m1.routed, true);
+  assert.notEqual(ledgerThread(runtime, 'm1').sessionId, 'foreign-1');
   await runtime.stop();
 });

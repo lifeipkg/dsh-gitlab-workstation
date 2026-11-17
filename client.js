@@ -108,7 +108,7 @@ window.__ModuleLoader__.load({
       localError: 'Action failed',
       defaultPaused: 'Polling starts paused so installation never dispatches your real todos automatically.',
       inboxTitle: 'Inbox', inboxEmpty: 'Nothing is waiting for you.', inboxTakeover: 'Open session to take over',
-      inboxAcknowledge: 'Mark handled', inboxPendingUnconfirmed: 'Legacy message unconfirmed', inboxError: 'Could not load the inbox',
+      inboxAcknowledge: 'Mark handled', inboxRetry: 'Retry', inboxWaiting: 'Waiting retry', inboxPendingUnconfirmed: 'Legacy message unconfirmed', inboxError: 'Could not load the inbox',
       mergedIntoLabel: 'Merged into', pendingStarting: 'Dispatching', acceptedLabel: 'Accepted', outcomeSessionAccepted: 'Session accepted',
       replyPreview: 'Our reply',
       signatureLabel: 'Sign replies as AI-generated', signatureText: 'Signature text', signatureHint: 'When enabled, Todo session prompts require a one-line AI signature on GitLab replies. Applies to new Todo prompts only.',
@@ -247,7 +247,7 @@ window.__ModuleLoader__.load({
       localError: '操作失败',
       defaultPaused: '插件默认停用，避免安装后立即处理真实 Todo。',
       inboxTitle: '收件箱', inboxEmpty: '没有等待你处理的 Todo。', inboxTakeover: '打开会话接手',
-      inboxAcknowledge: '我已处理', inboxPendingUnconfirmed: '旧消息未确认', inboxError: '无法加载收件箱',
+      inboxAcknowledge: '我已处理', inboxRetry: '重试', inboxWaiting: '待重试', inboxPendingUnconfirmed: '旧消息未确认', inboxError: '无法加载收件箱',
       mergedIntoLabel: '合并进', pendingStarting: '投递中', acceptedLabel: '接受于', outcomeSessionAccepted: '会话处理',
       replyPreview: '我方回复',
       signatureLabel: '回复署名（AI 代发标识）', signatureText: '署名文本', signatureHint: '开启后，Todo 会话提示词会要求 GitLab 回复末尾添加 AI 署名。只影响之后派发的 Todo 提示词。',
@@ -1317,7 +1317,9 @@ window.__ModuleLoader__.load({
         }
       };
       // 收件箱“我已处理”：成功后连同收件箱一起刷新（snapshot 已由 perform 更新）。
-      const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post('acknowledge', { todoId: item.todoId }))
+      const retryInboxItem = (item) => perform(`retry:${item.todoId}`, () => post('todoRetry', { todoId: item.todoId }))
+  .then((done) => { if (done) void fetchInbox(); });
+const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post('todoClose', { todoId: item.todoId }))
         .then((done) => { if (done) void fetchInbox(); });
       // Todo 主按钮（开会话/重新处理）与“标记完成”都走 dispatch：Host 端会把非 directMention 的 MR 直接标记完成。
       const dispatchTodo = (todo) => perform(`dispatch:${todo.id}`, () => post('dispatch', { id: todo.id }));
@@ -1672,19 +1674,23 @@ window.__ModuleLoader__.load({
                   item.url
                     ? h('a', { href: item.url, target: '_blank', rel: 'noreferrer' }, item.title)
                     : h('span', null, item.title),
-                  h('span', { className: 'gta-tag gta-tag-attention' }, t('closureNeedsHuman')),
+                  h('span', { className: 'gta-tag gta-tag-attention' }, item.state === 'waiting' ? t('inboxWaiting') : t('closureNeedsHuman')),
                   item.archived && h('span', { className: 'gta-tag' }, t('sessionArchived')),
                   item.pendingUnconfirmed && h('span', { className: 'gta-tag' }, t('inboxPendingUnconfirmed')),
                   item.routed && routedLabel(item, t) && h('span', { className: 'gta-tag gta-tag-routed' }, routedLabel(item, t)),
                 ),
                 h('div', { className: 'gta-muted gta-meta' },
-                  [item.closureNote, item.project, item.sessionTitle, item.round > 1 && `${t('roundLabel')} ${item.round}`,
+                  [item.reason, item.project, item.sessionTitle, item.round > 1 && `${t('roundLabel')} ${item.round}`,
                     item.completedAt && formatTime(item.completedAt, '')].filter(Boolean).join(' · ')),
                 item.archiveError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, item.archiveError),
                 h(ReplyPreview, { reply: item.lastReply, t }),
               ),
               h('div', { className: 'gta-todo-actions' },
                 item.sessionId && h(Button, { onClick: (event) => openSession({ sessionId: item.sessionId, taskId: item.todoId, title: item.title, url: item.url, manualHandoffs: item.manualHandoffs }, event.currentTarget) }, t('inboxTakeover')),
+                h(Button, {
+                  disabled: busySet.has(`retry:${item.todoId}`),
+                  onClick: guardedRun(`retry:${item.todoId}`, () => { void retryInboxItem(item); }),
+                }, t('inboxRetry')),
                 h(Button, {
                   primary: true,
                   disabled: busySet.has(`ack:${item.todoId}`),

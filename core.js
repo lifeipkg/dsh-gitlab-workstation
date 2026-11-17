@@ -1,4 +1,13 @@
-export const STATE_VERSION = 6;
+import {
+  buildBoard,
+  buildLedgerInbox,
+  emptyLedger,
+  ledgerCounts,
+  migrateThreads,
+  normalizeLedger,
+} from './core/todo-machine.js';
+
+export const STATE_VERSION = 7;
 
 // Leader v3 keeps a small journal of its own: session id, model, ad-hoc task registry, the child-report board and
 // the uncertain-delivery ledger. Issue automatic:false and STATE_VERSION stay unchanged.
@@ -1605,6 +1614,7 @@ export function initialState() {
     issues: [],
     handled: {},
     pending: {},
+    ledger: emptyLedger(),
     recent: [],
     lastRunAt: null,
     lastSuccessAt: null,
@@ -1697,6 +1707,12 @@ export function normalizeState(value) {
   if (value.version === 5) {
     // v5 → v6：收件箱/批量预检/按类型模型/事件驱动续办。新设置与新字段
     // （lastReply/watch/acknowledgedAt 等）均带默认值，无需改写存量数据。
+    value = { ...value, version: 6 };
+  }
+  let migratedFromV6 = false;
+  if (value.version === 6) {
+    // v6 → v7：Todo 改由台账驱动。线程绑定从 handled 迁出，Todo 台账首轮拉取时重建（遗留记 waiting）。
+    migratedFromV6 = true;
     value = { ...value, version: STATE_VERSION };
   }
   if (value.version !== STATE_VERSION) {
@@ -1846,6 +1862,12 @@ export function normalizeState(value) {
   // needs-human/pendingUnconfirmed）永不删；已结算记录按保留期清，超出上限再按结算时间删最旧。
   const pruneResult = pruneHandled(handled);
   for (const id of pruneResult.deleted) delete handled[id];
+  const ledger = migratedFromV6 ? migrateThreads(handled) : normalizeLedger(value.ledger);
+  if (migratedFromV6) {
+    // Todo 记录已由台账接管；handled/pending 只保留 Issue 路径仍在使用的条目。
+    for (const id of Object.keys(handled)) if (!id.startsWith('issue-') && handled[id]?.item?.source !== 'issue') delete handled[id];
+    for (const id of Object.keys(pending)) if (!id.startsWith('issue-') && pending[id]?.item?.source !== 'issue') delete pending[id];
+  }
   const storedSettings = isRecord(value.settings) ? { ...value.settings } : {};
   // v2.21 移除按任务类型分模型：旧状态里的 taskModels 直接丢弃。
   delete storedSettings.taskModels;
@@ -1876,6 +1898,7 @@ export function normalizeState(value) {
       : [],
     handled,
     pending,
+    ledger,
     manualHandoffs: normalizeManualHandoffs(value.manualHandoffs),
     recent,
     lastRunAt: timestamp(value.lastRunAt),
@@ -2168,6 +2191,19 @@ export function buildInbox(state, limit = 100) {
     }));
 }
 
+/** 台账面板投影：看板/计数/收件箱/熔断/最近事件。 */
+function publicLedger(ledger) {
+  const safe = ledger ?? emptyLedger();
+  return {
+    counts: ledgerCounts(safe),
+    board: buildBoard(safe),
+    inbox: buildLedgerInbox(safe),
+    breaker: { ...safe.breaker },
+    legacyPending: safe.legacyPending === true,
+    events: safe.events.slice(-50).reverse(),
+  };
+}
+
 export function publicState(state, running = false, currentUserId = null) {
   return {
     settings: {
@@ -2186,12 +2222,15 @@ export function publicState(state, running = false, currentUserId = null) {
     todos: state.todos.map((todo) => ({
       ...todo,
       directMention: isNoteMention(todo, currentUserId),
-      handled: Boolean(state.handled[todo.id]),
+      handled: Boolean(state.handled[todo.id]) || Boolean(state.ledger?.todos?.[todo.id]),
+      ledgerState: state.ledger?.todos?.[todo.id]?.state ?? null,
+      ledgerReason: state.ledger?.todos?.[todo.id]?.reason ?? '',
+      ledgerAttempts: state.ledger?.todos?.[todo.id]?.attempts ?? 0,
       outcome: state.handled[todo.id]?.outcome ?? null,
       executionStatus: state.handled[todo.id]?.executionStatus ?? null,
       executionError: state.handled[todo.id]?.executionError ?? '',
       skipReason: state.handled[todo.id]?.skipReason ?? '',
-      sessionId: state.handled[todo.id]?.sessionId ?? state.pending[todo.id]?.sessionId ?? null,
+      sessionId: state.ledger?.threads?.[state.ledger?.todos?.[todo.id]?.threadKey]?.sessionId ?? state.handled[todo.id]?.sessionId ?? state.pending[todo.id]?.sessionId ?? null,
       routed: state.handled[todo.id]?.routed === true || state.pending[todo.id]?.routed === true,
       routeMode: state.handled[todo.id]?.routeMode ?? state.pending[todo.id]?.routeMode ?? '',
       batchSize: (state.handled[todo.id]?.mergedWith ?? state.pending[todo.id]?.mergedWith ?? []).length,
@@ -2204,10 +2243,11 @@ export function publicState(state, running = false, currentUserId = null) {
     // v2.29：面板「最近会话」Tab 并入「已处理」，不再下发独立会话投影。
     // Issue Tab 计数（open 议题列表缓存长度；列表经 issues 动作下发）。
     issueCount: Array.isArray(state.issues) ? state.issues.length : 0,
-    closure: closureCounts(state),
+    closure: { ...closureCounts(state), needsHuman: Object.values(state.ledger?.todos ?? {}).filter((todo) => todo.state === 'attention' || todo.state === 'waiting').length },
+    ledger: publicLedger(state.ledger),
     // recent 只给前端做摘要，不带 Todo 原文与历史链路。
     recent: state.recent.map(({ item, history, ...record }) => ({ ...record })),
-    pendingCount: state.todos.filter((todo) => !state.handled[todo.id]).length,
+    pendingCount: state.todos.filter((todo) => !state.handled[todo.id] && !state.ledger?.todos?.[todo.id]).length,
     running,
     lastRunAt: state.lastRunAt,
     lastSuccessAt: state.lastSuccessAt,

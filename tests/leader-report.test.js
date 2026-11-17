@@ -80,12 +80,12 @@ test('an ad-hoc task worker and a Todo worker can report too', async () => {
   f.addTodo('todo-3', 'worker-b');
   const fromTodo = await f.report({ kind: 'blocked', text: '缺少权限' }, 'worker-b');
   assert.equal(fromTodo.ok, true);
-  assert.equal(fromTodo.result.taskId, 'todo-3');
+  // Todo workers report under their ledger thread, not under the Todo id.
+  assert.equal(fromTodo.result.taskId, `thread:${f.runtime.state.ledger.todos['todo-3'].threadKey}`);
 });
 
-test('sessions the plugin did not create cannot report: the Leader, human and routed sessions, unknown and archived ids', async () => {
+test('sessions the plugin did not create cannot report: the Leader, human sessions, unknown and archived ids', async () => {
   const f = await ready();
-  f.addTodo('todo-9', 'human', { routed: true });
   for (const sessionId of ['leader', 'human', 'ghost']) {
     const result = await f.report({ kind: 'progress', text: 'hi' }, sessionId);
     assert.equal(result.ok, false, sessionId);

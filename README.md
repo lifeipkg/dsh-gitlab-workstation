@@ -4,6 +4,18 @@
 
 仓库：[lifeipkg/dsh-gitlab-workstation](https://github.com/lifeipkg/dsh-gitlab-workstation)。这是原仓库的改名，保留原有 Git 历史，而不是另起一套插件。
 
+## Todo 台账（v4.0，精简版）
+
+> v4.0 起 Todo 路径改为**台账 + 线程**模型，取代下文的“闭环/续办/会话路由/同对象合并/等待探测”描述（这些章节仅对 Issue 路径与历史版本仍有参考意义；Issue 路径保持原行为）。
+
+- **台账（ledger）**：每条 Todo 一个状态：`queued` 待投递 → `inflight` 会话处理中 → `done` / `attention`（需人处理，原因以“等人：”开头）/ `waiting`（投递失败或未收到报告，待重试）/ `skipped`（规则或预检跳过）/ `closed`（人工关闭）。
+- **线程**：同一 MR/Issue（`targetKey`）上的 Todo 归入同一线程，一个线程一个会话；新 Todo 以后续批次追加到该会话，一批最多 10 条，不再有手动路由与同对象合并设置。
+- **报告工具**：worker 会话通过专用工具 `gitlab_todo_report` 逐条报告 `done|waiting|needs-human|failed`，取代正文里的 `[TODO-CLOSURE]` 标记。`done` 才由插件调用 `mark_as_done`；回合结束仍有未报告项记为 `waiting`（原因“上次未收到报告”），最多重试 3 次后转 `attention`。
+- **熔断器**：连续 5 次投递/回合失败自动暂停投递，收件箱可点击恢复（`todoResume`）。
+- **收件箱**：列出 `attention` 与 `waiting` 条目，动作为 **重试**（`todoRetry`）与 **我已处理**（`todoClose`）。Leader 工具 `gitlab_leader_inbox` 同步为 `list/retry/close/resume`；`gitlab_leader_board` 新增 `threads`（taskId 形如 `thread:<key>`）与 `breaker`。
+- **升级**：状态版本 6 → 7。首次启动先备份 `state.v6.bak.json`，把旧 Todo 记录迁移成台账线程；迁移后首轮对仍待办的直接提及按 `waiting`（原因“迁移前遗留”）接管，不自动批量重发。旧的续办/路由相关设置在面板隐藏（内部保留供 Issue 路径使用）。
+- **保留期**：`done`/`skipped` 保留 30 天；总量上限 3000；`attention`/`waiting` 不自动清理。
+
 ## 紧凑工作台（v2.33）
 
 - **任务与环境分区**：收件箱、Todo、Issue 属于任务视图；工作区与日志属于环境视图。不增加大卡片首页，直接进入任务列表。
