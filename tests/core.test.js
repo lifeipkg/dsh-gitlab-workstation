@@ -4096,7 +4096,7 @@ test('runtime logger feeds the in-memory buffer and logProjection/clearLogEntrie
   await runtime.stop();
 });
 
-// ---- 同对象合并派发 / Leader 托管 Issue 转交 ----
+// ---- 同对象合并派发（v3 起不再有 Leader 托管转交）----
 
 const sameTargetTodos = (count, base = 40) => Array.from({ length: count }, (_, index) => ({
   ...directNoteTodo,
@@ -4211,83 +4211,35 @@ test('mergeSameTarget=false keeps one session per same-target todo', async () =>
   await runtime.stop();
 });
 
-test('todos on a Leader-managed Issue are routed to its worker, notify the Leader and never archive it', async () => {
-  const { runtime, calls, prompts } = autoRuntime({ settings: { busyRouteMode: 'steer' } });
-  calls.sessions.set('worker-1', { running: true, events: [], title: 'ISSUE-7' });
-  const lookups = [];
-  const notes = [];
-  runtime.leaderWorkerForTarget = (url) => {
-    lookups.push(url);
-    return url.includes('/issues/7') ? { taskId: 'issue-77', sessionId: 'worker-1' } : null;
-  };
-  runtime.noteLeaderTodo = async (taskId, todo) => {
-    notes.push({ taskId, ...todo });
-    return { ok: true };
-  };
-  let pending = sameTargetTodos(2);
-  runtime.fetchTodos = async () => normalizeTodos(pending);
-  await runtime.executePoll('test');
-  await runtime.pump();
-  assert.equal(calls.create, 0);
-  assert.equal(calls.prompt, 1);
-  assert.equal(calls.modelSelections.length, 0);
-  const request = calls.invocations.find((call) => call.method === 'prompt').args.request;
-  assert.equal(request.sessionId, 'worker-1');
-  assert.equal(request.mode, 'steer');
-  assert.match(prompts[0], /合并路由到当前会话/);
-  assert.ok(lookups.length > 0);
-  for (const id of ['m1', 'm2']) {
-    const record = runtime.state.handled[id];
-    assert.equal(record.sessionId, 'worker-1');
-    assert.equal(record.routed, true);
-    assert.equal(record.leaderTaskId, 'issue-77');
-  }
-  assert.deepEqual(notes.map((note) => [note.taskId, note.todoId, note.author]), [['issue-77', 'm1', 'user-1'], ['issue-77', 'm2', 'user-2']]);
-  assert.equal(normalizeState(JSON.parse(JSON.stringify(runtime.state))).handled.m1.leaderTaskId, 'issue-77');
-
-  pending = [];
-  calls.complete('worker-1', 'completed', [
-    closureLine({ todoId: 'm1', status: 'done', summary: 'm1 完成', resumeAfterMinutes: 0, openMrs: [] }),
-    closureLine({ todoId: 'm2', status: 'done', summary: 'm2 完成', resumeAfterMinutes: 0, openMrs: [] }),
-  ].join('\n'));
-  await runtime.reconcileSessions();
-  assert.equal(runtime.state.handled.m1.closure, 'closed');
-  assert.equal(runtime.state.handled.m2.closure, 'closed');
-  assert.deepEqual(calls.archives, []);
-  await runtime.stop();
-});
-
-test('an unavailable Leader worker falls back to a new session; Leader notify failures never fail dispatch', async () => {
-  const { runtime, calls } = autoRuntime();
-  const notes = [];
-  runtime.leaderWorkerForTarget = () => ({ taskId: 'issue-77', sessionId: 'gone' });
-  runtime.noteLeaderTodo = async (taskId, todo) => { notes.push(todo.todoId); };
+test('v3 dispatch ignores legacy Leader routing hooks: no leaderTaskId, no notify, normal session creation', async () => {
+  const { runtime, calls, prompts } = autoRuntime();
+  let lookups = 0;
+  runtime.leaderWorkerForTarget = () => { lookups += 1; return { taskId: 'issue-77', sessionId: 'worker-1' }; };
+  runtime.noteLeaderTodo = async () => { lookups += 1; };
   const [todo] = normalizeTodos(sameTargetTodos(1));
   const result = await runtime.dispatch(todo, false, { trackSlot: true });
   assert.equal(result.ok, true);
   assert.equal(result.routed, false);
+  assert.equal(result.leaderTaskId, undefined);
   assert.equal(calls.create, 1);
+  assert.equal(lookups, 0);
   assert.equal(runtime.state.handled.m1.leaderTaskId, undefined);
-  assert.deepEqual(notes, []);
+  assert.doesNotMatch(prompts[0], /合并路由/);
+  // 回读时即使旧状态带有 leaderTaskId 也不会保留。
+  const legacy = JSON.parse(JSON.stringify(runtime.state));
+  legacy.handled.m1.leaderTaskId = 'issue-77';
+  assert.equal(normalizeState(legacy).handled.m1.leaderTaskId, undefined);
+  await runtime.stop();
+});
 
-  // 可用 worker + 通知抛错：照常路由并接受，只告警。
-  const second = runtimeWithPrompt(async () => ({ accepted: true }), { autoComplete: false });
-  second.calls.sessions.set('worker-1', { running: false, events: [] });
-  second.runtime.leaderWorkerForTarget = () => ({ taskId: 'issue-77', sessionId: 'worker-1' });
-  second.runtime.noteLeaderTodo = async () => { throw new Error('journal down'); };
-  const [other] = normalizeTodos(sameTargetTodos(1));
-  const routed = await second.runtime.dispatch(other, false, { trackSlot: true });
-  assert.equal(routed.ok, true);
-  assert.equal(routed.routed, true);
-  assert.equal(routed.leaderTaskId, 'issue-77');
-  assert.equal(second.calls.create, 0);
-  assert.equal(second.runtime.state.handled.m1.leaderTaskId, 'issue-77');
-  // 手动派发不走 Leader 转交。
-  const third = runtimeWithPrompt(async () => ({ accepted: true }), { autoComplete: false });
-  third.calls.sessions.set('worker-1', { running: false, events: [] });
-  third.runtime.leaderWorkerForTarget = () => ({ taskId: 'issue-77', sessionId: 'worker-1' });
-  const manual = await third.runtime.dispatch(other, false, {});
-  assert.equal(manual.routed, false);
-  assert.equal(third.calls.create, 1);
-  await Promise.all([runtime.stop(), second.runtime.stop(), third.runtime.stop()]);
+test('same-target todos are routed by the normal autoRoute path only to plugin-created sessions', async () => {
+  const { runtime, calls } = autoRuntime({ settings: { busyRouteMode: 'queue' } });
+  calls.sessions.set('foreign-1', { running: false, events: [] });
+  runtime.fetchTodos = async () => normalizeTodos(sameTargetTodos(1));
+  await runtime.executePoll('test');
+  await runtime.pump();
+  assert.equal(calls.create, 1);
+  assert.notEqual(runtime.state.handled.m1.sessionId, 'foreign-1');
+  assert.notEqual(runtime.state.handled.m1.routed, true);
+  await runtime.stop();
 });

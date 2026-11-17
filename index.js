@@ -64,8 +64,7 @@ async function pathExists(path) {
   }
 }
 const LEADER_RPC_CHANNEL = '/gitlab-workstation-leader';
-const LEADER_UI_OPERATIONS = new Set(['create', 'configure', 'start', 'pause', 'enroll', 'unenroll',
-  'resolveDelivery', 'resolveCreation', 'resolveTask', 'handoff', 'cancelQueued']);
+const LEADER_UI_OPERATIONS = new Set(['snapshot', 'create', 'configure', 'resolveCreation', 'resolveTask', 'resolveDelivery']);
 
 /**
  * 运行时骨架：状态生命周期（加载/迁移/持久化）、轮询与对账定时器、bridge 入口。
@@ -313,7 +312,7 @@ export class GitlabTodoRuntime {
     // Preserve Connection's real browser Peer, not a model-provided principal or owner shim.
     if (this.stopping || signal?.aborted || !peer || peer !== this.ctx.connection.browserPeer
       || peer.principal?.kind !== 'owner' || peer.signal?.aborted) {
-      return failure('leader/forbidden', '只有当前原生浏览器 UI 可变更 Leader 托管权限。');
+      return failure('leader/forbidden', '只有当前原生浏览器 UI 可操作 Leader。');
     }
     if (!LEADER_UI_OPERATIONS.has(operation) || !payload || typeof payload !== 'object' || Array.isArray(payload)) {
       return failure('leader/invalid-request', '无效 Leader UI 操作或参数。');
@@ -502,16 +501,10 @@ export function apply(ctx, config = {}) {
     if (!runtime.stopping) {
       runtime.leaderAdapter ??= createLeaderAgentAdapter(runtime);
       void runtime.leaderAdapter.refreshBindings().catch((error) => runtime.logger.warn(`Leader 绑定失败：${errorMessage(error)}`));
-      // Resident enrolled workers gain gitlab_leader_report once the native services arrive.
+      // Resident managed workers gain gitlab_leader_report once the native services arrive.
       runtime.syncLeaderWorkerTools?.(true);
     }
     return async () => {
-      runtime.stopLeader();
-      if (runtime.leaderState) {
-        runtime.leaderState.enabled = false;
-        runtime.leaderState.epoch += 1;
-        runtime.leaderState.phase = runtime.leaderState.sessionId ? 'paused' : 'not-created';
-      }
       const adapter = runtime.leaderAdapter;
       runtime.leaderAdapter = null;
       await adapter?.dispose?.();

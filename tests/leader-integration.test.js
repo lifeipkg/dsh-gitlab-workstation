@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { GitlabTodoRuntime, apply, inject as requiredInject } from '../index.js';
 import { initialState, initialLeaderState, normalizeIssue } from '../core.js';
+import { createLeaderUiCaller } from '../host/leader.js';
 
 function rpcFixture() {
   const browserPeer = { principal: { kind: 'owner' }, signal: new AbortController().signal };
@@ -9,35 +10,53 @@ function rpcFixture() {
   const calls = [];
   Object.assign(runtime, { ctx: { connection: { browserPeer } }, stopping: false,
     leaderOperation: async (operation, payload) => { calls.push({ operation, payload }); return { ok: true }; },
-    leaderProjection: () => ({ enabled: false, sessionId: null, items: [] }), snapshot: () => ({ version: 6 }) });
+    leaderProjection: () => ({ sessionId: null, phase: 'not-created' }), snapshot: () => ({ version: 6 }) });
   return { runtime, browserPeer, calls };
 }
 
-test('Leader grants require the real browser Peer, not another owner, an Agent or JSON identity', async () => {
+test('Leader UI operations require the real browser Peer, not another owner, an Agent or JSON identity', async () => {
   const { runtime, browserPeer, calls } = rpcFixture();
-  const payload = { taskId: 'issue-42-7', sessionId: 'worker', principal: { kind: 'owner' }, caller: { kind: 'ui' } };
+  const payload = { sessionId: 'worker', principal: { kind: 'owner' }, caller: { kind: 'ui' } };
   for (const peer of [undefined, { ...browserPeer }, { principal: { kind: 'agent', agentId: 'leader' }, signal: browserPeer.signal }]) {
-    const result = await runtime.handleLeaderUiRpc('enroll', payload, new AbortController().signal, peer);
+    const result = await runtime.handleLeaderUiRpc('create', payload, new AbortController().signal, peer);
     assert.equal(result.ok, false); assert.equal(result.error.code, 'leader/forbidden');
   }
   assert.equal(calls.length, 0);
-  const result = await runtime.handleLeaderUiRpc('enroll', payload, new AbortController().signal, browserPeer);
+  const result = await runtime.handleLeaderUiRpc('create', payload, new AbortController().signal, browserPeer);
   assert.equal(result.ok, true); assert.equal(result.value.result.ok, true); assert.equal(calls.length, 1);
+  // Every v3 UI operation is reachable; the removed v2 grants are not.
+  for (const operation of ['snapshot', 'configure', 'resolveCreation', 'resolveTask', 'resolveDelivery']) {
+    assert.equal((await runtime.handleLeaderUiRpc(operation, {}, undefined, browserPeer)).ok, true, operation);
+  }
+  for (const removed of ['enroll', 'unenroll', 'start', 'pause', 'pauseIssue', 'resumeIssue', 'advanceManaged', 'handoff', 'cancelQueued', 'board', 'session', 'workerReport']) {
+    const denied = await runtime.handleLeaderUiRpc(removed, {}, undefined, browserPeer);
+    assert.equal(denied.ok, false, removed); assert.equal(denied.error.code, 'leader/invalid-request');
+  }
 });
 
-test('Leader native UI RPC rejects aborts, unknown endpoints and oversized payloads without granting', async () => {
+test('Leader native UI RPC rejects aborts, unknown endpoints and oversized payloads', async () => {
   const { runtime, browserPeer, calls } = rpcFixture();
   const controller = new AbortController(); controller.abort();
-  assert.equal((await runtime.handleLeaderUiRpc('start', {}, controller.signal, browserPeer)).ok, false);
-  assert.equal((await runtime.handleLeaderUiRpc('advanceManaged', {}, undefined, browserPeer)).ok, false);
-  assert.equal((await runtime.handleLeaderUiRpc('start', [], undefined, browserPeer)).ok, false);
+  assert.equal((await runtime.handleLeaderUiRpc('create', {}, controller.signal, browserPeer)).ok, false);
+  assert.equal((await runtime.handleLeaderUiRpc('nothing', {}, undefined, browserPeer)).ok, false);
+  assert.equal((await runtime.handleLeaderUiRpc('create', [], undefined, browserPeer)).ok, false);
   assert.equal((await runtime.handleLeaderUiRpc('configure', { data: 'x'.repeat(3_000_000) }, undefined, browserPeer)).ok, false);
   assert.equal(calls.length, 0);
 });
 
+test('the UI RPC runs operations with the Host-minted UI caller', async () => {
+  const { runtime, browserPeer } = rpcFixture();
+  let seen;
+  runtime.leaderOperation = async (operation, payload, caller) => { seen = { operation, payload, caller }; return { ok: true }; };
+  await runtime.handleLeaderUiRpc('configure', { settings: { model: null }, caller: { kind: 'agent' } }, undefined, browserPeer);
+  assert.equal(seen.operation, 'configure');
+  assert.deepEqual(Object.keys(seen.caller), []);
+  assert.equal(createLeaderUiCaller().constructor, seen.caller.constructor);
+});
+
 test('HTTP Leader bridge is snapshot-only even with self-reported human confirmation', async () => {
   const { runtime, calls } = rpcFixture();
-  for (const operation of ['create', 'configure', 'start', 'pause', 'enroll', 'unenroll', 'pauseIssue', 'resumeIssue', 'advanceManaged']) {
+  for (const operation of ['create', 'configure', 'resolveCreation', 'resolveTask', 'resolveDelivery', 'session', 'board']) {
     const response = await runtime.handleFetch(new Request('http://localhost/api/gitlab-todo-agent', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ action: 'leader', operation, humanConfirmed: true, caller: { kind: 'ui' } }),
@@ -48,10 +67,9 @@ test('HTTP Leader bridge is snapshot-only even with self-reported human confirma
   const response = await runtime.handleFetch(new Request('http://localhost/api/gitlab-todo-agent', {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'leader', operation: 'snapshot' }),
   }));
-  assert.equal(response.status, 200); assert.equal((await response.json()).projection.enabled, false);
+  assert.equal(response.status, 200); assert.equal((await response.json()).projection.sessionId, null);
   assert.deepEqual(calls.map((call) => call.operation), ['snapshot']);
 });
-
 test('an old optional-service cleanup cannot erase a newly loaded Leader service context', async () => {
   let injectCallback; let runtime;
   const effects = new Map(); let unregistered = 0;
@@ -127,24 +145,17 @@ test('runtime startup reuses the shared early Leader journal load rather than lo
   runtime.leaderLoadPromise = runtime.loadLeader();
   runtime.reconcileSessions = async () => {}; runtime.resetTimer = () => {};
   runtime.host = { dispose: async () => {} };
-  try { await runtime.start(); assert.equal(loads, 1); assert.equal(runtime.leaderState.enabled, false); }
+  try { await runtime.start(); assert.equal(loads, 1); assert.equal(runtime.leaderState.phase, 'not-created'); }
   finally { await runtime.stop(); }
 });
 
-function dispatchFixture(autoEnrollNew = true) {
+function dispatchFixture() {
   const runtime = new GitlabTodoRuntime({ workspaceRegistry: { archivedSessionIds: [] }, logger: {} });
   const issue = normalizeIssue({ id: 70, iid: 7, project_id: 42, title: 'Issue task', web_url: 'https://gitlab.example/group/repo/-/issues/7' });
-  const calls = { trace: [], enrolled: [], creates: 0, prompts: 0 };
+  const calls = { creates: 0, prompts: 0 };
   runtime.state = initialState(); runtime.state.issues = [issue]; runtime.gitlabUserId = '1'; runtime.gitlabUsername = 'owner';
-  runtime.leaderState = initialLeaderState(); runtime.leaderState.epoch = 2; runtime.leaderState.creationPolicyEpoch = 2; runtime.leaderState.settings.autoEnrollNew = autoEnrollNew;
-  runtime.leaderDurableEpoch = 2; runtime.resolveWorkspaceId = () => 'workspace';
-  runtime.persist = async () => { calls.trace.push('persist'); };
-  runtime.autoEnrollLeaderCreated = async (taskId, sessionId) => {
-    calls.trace.push('enroll');
-    const record = runtime.state.handled[taskId];
-    if (record.leaderCreatedPolicyEpoch !== runtime.leaderState.creationPolicyEpoch) return { ok: false, error: 'stale creation policy' };
-    calls.enrolled.push({ taskId, sessionId }); return { ok: true };
-  };
+  runtime.leaderState = initialLeaderState(); runtime.resolveWorkspaceId = () => 'workspace';
+  runtime.persist = async () => {};
   runtime.host = { createSession: async () => { calls.creates += 1; return 'worker'; },
     renameSession: async (_id, title) => ({ title, seq: 1 }), selectModel: async () => {},
     prompt: async () => { calls.prompts += 1; return { accepted: true }; },
@@ -152,34 +163,27 @@ function dispatchFixture(autoEnrollNew = true) {
   return { runtime, issue, calls };
 }
 
-test('new Issue creation commits its stamped proof before optional enrollment without changing manual semantics', async () => {
+test('a plain Issue dispatch makes its session manageable by the Leader without any enrollment or policy stamp', async () => {
   const { runtime, issue, calls } = dispatchFixture();
   try {
     assert.equal((await runtime.dispatch(issue)).ok, true);
     const record = runtime.state.handled[issue.id];
-    assert.equal(record.automatic, false); assert.equal(record.leaderCreatedSession, 'worker'); assert.equal(record.leaderCreatedPolicyEpoch, 2);
-    assert.deepEqual(calls.enrolled, [{ taskId: issue.id, sessionId: 'worker' }]);
-    assert.equal(calls.trace.at(-2), 'persist'); assert.equal(calls.trace.at(-1), 'enroll');
+    assert.equal(record.sessionId, 'worker'); assert.equal(record.automatic, false);
+    for (const field of ['leaderCreatedSession', 'leaderCreatedPolicyEpoch', 'leaderTaskId']) assert.equal(Object.hasOwn(record, field), false, field);
     assert.equal(calls.creates, 1); assert.equal(calls.prompts, 1);
+    assert.equal(runtime.isLeaderManagedSession('worker'), true);
+    assert.equal(runtime.isLeaderManagedSession('outside'), false);
+    assert.deepEqual([...runtime.leaderManagedSessionIds()], ['worker']);
+    assert.equal(runtime.leaderTaskForSession('worker'), issue.id);
   } finally { await runtime.stop(); }
 });
 
-test('a future-enrollment switch changed during create does not retrospectively stamp that Issue', async () => {
-  const { runtime, issue, calls } = dispatchFixture(false);
-  runtime.host.createSession = async () => { calls.creates += 1; runtime.leaderState.settings.autoEnrollNew = true; runtime.leaderState.creationPolicyEpoch = 3; runtime.leaderState.epoch = 3; runtime.leaderDurableEpoch = 3; return 'worker'; };
+test('the Leader session itself is never reported as managed even if a record points at it', async () => {
+  const { runtime, issue } = dispatchFixture();
   try {
-    assert.equal((await runtime.dispatch(issue)).ok, true);
-    assert.equal(Object.hasOwn(runtime.state.handled[issue.id], 'leaderCreatedPolicyEpoch'), false);
-    assert.equal(calls.enrolled.length, 0); assert.equal(calls.prompts, 1);
-  } finally { await runtime.stop(); }
-});
-
-test('enrollment proof write failure does not misreport an already accepted Issue as a failed dispatch', async () => {
-  const { runtime, issue, calls } = dispatchFixture();
-  runtime.persist = async () => { if (runtime.state.handled[issue.id]) throw new Error('simulated storage failure'); };
-  try {
-    assert.equal((await runtime.dispatch(issue)).ok, true);
-    assert.equal(calls.enrolled.length, 0); assert.equal(calls.prompts, 1);
-    assert.equal(runtime.state.handled[issue.id].executionStatus, 'running');
+    await runtime.dispatch(issue);
+    runtime.leaderState.sessionId = 'worker';
+    assert.equal(runtime.isLeaderManagedSession('worker'), false);
+    assert.deepEqual([...runtime.leaderManagedSessionIds()], []);
   } finally { await runtime.stop(); }
 });

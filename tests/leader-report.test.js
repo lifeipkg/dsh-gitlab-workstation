@@ -1,284 +1,239 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { initialState, initialLeaderState, normalizeLeaderState, LEADER_LIMITS } from '../core.js';
-import { leaderMethods, createLeaderUiCaller, createLeaderAgentCaller, createLeaderWorkerCaller } from '../host/leader.js';
-import { createLeaderAgentAdapter, LEADER_WORKER_TOOL, LEADER_TOOL_NAMES } from '../host/leader-agent.js';
+import { LEADER_LIMITS, LEADER_REPORT_KINDS, normalizeLeaderState, initialLeaderState } from '../core.js';
+import { fixture } from './leader-fixture.js';
 
-const sessionState = (patch = {}) => ({ cursor: 10, active: true, running: false, queue: [], pendingInput: [], ...patch });
-const copy = (value) => JSON.parse(JSON.stringify(value));
-
-function fixture() {
-  const calls = { notify: [], deliver: [], persist: [], refreshWorkers: 0 };
-  const sessions = new Map([['leader', sessionState()], ['worker-a', sessionState()], ['worker-b', sessionState()], ['outside', sessionState()]]);
-  const ui = createLeaderUiCaller();
-  const runtime = Object.assign({}, leaderMethods, {
-    state: initialState(), leaderState: initialLeaderState(), config: {}, stopping: false,
-    ctx: { workspaceRegistry: { archivedSessionIds: [] } },
-    storageDirectory() { throw new Error('fixture uses in-memory persistence'); },
-    ensureLeaderTimer() {}, targetBusy() { return false; }, resolveWorkspaceId(cwd) { return cwd || 'issue-workspace'; },
-    host: {
-      async sessionState(id) { if (!sessions.has(id)) throw new Error('not found'); return copy(sessions.get(id)); },
-      async createSession() { return 'leader'; }, async renameSession() {}, async selectModel() {},
-      async prompt() { throw new Error('never prompt'); },
-    },
-    async persistLeader() { calls.persist.push(copy(this.leaderState)); },
-  });
-  runtime.leaderAdapter = {
-    capabilities: { atomicIdleDelivery: true, nonHumanSource: true },
-    async prepare(sessionId) { return { ok: true, status: 'prepared', sessionId }; },
-    async refreshBindings() { return true; },
-    async refreshWorkerBindings() { calls.refreshWorkers += 1; return true; },
-    async observe(sessionId, cursor) { const highWater = sessions.get(sessionId)?.cursor ?? 0; return { cursor: highWater, highWater, events: [], truncated: false, epoch: 'live-log' }; },
-    async deliver(request) { calls.deliver.push(copy(request)); return { ok: true, status: 'delivered', requestId: request.requestId }; },
-    async notify(request) { calls.notify.push(copy(request)); return { ok: true, status: 'delivered', requestId: request.requestId }; },
-  };
-  for (const suffix of ['a', 'b']) {
-    const item = { id: `issue-1-${suffix}`, title: `Issue ${suffix}`, source: 'issue', url: `https://gitlab.test/project/-/issues/${suffix}`, project: 'project', iid: suffix, projectId: '1' };
-    runtime.state.issues.push(item);
-    runtime.state.handled[item.id] = { id: item.id, sessionId: `worker-${suffix}`, item, automatic: false,
-      acceptedAt: Date.now(), outcome: 'session-accepted', title: item.title, url: item.url, executionStatus: 'completed' };
-  }
-  const invoke = (operation, request = {}, caller = ui) => runtime.leaderOperation(operation, request, caller);
-  const issue = (suffix = 'a') => ({ taskId: `issue-1-${suffix}`, sessionId: `worker-${suffix}` });
-  const agent = () => createLeaderAgentCaller({ sessionId: 'leader', agentId: 'leader' });
-  const worker = (suffix = 'a') => createLeaderWorkerCaller({ sessionId: `worker-${suffix}`, agentId: `worker-${suffix}` });
-  const report = (request, suffix = 'a') => invoke('workerReport', request, worker(suffix));
-  const setup = async (count = 2) => {
-    assert.equal((await invoke('create')).ok, true);
-    assert.equal((await invoke('enroll', issue('a'))).ok, true);
-    if (count === 2) assert.equal((await invoke('enroll', issue('b'))).ok, true);
-    assert.equal((await invoke('start')).ok, true);
-  };
-  return { runtime, calls, sessions, ui, invoke, issue, agent, worker, report, setup };
+async function ready(options) {
+  const f = fixture(options);
+  await f.createLeader();
+  f.addIssue(1, 'worker-a');
+  return f;
 }
 
-test('workerReport authorization: only enrolled worker caller; worker cannot call Leader/UI operations', async () => {
-  const { invoke, issue, agent, worker, report, setup } = fixture(); await setup();
-  assert.equal((await report({ kind: 'progress', text: '完成第一步' })).ok, true);
-  assert.match((await invoke('workerReport', { kind: 'progress', text: 'x' })).error, /仅限已纳管 worker/);
-  assert.match((await invoke('workerReport', { kind: 'progress', text: 'x' }, agent())).error, /仅限已纳管 worker/);
-  const outside = createLeaderWorkerCaller({ sessionId: 'outside', agentId: 'outside' });
-  assert.match((await invoke('workerReport', { kind: 'progress', text: 'x' }, outside)).error, /不是当前已纳管的 worker/);
-  const fakeLeader = createLeaderWorkerCaller({ sessionId: 'leader', agentId: 'leader' });
-  assert.equal((await invoke('workerReport', { kind: 'progress', text: 'x' }, fakeLeader)).ok, false);
-  for (const operation of ['session', 'read', 'overview', 'note', 'gitlabApi', 'run', 'snapshot', 'enroll', 'start']) {
-    const result = await invoke(operation, issue('b'), worker());
-    assert.equal(result.ok, false); assert.match(result.error, /只能向 Leader 报告/); assert.equal(result.result, null);
+test('a managed worker records a report on the board; the Leader reads it unseen and the detail view marks it seen', async () => {
+  const f = await ready();
+  const result = await f.report({ kind: 'progress', text: '  已完成登录接口  ' });
+  assert.equal(result.ok, true);
+  assert.equal(result.result.recorded, true);
+  assert.equal(result.result.taskId, 'issue-1');
+  assert.match(result.result.reportId, /^report-[0-9a-f]{12}$/u);
+  assert.match(result.result.note, /gitlab_leader_board/u);
+  const stored = f.runtime.leaderState.reports[0];
+  assert.deepEqual({ ...stored, at: typeof stored.at }, { id: result.result.reportId, taskId: 'issue-1', sessionId: 'worker-a', kind: 'progress', text: '已完成登录接口', at: 'number', seen: false });
+  assert.equal(f.calls.persist.at(-1).reports.length, 1);
+
+  const board = (await f.board()).result;
+  assert.equal(board.reports.length, 1);
+  assert.equal(board.reports[0].seen, false);
+  assert.equal(board.reports[0].kind, 'progress');
+  const detail = (await f.board({ taskId: 'issue-1' })).result.detail;
+  assert.equal(detail.reports.length, 1);
+  assert.equal(f.runtime.leaderState.reports[0].seen, true);
+  assert.equal((await f.board()).result.reports[0].seen, true);
+});
+
+test('every report kind is accepted, anything else is not', async () => {
+  const f = await ready();
+  assert.deepEqual([...LEADER_REPORT_KINDS], ['progress', 'blocked', 'done', 'question']);
+  for (const kind of LEADER_REPORT_KINDS) assert.equal((await f.report({ kind, text: `${kind} text` })).ok, true, kind);
+  for (const kind of ['message', 'PROGRESS', '', null, undefined, 3]) {
+    const result = await f.report({ kind, text: 'x' });
+    assert.equal(result.ok, false, String(kind));
+    assert.match(result.error, /kind 必须是 progress\/blocked\/done\/question 之一/u);
   }
-  // Forged plain object without Host-issued identity is rejected.
-  assert.equal((await invoke('workerReport', { kind: 'progress', text: 'x' }, { sessionId: 'worker-a' })).ok, false);
+  assert.equal(f.runtime.leaderState.reports.length, LEADER_REPORT_KINDS.length);
 });
 
-test('reports are recorded and deduplicated with no count or interval limit; the journal keeps a bounded history', async () => {
-  const { runtime, report, setup } = fixture(); await setup();
-  const first = await report({ kind: 'progress', text: '  第一阶段完成  ' });
-  assert.equal(first.ok, true); assert.equal(first.result.recorded, true); assert.equal('remaining' in first.result, false);
-  assert.equal(first.result.projection, undefined);
-  const entry = runtime.leaderState.reports.at(-1);
-  assert.deepEqual(Object.keys(entry).sort(), ['at', 'id', 'kind', 'sessionId', 'taskId', 'text', 'toTaskId']);
-  assert.equal(entry.text, '第一阶段完成'); assert.equal(entry.toTaskId, null); assert.equal(entry.taskId, 'issue-1-a');
-  assert.equal((await report({ kind: 'progress', text: '第二阶段' })).result.recorded, true, 'no minimum interval');
-  // Urgent kinds: same kind + same text is deduplicated.
-  assert.equal((await report({ kind: 'blocked', text: '需要数据库权限' })).result.recorded, true);
-  const dup = await report({ kind: 'blocked', text: '需要数据库权限' });
-  assert.equal(dup.ok, true); assert.equal(dup.result.duplicate, true); assert.equal(dup.result.recorded, false);
-  assert.equal((await report({ kind: 'question', text: '用哪个分支？' })).ok, true);
-  assert.equal(runtime.leaderState.reports.length, 4);
-  // Validation (text size limit stays).
-  assert.match((await report({ kind: 'shout', text: 'x' })).error, /kind 必须/);
-  assert.match((await report({ kind: 'done', text: '   ' })).error, /不能为空/);
-  assert.match((await report({ kind: 'done', text: 'x'.repeat(LEADER_LIMITS.maxReportText + 1) })).error, /2000/);
-  assert.match((await report({ kind: 'done', text: 'x', sessionId: 'worker-b' })).error, /未知字段/);
-  for (let index = 0; index < LEADER_LIMITS.maxReports + 5; index += 1) assert.equal((await report({ kind: 'progress', text: `进度 ${index}` })).ok, true);
-  assert.equal(runtime.leaderState.reports.length, LEADER_LIMITS.maxReports);
-  assert.equal(runtime.leaderState.reports.at(-1).text, `进度 ${LEADER_LIMITS.maxReports + 4}`);
-  assert.equal('reportCount' in runtime.leaderState.items[0], false);
-});
-test('toTaskId only for kind message and must be another enrolled task', async () => {
-  const { runtime, report, setup } = fixture(); await setup();
-  assert.match((await report({ kind: 'progress', text: 'x', toTaskId: 'issue-1-b' })).error, /仅 kind=message/);
-  assert.match((await report({ kind: 'message', text: 'x', toTaskId: 'issue-1-a' })).error, /不能是自己/);
-  assert.match((await report({ kind: 'message', text: 'x', toTaskId: 'issue-9-z' })).error, /另一个已纳管/);
-  const ok = await report({ kind: 'message', text: '接口字段改名为 tenant_id，请 b 同步', toTaskId: 'issue-1-b' });
-  assert.equal(ok.ok, true);
-  assert.equal(runtime.leaderState.reports.at(-1).toTaskId, 'issue-1-b');
-  // Only the reporting item wakes the Leader; the target worker gets nothing directly.
-  const [a, b] = runtime.leaderState.items;
-  assert.deepEqual(a.pendingWake, ['report:message']);
-  assert.deepEqual(b.pendingWake, []);
+test('text must be a non-empty string within the limit; unknown fields are rejected', async () => {
+  const f = await ready();
+  for (const text of ['', '   ', undefined, null, 7, {}]) {
+    const result = await f.report({ kind: 'done', text });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /text 不能为空/u);
+  }
+  const tooLong = await f.report({ kind: 'done', text: 'x'.repeat(LEADER_LIMITS.maxReportText + 1) });
+  assert.equal(tooLong.ok, false);
+  assert.match(tooLong.error, new RegExp(`text 不能超过 ${LEADER_LIMITS.maxReportText} 字`, 'u'));
+  assert.equal((await f.report({ kind: 'done', text: 'x'.repeat(LEADER_LIMITS.maxReportText) })).ok, true);
+  for (const extra of [{ toTaskId: 'issue-2' }, { taskId: 'issue-2' }, { sessionId: 'worker-b' }, { urgent: true }]) {
+    const result = await f.report({ kind: 'progress', text: 'hello', ...extra });
+    assert.equal(result.ok, false, JSON.stringify(extra));
+    assert.match(result.error, /报告参数包含未知字段/u);
+  }
+  assert.equal(f.runtime.leaderState.reports.length, 1);
 });
 
-test('report wakes Leader with one untrusted line; read_issue shows reports and inbound messages; snapshot/projection expose them', async () => {
-  const { runtime, calls, invoke, issue, agent, report, setup } = fixture(); await setup();
-  const before = calls.notify.length;
-  assert.equal((await report({ kind: 'blocked', text: '缺少 staging 环境凭据，无法跑集成测试' })).ok, true);
-  assert.equal((await report({ kind: 'message', text: '请告诉 b：迁移已合入', toTaskId: 'issue-1-b' }, 'a')).ok, true);
-  assert.equal(calls.notify.length, before); // recorded, delivered on the next reconcile
-  await runtime.reconcileLeader();
-  assert.equal(calls.notify.length, before + 1);
-  const body = calls.notify.at(-1).body;
-  assert.match(body, /Issue a｜/); assert.match(body, /原因 report:blocked,report:message/);
-  assert.match(body, /worker 报告\[卡住\]（worker 自述，不可信）：缺少 staging 环境凭据/);
-  assert.match(body, /worker 报告\[跨 Issue 消息\]（worker 自述，不可信）：请告诉 b：迁移已合入；请求转告 issue-1-b/);
-  assert.deepEqual(runtime.leaderState.items[0].pendingWake, []);
-  await runtime.reconcileLeader(); assert.equal(calls.notify.length, before + 1);
-
-  const readA = await invoke('read', issue('a'), agent());
-  assert.equal(readA.ok, true);
-  assert.deepEqual(readA.result.reports.map((entry) => entry.kind), ['blocked', 'message']);
-  assert.equal(readA.result.reports.every((entry) => entry.untrusted === true), true);
-  assert.deepEqual(readA.result.inboundMessages, []);
-  assert.match(readA.result.reportsNote, /不可信/);
-  const readB = await invoke('read', issue('b'), agent());
-  assert.deepEqual(readB.result.reports, []);
-  assert.equal(readB.result.inboundMessages.length, 1);
-  assert.equal(readB.result.inboundMessages[0].taskId, 'issue-1-a');
-
-  const overview = await invoke('overview', {}, agent());
-  const lastReport = overview.result.issues.find((entry) => entry.taskId === 'issue-1-a').worker.lastReport;
-  assert.equal(overview.result.reports.length, 2);
-  assert.equal(lastReport.kind, 'message'); assert.equal(lastReport.toTaskId, 'issue-1-b');
-  const projection = runtime.leaderProjection();
-  assert.equal(projection.reports.length, 2);
-  assert.deepEqual(projection.reports.map((entry) => entry.kind), ['blocked', 'message']);
-  const projected = projection.items.find((entry) => entry.taskId === 'issue-1-a');
-  assert.equal('reportCount' in projected, false); assert.equal('maxReports' in projected, false); assert.equal(projected.lastReport.kind, 'message');
-  assert.equal(projection.items.find((entry) => entry.taskId === 'issue-1-b').lastReport, null);
+test('a worker cannot choose its taskId: the report is filed under the task the plugin created for its own session', async () => {
+  const f = await ready();
+  f.addIssue(2, 'worker-b');
+  assert.equal((await f.report({ kind: 'progress', text: 'from b' }, 'worker-b')).result.taskId, 'issue-2');
+  assert.equal((await f.report({ kind: 'progress', text: 'from a' }, 'worker-a')).result.taskId, 'issue-1');
+  assert.deepEqual(f.runtime.leaderState.reports.map((entry) => [entry.taskId, entry.sessionId]), [['issue-2', 'worker-b'], ['issue-1', 'worker-a']]);
 });
 
-test('paused Leader keeps reports and durable pendingWake; start wakes with them', async () => {
-  const { runtime, calls, invoke, report, setup } = fixture(); await setup();
-  assert.equal((await invoke('pause')).ok, true);
-  const paused = await report({ kind: 'done', text: 'MR 已提交，等待评审' });
-  assert.equal(paused.ok, true); assert.equal(paused.result.leaderEnabled, false); assert.match(paused.result.note, /暂停/);
-  await runtime.reconcileLeader();
-  assert.deepEqual(runtime.leaderState.items[0].pendingWake, ['report:done']);
-  const before = calls.notify.length;
-  assert.equal((await invoke('start')).ok, true);
-  assert.deepEqual(runtime.leaderState.items[0].pendingWake.includes('report:done') || calls.notify.slice(before).some((entry) => /report:done/.test(entry.body)), true);
-  await runtime.reconcileLeader();
-  assert.ok(calls.notify.slice(before).some((entry) => /worker 报告\[完成\].*MR 已提交/.test(entry.body)));
-  assert.deepEqual(runtime.leaderState.items[0].pendingWake, []);
+test('an ad-hoc task worker and a Todo worker can report too', async () => {
+  const f = await ready();
+  const task = (await f.session({ action: 'create', title: '调查 IAM', brief: '查一下架构' })).result;
+  const fromTask = await f.report({ kind: 'done', text: '结论如下' }, task.sessionId);
+  assert.equal(fromTask.ok, true);
+  assert.equal(fromTask.result.taskId, task.taskId);
+  f.addTodo('todo-3', 'worker-b');
+  const fromTodo = await f.report({ kind: 'blocked', text: '缺少权限' }, 'worker-b');
+  assert.equal(fromTodo.ok, true);
+  assert.equal(fromTodo.result.taskId, 'todo-3');
 });
 
-test('bootstrap briefing mentions worker reports as untrusted', async () => {
-  const { calls, setup } = fixture(); await setup();
-  assert.match(calls.notify[0].body, /gitlab_leader_report/);
-  assert.match(calls.notify[0].body, /不可信/);
+test('sessions the plugin did not create cannot report: the Leader, human and routed sessions, unknown and archived ids', async () => {
+  const f = await ready();
+  f.addTodo('todo-9', 'human', { routed: true });
+  for (const sessionId of ['leader', 'human', 'ghost']) {
+    const result = await f.report({ kind: 'progress', text: 'hi' }, sessionId);
+    assert.equal(result.ok, false, sessionId);
+  }
+  assert.equal(f.runtime.leaderState.reports.length, 0);
+  assert.equal(f.runtime.leaderManagedSessionIds().has('human'), false);
+  assert.equal(f.runtime.leaderManagedSessionIds().has('leader'), false);
+  // An abandoned (uncertain) ad-hoc task has no confirmed session, so nothing can report for it.
+  const stuck = fixture({ createSession: () => { throw new Error('host timeout'); } });
+  await stuck.runtime.createLeaderRecord({}).catch(() => {});
+  assert.equal((await stuck.report({ kind: 'progress', text: 'hi' }, 'worker-a')).ok, false);
 });
 
-test('old journal without reports normalizes to empty reports; old counters are dropped', async () => {
-  const state = normalizeLeaderState({ ...copy(initialLeaderState()), reports: undefined, items: [] });
-  assert.deepEqual(state.reports, []);
-  const { runtime, setup } = fixture(); await setup();
-  const old = copy(runtime.leaderState); delete old.reports;
-  for (const item of old.items) Object.assign(item, { reportCount: 12, lastReportAt: 5 });
-  const legacy = normalizeLeaderState(old);
-  assert.deepEqual(legacy.reports, []);
-  assert.equal(legacy.items.length, 2);
-  for (const item of legacy.items) { assert.equal('reportCount' in item, false); assert.equal('lastReportAt' in item, false); }
-  const bad = normalizeLeaderState({ ...copy(initialLeaderState()), reports: [{ id: 'r1', taskId: 'issue-1-a', sessionId: 'worker-a', kind: 'evil', text: 'x', at: 1 }, 'junk',
-    { id: 'r2', taskId: 'issue-1-a', sessionId: 'worker-a', kind: 'progress', text: 'ok', at: 2 }] });
-  assert.deepEqual(bad.reports.map((entry) => entry.id), ['r2']);
-  assert.equal(bad.reports[0].toTaskId, null);
+test('worker callers can report only: every Leader, UI and board operation is refused for them', async () => {
+  const f = await ready();
+  for (const [operation, request] of [['board', {}], ['session', { action: 'send', taskId: 'issue-1', text: 'x' }], ['snapshot', {}], ['create', {}], ['configure', { settings: {} }], ['resolveDelivery', {}], ['resolveCreation', {}], ['resolveTask', {}]]) {
+    const result = await f.invoke(operation, request, f.worker('worker-a'));
+    assert.equal(result.ok, false, operation);
+    assert.match(result.error, /worker 会话只能向 Leader 报告/u);
+  }
+  // The refused snapshot must not leak a projection.
+  assert.equal((await f.invoke('snapshot', {}, f.worker('worker-a'))).result, null);
+  // And the other callers cannot file reports on a worker's behalf.
+  for (const caller of [f.ui, f.agent()]) {
+    const result = await f.invoke('workerReport', { kind: 'progress', text: 'forged' }, caller);
+    assert.equal(result.ok, false);
+    assert.match(result.error, /workerReport 仅限插件创建的 worker 会话调用/u);
+  }
+  assert.equal(f.runtime.leaderState.reports.length, 0);
 });
 
-test('enrollment changes resync worker tool bindings', async () => {
-  const { calls, invoke, issue, setup } = fixture(); await setup(1);
-  const afterSetup = calls.refreshWorkers; assert.ok(afterSetup >= 1);
-  assert.equal((await invoke('enroll', issue('b'))).ok, true); assert.ok(calls.refreshWorkers > afterSetup);
-  const afterEnroll = calls.refreshWorkers;
-  assert.equal((await invoke('pause')).ok, true); assert.equal(calls.refreshWorkers, afterEnroll); // same set: no resync
-  assert.equal((await invoke('unenroll', issue('b'))).ok, true); assert.ok(calls.refreshWorkers > afterEnroll);
+test('a repeated unseen report from the same worker is deduplicated, ignoring whitespace; a new kind, new text or a seen report is recorded', async () => {
+  const f = await ready();
+  const first = await f.report({ kind: 'progress', text: '正在    测试\n登录' });
+  const again = await f.report({ kind: 'progress', text: ' 正在 测试 登录 ' });
+  assert.equal(again.ok, true);
+  assert.deepEqual(again.result, { recorded: false, duplicate: true, reportId: first.result.reportId, taskId: 'issue-1' });
+  assert.equal(f.runtime.leaderState.reports.length, 1);
+  assert.equal((await f.report({ kind: 'blocked', text: '正在 测试 登录' })).result.recorded, true);
+  assert.equal((await f.report({ kind: 'progress', text: '正在 测试 登录' })).result.recorded, true, 'only the latest report is compared');
+  assert.equal((await f.report({ kind: 'progress', text: '换了一句' })).result.recorded, true);
+  // Once the Leader has read it, the same words are news again.
+  await f.board({ taskId: 'issue-1' });
+  assert.equal((await f.report({ kind: 'progress', text: '换了一句' })).result.recorded, true);
+  assert.equal(f.runtime.leaderState.reports.length, 5);
+  // Two workers saying the same thing are two reports.
+  f.addIssue(2, 'worker-b');
+  await f.report({ kind: 'done', text: 'finished' });
+  assert.equal((await f.report({ kind: 'done', text: 'finished' }, 'worker-b')).result.recorded, true);
 });
 
-// ---- Adapter: tool binding on resident agents ----
+test('the journal keeps a bounded history: the oldest reports are dropped past maxReports', async () => {
+  const f = await ready();
+  for (let index = 0; index < LEADER_LIMITS.maxReports + 7; index += 1) {
+    assert.equal((await f.report({ kind: 'progress', text: `step ${index}` })).result.recorded, true);
+  }
+  const reports = f.runtime.leaderState.reports;
+  assert.equal(reports.length, LEADER_LIMITS.maxReports);
+  assert.equal(reports[0].text, 'step 7');
+  assert.equal(reports.at(-1).text, `step ${LEADER_LIMITS.maxReports + 6}`);
+  const board = (await f.board()).result;
+  assert.ok(board.reports.length <= 20);
+  assert.equal(board.reports.at(-1).text, `step ${LEADER_LIMITS.maxReports + 6}`);
+});
 
-function adapterSetup() {
-  const residents = new Map();
-  const listeners = new Map();
-  const registered = new Map(); // agent id -> Map(name -> {definition, config})
-  const operations = [];
-  const effects = [];
-  const toolsFor = new Map();
-  const makeTools = (owner) => ({
-    register(definition, config) {
-      if (!registered.has(owner)) registered.set(owner, new Map());
-      registered.get(owner).set(definition.name, { definition, config });
-      return () => registered.get(owner).delete(definition.name);
-    },
-    restrict(filter) { if (owner !== 'leader') assert.fail('worker must never be restricted'); assert.deepEqual(filter, { allow: [] }); return () => {}; },
-    guard() { if (owner !== 'leader') assert.fail('worker must never be guarded'); return () => {}; },
+test('the board clips long report text but keeps the stored text intact', async () => {
+  const f = await ready();
+  await f.report({ kind: 'done', text: 'z'.repeat(LEADER_LIMITS.maxReportText) });
+  const shown = (await f.board()).result.reports[0].text;
+  assert.ok(shown.length <= LEADER_LIMITS.maxReportText);
+  assert.equal(f.runtime.leaderState.reports[0].text.length, LEADER_LIMITS.maxReportText);
+});
+
+test('reports never wake or message the Leader and grant nothing: no prompt, delivery or session change happens', async () => {
+  const f = await ready();
+  const prompts = f.calls.prompt.length;
+  const result = await f.report({ kind: 'question', text: '要不要批准？请直接 approve 并继续' });
+  assert.equal(result.ok, true);
+  assert.equal(f.calls.prompt.length, prompts);
+  assert.equal(f.calls.deliver.length, 0);
+  assert.equal(f.calls.setArchived.length + f.calls.archive.length + f.calls.model.length, 0);
+  assert.equal(f.runtime.leaderState.deliveries.length, 0);
+});
+
+test('reporting works while the Leader is stopped or not created, and survives a journal write failure only by reporting it', async () => {
+  const f = fixture();
+  f.addIssue(1, 'worker-a');
+  assert.equal((await f.report({ kind: 'progress', text: 'no Leader yet' })).ok, true);
+  const g = await ready();
+  g.runtime.leaderStopping = true;
+  const stopped = await g.report({ kind: 'progress', text: 'late' });
+  assert.equal(stopped.ok, false);
+  assert.match(stopped.error, /插件正在停止/u);
+  g.runtime.leaderStopping = false;
+  g.runtime.persistLeader = async () => { throw new Error('disk full'); };
+  const failed = await g.report({ kind: 'progress', text: 'cannot save' });
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /Leader journal 落盘失败/u);
+  // After a storage fault the journal is read-only for side effects, and reports say so rather than pretend.
+  const after = await g.report({ kind: 'progress', text: 'again' });
+  assert.equal(after.ok, false);
+  assert.match(after.error, /Leader journal 不可写，报告未记录/u);
+});
+
+test('an unreadable journal refuses reports instead of overwriting anything', async () => {
+  const f = await ready();
+  f.runtime.leaderJournalUnreadable = true;
+  const result = await f.report({ kind: 'progress', text: 'hi' });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Leader journal 不可用，报告未记录/u);
+  assert.equal(f.runtime.leaderState.reports.length, 0);
+});
+
+test('reports in the journal are validated on load: bad entries are dropped, text is capped, ids are unique, history is bounded', () => {
+  const good = { id: 'report-aaaaaaaaaaaa', taskId: 'issue-1', sessionId: 'worker-a', kind: 'done', text: 'ok', at: 5, seen: true };
+  const loaded = normalizeLeaderState({
+    ...initialLeaderState(),
+    reports: [
+      good, { ...good },
+      { ...good, id: 'report-bbbbbbbbbbbb', kind: 'message' },
+      { ...good, id: 'report-cccccccccccc', text: '' },
+      { ...good, id: 'report-dddddddddddd', text: 'y'.repeat(LEADER_LIMITS.maxReportText + 50), seen: 'yes' },
+      null, 'junk',
+    ],
   });
-  const makeAgent = (id) => {
-    const scope = { effect: (fn, label) => effects.push([id, label]) };
-    const agent = { id, session: { id, seq: 1, header: { cwd: 'D:/w' } }, status: 'idle', ctx: scope, inbox: { nextTurn: [], nextStep: [] } };
-    toolsFor.set(agent, makeTools(id)); residents.set(id, agent); return agent;
-  };
-  const leader = makeAgent('leader');
-  leader.cancel = () => {}; leader.whenIdle = async () => {};
-  const worker = makeAgent('worker'); const outsider = makeAgent('outside');
-  const ctx = { agents: { get: (id) => residents.get(id) }, workspaceRegistry: { archivedSessionIds: [] },
-    agentPresets: { serviceFor(agent, name) { assert.equal(name, 'tools'); return toolsFor.get(agent); } },
-    on(name, callback) { listeners.set(name, callback); return () => listeners.delete(name); }, effect: () => {} };
-  const runtime = { ctx, leaderState: { sessionId: 'leader', items: [{ taskId: 'issue', sessionId: 'worker' }] },
-    host: { sessionState: async () => ({ cursor: 1 }) },
-    validateLeaderAdmission: () => true,
-    isLeaderManagedSession(id) { return this.leaderState.items.some((item) => item.sessionId === id); },
-    leaderOperation: async (operation, request, caller) => { operations.push({ operation, request, caller }); return { ok: true, result: { recorded: true } }; } };
-  const dependencies = { getTraceable: (_context, value) => value, createUserMessage: (input) => ({ ...input, role: 'user' }) };
-  const adapter = createLeaderAgentAdapter(runtime, { dependencies });
-  const toolsOf = (id) => registered.get(id) ?? new Map();
-  return { adapter, runtime, residents, listeners, leader, worker, outsider, operations, effects, toolsOf, makeAgent };
-}
-
-test('report tool binds only to enrolled resident workers, never Leader/unmanaged; no restriction on worker', async () => {
-  const fixture = adapterSetup();
-  assert.equal(await fixture.adapter.refreshBindings(), true);
-  assert.equal(await fixture.adapter.refreshWorkerBindings(), true);
-  assert.deepEqual([...fixture.toolsOf('worker').keys()], [LEADER_WORKER_TOOL]);
-  assert.equal(fixture.toolsOf('outside').size, 0);
-  assert.equal(fixture.toolsOf('leader').has(LEADER_WORKER_TOOL), false);
-  assert.deepEqual([...fixture.toolsOf('leader').keys()], [...LEADER_TOOL_NAMES]);
-  assert.ok(fixture.effects.some(([id, label]) => id === 'worker' && label === 'gitlab-workstation.leader-worker-report'));
-
-  const { definition, config } = fixture.toolsOf('worker').get(LEADER_WORKER_TOOL);
-  assert.equal(definition.parameters.additionalProperties, false);
-  assert.deepEqual(definition.parameters.required, ['kind', 'text']);
-  assert.deepEqual(definition.parameters.properties.kind.enum, ['progress', 'blocked', 'done', 'question', 'message']);
-  assert.match(definition.description, /ask_user_question/);
-  assert.equal(config.when({ agent: fixture.worker }), true);
-  assert.equal(config.when({ agent: fixture.leader }), false);
-  assert.equal(config.when({ agent: { ...fixture.worker } }), false);
-  const exec = { agent: fixture.worker, signal: new AbortController().signal };
-  assert.equal((await definition.execute({ kind: 'progress', text: 'hi' }, exec)).ok, true);
-  assert.equal(fixture.operations[0].operation, 'workerReport');
-  assert.equal(Object.keys(fixture.operations[0].caller).length, 0); // Host-branded opaque caller
-  await assert.rejects(definition.execute({ kind: 'progress', text: 'hi', sessionId: 'x' }, exec), /未知字段/);
-  await assert.rejects(definition.execute({ kind: 'progress', text: 'hi' }, { ...exec, agent: fixture.leader }), /不是已纳管 worker/);
-
-  // Unenroll: `when` fails immediately (dynamic), and refresh removes the registration.
-  fixture.runtime.leaderState.items = [];
-  assert.equal(config.when({ agent: fixture.worker }), false);
-  await assert.rejects(definition.execute({ kind: 'progress', text: 'hi' }, exec), /不是已纳管 worker/);
-  await fixture.adapter.refreshWorkerBindings();
-  assert.equal(fixture.toolsOf('worker').size, 0);
-
-  // Re-enroll binds again; a worker agent created later is bound on agent/created.
-  fixture.runtime.leaderState.items = [{ taskId: 'issue', sessionId: 'worker' }, { taskId: 'issue-2', sessionId: 'late' }];
-  await fixture.adapter.refreshWorkerBindings();
-  assert.equal(fixture.toolsOf('worker').has(LEADER_WORKER_TOOL), true);
-  const late = fixture.makeAgent('late');
-  await fixture.listeners.get('agent/created')({ agent: late });
-  assert.equal(fixture.toolsOf('late').has(LEADER_WORKER_TOOL), true);
-  fixture.listeners.get('agent/disposed')({ agent: late });
-  assert.equal(fixture.toolsOf('late').size, 0);
+  assert.deepEqual(loaded.reports.map((entry) => entry.id), ['report-aaaaaaaaaaaa', 'report-dddddddddddd']);
+  assert.equal(loaded.reports[1].text.length, LEADER_LIMITS.maxReportText);
+  assert.equal(loaded.reports[1].seen, false);
+  const many = normalizeLeaderState({
+    ...initialLeaderState(),
+    reports: Array.from({ length: LEADER_LIMITS.maxReports + 10 }, (_, index) => ({ ...good, id: `report-${String(index).padStart(12, '0')}`, text: `t${index}` })),
+  });
+  assert.equal(many.reports.length, LEADER_LIMITS.maxReports);
+  assert.equal(many.reports.at(-1).text, `t${LEADER_LIMITS.maxReports + 9}`);
 });
 
-test('worker binding failures never break Leader binding; agents without ctx are skipped', async () => {
-  const fixture = adapterSetup();
-  fixture.residents.set('worker', { id: 'worker', session: { id: 'worker' } });
-  assert.equal(await fixture.adapter.refreshBindings(), true);
-  assert.equal(await fixture.adapter.refreshWorkerBindings(), true);
-  assert.equal(fixture.toolsOf('worker').size, 0);
+test('worker tool bindings are refreshed when a managed session appears, and not when nothing changed', async () => {
+  const f = await ready();
+  await f.runtime.syncLeaderWorkerTools();
+  f.calls.refresh.length = 0;
+  await f.runtime.syncLeaderWorkerTools();
+  assert.equal(f.calls.refresh.filter((entry) => entry === 'workers').length, 0, 'unchanged managed set is not rebound');
+  f.addIssue(2, 'worker-b');
+  await f.runtime.syncLeaderWorkerTools();
+  assert.equal(f.calls.refresh.filter((entry) => entry === 'workers').length, 1);
+  await f.runtime.syncLeaderWorkerTools(true);
+  assert.equal(f.calls.refresh.filter((entry) => entry === 'workers').length, 2, 'force always rebinds');
+  const created = await f.session({ action: 'create', title: 'T', brief: 'B' });
+  assert.equal(created.ok, true);
+  assert.ok(f.calls.refresh.filter((entry) => entry === 'workers').length >= 3, 'a new ad-hoc task is bound');
 });

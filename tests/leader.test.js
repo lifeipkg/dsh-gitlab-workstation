@@ -1,1252 +1,1335 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { initialState, initialLeaderState, normalizeLeaderState, buildLeaderProjection, validateLeaderSettings, normalizeState } from '../core.js';
-import { leaderMethods, createLeaderUiCaller, createLeaderAgentCaller } from '../host/leader.js';
+import { initialLeaderState, LEADER_LIMITS } from '../core.js';
+import { leaderMethods, createLeaderUiCaller, createLeaderAgentCaller, createLeaderWorkerCaller } from '../host/leader.js';
+import { copy, fixture, handledRecord, issueItem, missing, remote, sessionState } from './leader-fixture.js';
 
-const sessionState = (patch = {}) => ({ cursor: 10, active: true, running: false, queue: [], pendingInput: [], ...patch });
-const missing = (sessionId) => Object.assign(new Error('not found'), { isDSHRemoteError: true, code: 'session/not-found', details: { sessionId } });
-const copy = (value) => JSON.parse(JSON.stringify(value));
-function fixture() {
-  const calls = { create: [], rename: [], model: [], observe: [], deliver: [], notify: [], persist: [], prepare: [] };
-  const sessions = new Map([['leader', sessionState()], ['worker-a', sessionState()], ['worker-b', sessionState()], ['outside', sessionState()]]);
-  const logs = new Map([['worker-a', [{ seq: 3, type: 'assistant/message', data: { text: 'HISTORICAL SECRET' } }]], ['worker-b', []]]);
-  const ui = createLeaderUiCaller();
-  const runtime = Object.assign({}, leaderMethods, {
-    state: initialState(), leaderState: initialLeaderState(), config: {}, stopping: false,
-    ctx: { workspaceRegistry: { archivedSessionIds: [] } },
-    storageDirectory() { throw new Error('fixture uses in-memory persistence'); },
-    ensureLeaderTimer() {}, targetBusy() { return false; }, resolveWorkspaceId(cwd) { return cwd || 'issue-workspace'; },
-    host: {
-      async sessionState(id) { if (!sessions.has(id)) throw missing(id); return copy(sessions.get(id)); },
-      async createSession(request) { calls.create.push(copy(request)); return 'leader'; },
-      async renameSession(...args) { calls.rename.push(copy(args)); },
-      async selectModel(request) { calls.model.push(copy(request)); },
-      async prompt() { throw new Error('Leader must never impersonate human with prompt'); },
-    },
-    async persistLeader() { calls.persist.push(copy(this.leaderState)); },
-  });
-  runtime.leaderAdapter = {
-    capabilities: { atomicIdleDelivery: true, nonHumanSource: true },
-    async prepare(sessionId) { calls.prepare.push(sessionId); return { ok: true, status: 'prepared', sessionId }; },
-    async refreshBindings() { return true; },
-    async observe(sessionId, cursor) {
-      calls.observe.push([sessionId, cursor]);
-      const highWater = sessions.get(sessionId)?.cursor ?? 0;
-      return { cursor: highWater, highWater, events: (logs.get(sessionId) ?? []).filter((event) => event.seq > (cursor ?? -1)), truncated: false, epoch: 'live-log' };
-    },
-    async deliver(request) {
-      assert.equal(Object.isFrozen(request), true); assert.equal(runtime.validateLeaderAdmission(request), true);
-      assert.ok(calls.persist.some((state) => state.outbox.some((entry) => entry.requestId === request.requestId && entry.status === 'sending')));
-      calls.deliver.push(copy(request)); return { ok: true, status: 'delivered', requestId: request.requestId };
-    },
-    async notify(request) {
-      assert.equal(Object.isFrozen(request), true); assert.equal(runtime.validateLeaderAdmission(request), true);
-      calls.notify.push(copy(request)); return { ok: true, status: 'delivered', requestId: request.requestId };
-    },
-  };
-  for (const suffix of ['a', 'b']) {
-    const item = { id: `issue-1-${suffix}`, title: `Issue ${suffix}`, source: 'issue', url: `https://gitlab.test/project/-/issues/${suffix}`, project: 'project', iid: suffix, projectId: '1' };
-    runtime.state.issues.push(item);
-    runtime.state.handled[item.id] = { id: item.id, sessionId: `worker-${suffix}`, item, automatic: false,
-      acceptedAt: Date.now(), outcome: 'session-accepted', title: item.title, url: item.url, executionStatus: 'completed' };
-  }
-  const invoke = (operation, request = {}, caller = ui) => runtime.leaderOperation(operation, request, caller);
-  const issue = (suffix = 'a') => ({ taskId: `issue-1-${suffix}`, sessionId: `worker-${suffix}` });
-  const agent = () => createLeaderAgentCaller({ sessionId: 'leader', agentId: 'verified-agent' });
-  const setup = async (count = 1) => {
-    assert.equal((await invoke('create')).ok, true);
-    assert.equal((await invoke('enroll', issue('a'))).ok, true);
-    if (count === 2) assert.equal((await invoke('enroll', issue('b'))).ok, true);
-    assert.equal((await invoke('start')).ok, true);
-  };
-  const advance = async (extra = {}, suffix = 'a') =>
-    invoke('session', { action: 'send', ...issue(suffix), text: '继续核查原 Issue 的 CI 结果，不扩大任务。', ...extra }, agent());
-  // Request IDs default to Host-generated ones; tests locate the latest advance entry instead of naming one.
-  const lastAdvance = () => runtime.leaderState.outbox.filter((entry) => entry.kind === 'advance').at(-1);
-  const session = (action, request = {}, caller = agent()) => invoke('session', { action, ...request }, caller);
-  return { runtime, calls, sessions, logs, ui, invoke, issue, agent, setup, advance, lastAdvance, session };
+// ---------------------------------------------------------------------------------------------------------------
+// Leader session lifecycle: create / configure / resolve / missing / journal migration
+// ---------------------------------------------------------------------------------------------------------------
+
+test('creating the Leader persists the creation tombstone before the Host side effect, then renames and briefs it once', async () => {
+  const f = fixture();
+  const result = await f.invoke('create', {});
+  assert.equal(result.ok, true);
+  assert.equal(result.result.sessionId, 'leader');
+  assert.equal(result.result.phase, 'ready');
+  assert.equal(result.result.runState, 'ready');
+  // The journal on disk already said "creating / uncertain" at the moment the Host was called.
+  const atCreate = f.calls.create[0].journal;
+  assert.equal(atCreate.creation.status, 'creating');
+  assert.equal(atCreate.phase, 'uncertain');
+  assert.equal(atCreate.sessionId, null);
+  assert.equal(f.calls.persist[0].creation.status, 'creating');
+  assert.deepEqual(f.calls.create[0].request, { workspaceId: 'issue-workspace' });
+  assert.deepEqual(f.calls.rename, [{ sessionId: 'leader', title: 'WorkStation Leader' }]);
+  assert.equal(f.calls.prompt.length, 1);
+  assert.equal(f.calls.prompt[0].sessionId, 'leader');
+  assert.equal(f.calls.prompt[0].mode, 'queue');
+  // Creating again reuses the session: no second Host session and no second briefing.
+  const again = await f.invoke('create', {});
+  assert.equal(again.ok, true);
+  assert.equal(f.calls.create.length, 1);
+  assert.equal(f.calls.prompt.length, 1);
+});
+
+test('the Leader session is created in the Issue workspace and carries the configured model and preset', async () => {
+  const f = fixture();
+  f.runtime.state.settings.issueSessionCwd = 'cwd-x';
+  f.runtime.config.leaderAgentPreset = 'dsh-standard';
+  const model = { provider: 'prov', model: 'm1', reasoningEffort: 'high' };
+  const result = await f.invoke('create', { settings: { model } });
+  assert.equal(result.ok, true);
+  assert.deepEqual(f.calls.create[0].request, { workspaceId: 'cwd-x', agentPreset: 'dsh-standard' });
+  assert.deepEqual(f.calls.model, [{ sessionId: 'leader', ...model }]);
+  assert.equal(f.runtime.leaderState.creation.agentPreset, 'dsh-standard');
+  assert.deepEqual(f.runtime.leaderState.configuredModel, model);
+});
+
+test('an invalid leaderAgentPreset config stops creation before any tombstone or Host call', async () => {
+  const f = fixture();
+  f.runtime.config.leaderAgentPreset = ' padded ';
+  const result = await f.invoke('create', {});
+  assert.equal(result.ok, false);
+  assert.match(result.error, /leaderAgentPreset 配置无效/u);
+  assert.equal(f.calls.create.length, 0);
+  assert.equal(f.runtime.leaderState.creation, null);
+});
+
+test('a registry that cannot resolve the Leader preset blocks creation instead of silently falling back', async () => {
+  const f = fixture();
+  f.runtime.config.leaderAgentPreset = 'dsh-standard';
+  f.runtime.leaderServicesContext = { agentPresets: { resolve: async () => { throw new Error('no such preset'); } } };
+  const result = await f.invoke('create', {});
+  assert.equal(result.ok, false);
+  assert.match(result.error, /Leader preset 不可用/u);
+  assert.equal(f.calls.create.length, 0);
+});
+
+test('a failed journal write before the Host call prevents the Leader session from being created', async () => {
+  const f = fixture({ persistFails: (n) => n === 1 });
+  const result = await f.invoke('create', {});
+  assert.equal(result.ok, false);
+  assert.equal(f.calls.create.length, 0);
+  assert.equal(f.runtime.leaderStorageFault, true);
+});
+
+test('an uncertain Host create result is recorded and never recreated automatically', async () => {
+  const f = fixture({ createSession: () => { throw new Error('timeout talking to host'); } });
+  const first = await f.invoke('create', {});
+  assert.equal(first.ok, false);
+  assert.match(first.error, /Leader 创建\/记录结果不确定，禁止自动重建/u);
+  assert.equal(f.runtime.leaderState.creation.status, 'uncertain');
+  assert.equal(f.runtime.leaderState.phase, 'uncertain');
+  assert.equal(first.result.runState, 'creation-uncertain');
+  const second = await f.invoke('create', {});
+  assert.equal(second.ok, false);
+  assert.match(second.error, /禁止重复创建/u);
+  assert.equal(f.calls.create.length, 1);
+});
+
+test('an uncertain creation is resolved only by a human: abandon allows a new create, claim adopts a verified session', async () => {
+  const f = fixture({ createSession: () => { throw new Error('lost'); } });
+  await f.invoke('create', {});
+  // The Leader Agent cannot touch creation records.
+  assert.equal((await f.invoke('resolveCreation', { resolution: 'abandon' }, f.agent())).ok, false);
+  const abandoned = await f.invoke('resolveCreation', { resolution: 'abandon' });
+  assert.equal(abandoned.ok, true);
+  assert.equal(f.runtime.leaderState.creation, null);
+  assert.equal(f.runtime.leaderState.abandonedCreations.length, 1);
+  assert.equal(f.runtime.leaderState.phase, 'not-created');
+
+  const claim = fixture({ createSession: () => { throw new Error('lost'); } });
+  await claim.invoke('create', {});
+  const bad = await claim.invoke('resolveCreation', { resolution: 'claim' });
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /resolution 必须是 abandon，或 claim 并提供人类核实的 Leader 会话 ID/u);
+  const adopted = await claim.invoke('resolveCreation', { resolution: 'claim', sessionId: 'leader' });
+  assert.equal(adopted.ok, true);
+  assert.equal(claim.runtime.leaderState.sessionId, 'leader');
+  assert.equal(claim.runtime.leaderState.phase, 'ready');
+  assert.equal(claim.calls.create.length, 1);
+});
+
+test('claiming a plugin worker session as the Leader is refused', async () => {
+  const f = fixture({ createSession: () => { throw new Error('lost'); } });
+  f.addIssue(1, 'worker-a');
+  await f.invoke('create', {});
+  const result = await f.invoke('resolveCreation', { resolution: 'claim', sessionId: 'worker-a' });
+  assert.equal(result.ok, false);
+  assert.equal(f.runtime.leaderState.sessionId, null);
+});
+
+test('resolveCreation without an uncertain record reports that there is nothing to resolve', async () => {
+  const f = fixture();
+  const result = await f.invoke('resolveCreation', { resolution: 'abandon' });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /当前没有结果不确定的 Leader 创建记录/u);
+});
+
+test('a setup failure after creation keeps the known session ID and a retry reuses it', async () => {
+  let fail = true;
+  const f = fixture({ rename: () => { if (fail) throw new Error('rename refused'); } });
+  const first = await f.invoke('create', {});
+  assert.equal(first.ok, false);
+  assert.match(first.error, /Leader 已创建；设置失败，重试复用已知 ID/u);
+  assert.equal(f.runtime.leaderState.sessionId, 'leader');
+  assert.equal(first.result.runState, 'error');
+  fail = false;
+  const retry = await f.invoke('create', {});
+  assert.equal(retry.ok, true);
+  assert.equal(f.calls.create.length, 1);
+  assert.equal(f.runtime.leaderState.phase, 'ready');
+});
+
+test('a busy or archived Leader session is not reconfigured by a retried create', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.sessions.set('leader', sessionState({ running: true }));
+  const busy = await f.invoke('create', { settings: { model: { provider: 'prov', model: 'm1' } } });
+  assert.equal(busy.ok, false);
+  assert.equal(f.calls.model.length, 0);
+});
+
+test('configure changes the model of a quiet Leader and resets it with null; busy or unknown keys are refused', async () => {
+  const f = fixture();
+  await f.createLeader();
+  const model = { provider: 'prov', model: 'm2' };
+  const set = await f.invoke('configure', { settings: { model } });
+  assert.equal(set.ok, true);
+  assert.deepEqual(f.calls.model.at(-1), { sessionId: 'leader', ...model });
+  assert.deepEqual(f.runtime.leaderState.configuredModel, model);
+  // Unchanged model: no Host call.
+  const same = await f.invoke('configure', { settings: { model } });
+  assert.equal(same.ok, true);
+  assert.equal(f.calls.model.length, 1);
+  const reset = await f.invoke('configure', { settings: { model: null } });
+  assert.equal(reset.ok, true);
+  assert.deepEqual(f.calls.resetModel, ['leader']);
+  assert.equal(f.runtime.leaderState.configuredModel, null);
+
+  f.sessions.set('leader', sessionState({ running: true }));
+  const busy = await f.invoke('configure', { settings: { model } });
+  assert.equal(busy.ok, false);
+  assert.match(busy.error, /Leader 状态不可验证\/忙碌，未更换模型/u);
+  assert.deepEqual(f.runtime.leaderState.settings.model, null);
+
+  const unknown = await f.invoke('configure', { settings: { budget: 3 } });
+  assert.equal(unknown.ok, false);
+  assert.match(unknown.error, /未知 Leader 设置/u);
+  const invalid = await f.invoke('configure', { settings: { model: { provider: '', model: 'x' } } });
+  assert.equal(invalid.ok, false);
+});
+
+test('configure before the Leader exists only stores the model for the first create', async () => {
+  const f = fixture();
+  const model = { provider: 'prov', model: 'm1' };
+  assert.equal((await f.invoke('configure', { settings: { model } })).ok, true);
+  assert.equal(f.calls.model.length, 0);
+  await f.invoke('create', {});
+  assert.deepEqual(f.calls.model, [{ sessionId: 'leader', ...model }]);
+});
+
+test('a deleted Leader session resets the stored ID on the next UI snapshot and is never recreated automatically', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.sessions.delete('leader');
+  const board = await f.board();
+  assert.equal(board.ok, true, 'agent tools do not probe or reset the stored Leader');
+  assert.equal(f.runtime.leaderState.sessionId, 'leader');
+  const snapshot = await f.invoke('snapshot', {});
+  assert.equal(snapshot.ok, true);
+  assert.equal(snapshot.result.sessionId, null);
+  assert.equal(snapshot.result.phase, 'not-created');
+  assert.equal(f.runtime.leaderState.creation, null);
+  assert.equal(f.calls.create.length, 1);
+});
+
+test('an archived or unverifiable Leader session is not treated as missing', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.archivedSessionIds.push('leader');
+  const archived = await f.invoke('snapshot', {});
+  assert.equal(archived.result.sessionId, 'leader');
+  f.runtime.leaderMissingCheckAt = 0;
+  f.archivedSessionIds.length = 0;
+  f.runtime.host.sessionState = async () => { throw remote('host exploded', 'session/internal'); };
+  const unknown = await f.invoke('snapshot', {});
+  assert.equal(unknown.result.sessionId, 'leader');
+  // A not-found for a different session ID is not proof that the Leader is gone.
+  f.runtime.leaderMissingCheckAt = 0;
+  f.runtime.host.sessionState = async () => { throw missing('someone-else'); };
+  assert.equal((await f.invoke('snapshot', {})).result.sessionId, 'leader');
+});
+
+// ---- journal migration and persistence (real files) ----
+
+async function withStorage(run) {
+  const dir = await mkdtemp(join(tmpdir(), 'gta-leader-'));
+  const f = fixture();
+  f.runtime.storageDirectory = () => dir;
+  delete f.runtime.persistLeader;
+  f.runtime.persistLeader = leaderMethods.persistLeader;
+  try { await run(f, dir); } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
-test('default Leader is off with no existing enrollment and independent settings', () => {
-  const { runtime } = fixture();
-  assert.deepEqual(runtime.leaderProjection(), { enabled: false, sessionId: null, phase: 'not-created', runState: 'not-created',
-    settings: { ...initialLeaderState().settings }, creation: null, run: { wakeups: 0, lastStartedAt: null },
-    items: [], previousSessions: [], comments: [], queue: [], completed: [], deliveries: [], audit: [], tasks: [], reports: [], events: [], error: '' });
-  assert.equal(runtime.leaderProjection().settings.maxRunningWorkers, 3);
-  assert.equal(runtime.leaderProjection().settings.archiveOnComplete, true);
-  assert.equal(runtime.state.settings.enabled, false);
-  assert.equal(Object.keys(runtime.state.handled).length, 2);
-  assert.equal(runtime.leaderState.items.length, 0);
+const v1Journal = () => ({
+  version: 1, enabled: true, phase: 'running', sessionId: 'leader-old',
+  settings: { model: { provider: 'prov', model: 'm1' }, autoEnrollNew: true }, configuredModel: { provider: 'prov', model: 'm1' },
+  creation: { requestId: 'leader-create-old', status: 'ready', createdAt: 1 },
+  items: [{ taskId: 'issue-1', sessionId: 'worker-a', status: 'running', actions: 3 }],
+  outbox: [{ requestId: 'r1', status: 'uncertain', sessionId: 'worker-a' }],
+  queue: [{ queueId: 'q1', taskId: 'issue-2' }], audit: [{ action: 'x' }], notes: { 'issue-1': 'note' },
+  tasks: [{ taskId: 'leader-task-0123456789ab', sessionId: 'task-s', title: 'IAM', brief: 'look', workspace: '', status: 'created', createdAt: 5, error: '' }],
+  reports: [{ id: 'report-aaaaaaaa', taskId: 'issue-1', sessionId: 'worker-a', kind: 'progress', text: 'half done', at: 7, seen: false }],
 });
 
-test('settings validate model independently and reject permission/budget expansion', () => {
-  assert.deepEqual(validateLeaderSettings({ model: { provider: ' p ', model: ' m ', reasoningEffort: ' high ' }, autoEnrollNew: true }),
-    { ...initialLeaderState().settings, model: { provider: 'p', model: 'm', reasoningEffort: 'high' }, autoEnrollNew: true });
-  assert.equal(validateLeaderSettings({ maxRunningWorkers: 10, archiveOnComplete: false }).maxRunningWorkers, 10);
-  assert.equal(validateLeaderSettings({ archiveOnComplete: false }).archiveOnComplete, false);
-  for (const settings of [{ maxRunningWorkers: 0 }, { maxRunningWorkers: 11 }, { maxRunningWorkers: 2.5 }, { maxRunningWorkers: '3' }, { archiveOnComplete: 'yes' }]) assert.throws(() => validateLeaderSettings(settings));
-  for (const settings of [{ model: {} }, { model: 'm' }, { autoEnrollNew: 1 }, { maxActions: 100 }, { enabled: true }, { model: { provider: 'p', model: 'm', reasoningEffort: '' } }]) assert.throws(() => validateLeaderSettings(settings));
-});
-
-test('unbranded identity, self-reported session/human and wrong live Agent fail before any host call', async () => {
-  const { runtime, calls, invoke, issue } = fixture();
-  for (const caller of [undefined, null, {}, { kind: 'ui' }, { kind: 'human', sessionId: 'leader' }, { kind: 'agent', sessionId: 'leader', agentId: 'claimed' }]) {
-    assert.equal((await runtime.leaderOperation('create', {}, caller)).ok, false);
-  }
-  assert.equal((await invoke('snapshot', {}, createLeaderAgentCaller({ sessionId: 'outside', agentId: 'real' }))).ok, false);
-  assert.equal((await invoke('enroll', issue(), createLeaderAgentCaller({ sessionId: 'outside', agentId: 'real' }))).ok, false);
-  assert.equal(calls.create.length, 0); assert.equal(calls.persist.length, 0);
-});
-
-test('Leader Agent scoped methods cannot grant, configure, start or resume any Issue', async () => {
-  const { invoke, issue, agent, setup, calls } = fixture(); await setup();
-  for (const operation of ['create', 'configure', 'enroll', 'unenroll', 'start', 'pause', 'pauseIssue', 'resumeIssue', 'grant', 'answer', 'humanReply']) {
-    assert.equal((await invoke(operation, { ...issue(), settings: { autoEnrollNew: true }, human: true }, agent())).ok, false, operation);
-  }
-  assert.equal(calls.deliver.length, 0);
-});
-
-test('create is blank, uses independent model, persists known ID before rename/model and never prompt', async () => {
-  const { runtime, invoke, calls } = fixture();
-  runtime.state.settings.issueSessionModel = { provider: 'worker', model: 'worker-model' };
-  const model = { provider: 'leader', model: 'leader-model', reasoningEffort: 'high' };
-  assert.equal((await invoke('create', { settings: { model } })).ok, true);
-  assert.deepEqual(calls.create, [{ workspaceId: 'issue-workspace' }]);
-  assert.deepEqual(calls.model, [{ sessionId: 'leader', ...model }]);
-  assert.equal(calls.persist[0].creation.status, 'creating');
-  assert.equal(calls.persist[1].sessionId, 'leader');
-  assert.equal(calls.notify.length, 0); assert.equal(calls.deliver.length, 0);
-  assert.equal(runtime.leaderState.enabled, false);
-});
-
-test('cold blank Leader can be created without waking a model', async () => {
-  const { invoke, sessions, calls } = fixture(); sessions.set('leader', sessionState({ active: false, queue: null }));
-  assert.equal((await invoke('create')).ok, true); assert.equal(calls.notify.length, 0); assert.equal(calls.prepare.length, 0);
-});
-
-test('create partial model failure retains known ID and reuses after restart', async () => {
-  const { runtime, calls, invoke } = fixture(); const select = runtime.host.selectModel;
-  runtime.host.selectModel = async () => { throw new Error('model unavailable'); };
-  const failed = await invoke('create', { settings: { model: { provider: 'p', model: 'm' } } });
-  assert.equal(failed.ok, false); assert.equal(failed.result.sessionId, 'leader');
-  runtime.leaderState = normalizeLeaderState(calls.persist.at(-1)); runtime.host.selectModel = select;
-  assert.equal((await invoke('create')).ok, true); assert.equal(calls.create.length, 1);
-});
-
-test('creation throws or persisted creating prevents duplicate creation across restart', async () => {
-  const { runtime, calls, invoke } = fixture();
-  runtime.host.createSession = async (request) => { calls.create.push(request); throw new Error('timeout'); };
-  assert.equal((await invoke('create')).ok, false);
-  runtime.leaderState = normalizeLeaderState(calls.persist.at(-1));
-  assert.equal((await invoke('create', { requestId: 'new' })).ok, false); assert.equal(calls.create.length, 1);
-  assert.equal(runtime.leaderProjection().phase, 'uncertain');
-});
-
-test('failed reservation write prevents create and failed enrollment is rolled back', async () => {
-  const { runtime, calls, invoke, issue } = fixture(); const persist = runtime.persistLeader;
-  runtime.persistLeader = async () => { throw new Error('disk unavailable'); };
-  assert.equal((await invoke('create')).ok, false); assert.equal(calls.create.length, 0);
-  runtime.persistLeader = persist; assert.equal((await invoke('create')).ok, true);
-  runtime.persistLeader = async () => { throw new Error('disk unavailable'); };
-  assert.equal((await invoke('enroll', issue())).ok, false); assert.equal(runtime.leaderState.items.length, 0);
-  runtime.persistLeader = persist; assert.equal((await invoke('start')).ok, false); // storage/settings error cannot silently grant.
-});
-
-test('post-create persistent write failure retains ID in memory and creating tombstone on disk', async () => {
-  const { runtime, invoke, calls } = fixture(); const persist = runtime.persistLeader; let count = 0;
-  runtime.persistLeader = async function () { if (++count >= 2) throw new Error('disk stopped'); return persist.call(this); };
-  assert.equal((await invoke('create')).ok, false); assert.equal(runtime.leaderState.sessionId, 'leader'); assert.equal(calls.create.length, 1);
-  runtime.leaderState = normalizeLeaderState(calls.persist.at(-1)); runtime.persistLeader = persist;
-  assert.equal((await invoke('create')).ok, false); assert.equal(calls.create.length, 1);
-});
-
-test('explicit mapping rejects mismatched, malformed, Todo, routed, historic and Leader IDs', async () => {
-  const { runtime, invoke, issue, calls } = fixture(); await invoke('create');
-  for (const request of [{ taskId: 'wrong', sessionId: 'worker-a' }, { ...issue(), sessionId: 'outside' }, { ...issue(), sessionId: 'leader' },
-    { ...issue(), taskId: ' issue-1-a' }, { ...issue(), sessionId: 2 }, { ...issue(), sessionId: 'a\0b' }]) assert.equal((await invoke('enroll', request)).ok, false);
-  runtime.state.handled['issue-1-a'].history = [{ sessionId: 'outside' }];
-  assert.equal((await invoke('enroll', { taskId: 'issue-1-a', sessionId: 'outside' })).ok, false);
-  runtime.state.handled['issue-1-a'].routed = true; assert.equal((await invoke('enroll', issue())).ok, false);
-  runtime.state.handled['issue-1-a'].routed = false; runtime.state.handled['issue-1-a'].item.source = '';
-  runtime.state.issues = []; assert.equal((await invoke('enroll', issue())).ok, false);
-  assert.equal(calls.deliver.length, 0);
-});
-
-test('autoEnrollNew setting alone never retroactively enrolls any existing session', async () => {
-  const { runtime, invoke } = fixture(); assert.equal((await invoke('configure', { settings: { autoEnrollNew: true } })).ok, true);
-  assert.equal(runtime.leaderState.items.length, 0); assert.equal(runtime.state.handled['issue-1-a'].automatic, false);
-});
-
-test('unavailable unsafe adapter never falls back to human prompt', async () => {
-  const { runtime, invoke, calls } = fixture(); await invoke('create');
-  runtime.leaderAdapter.capabilities.atomicIdleDelivery = false;
-  const result = await invoke('start'); assert.equal(result.ok, false); assert.match(result.error, /unavailable/);
-  assert.equal(calls.deliver.length, 0); assert.equal(calls.notify.length, 0);
-});
-
-test('start baseline gives one concise bootstrap without historical replay; idle/stable does not loop', async () => {
-  const { runtime, calls, setup } = fixture(); await setup();
-  assert.equal(calls.notify.length, 1); assert.match(calls.notify[0].body, /启动简报/); assert.doesNotMatch(calls.notify[0].body, /HISTORICAL SECRET/);
-  for (let i = 0; i < 3; i += 1) await runtime.reconcileLeader();
-  assert.equal(calls.notify.length, 1); assert.equal(calls.deliver.length, 0); assert.equal(runtime.leaderState.events.length, 0);
-  assert.equal(runtime.state.handled['issue-1-a'].automatic, false);
-});
-
-test('new bounded events notify once, neither idle nor turn/end claims Issue closed', async () => {
-  const { runtime, calls, logs, sessions, setup } = fixture(); await setup();
-  sessions.set('worker-a', sessionState({ cursor: 11 })); logs.get('worker-a').push({ seq: 11, type: 'turn/end', data: { reason: 'completed' } });
-  await runtime.reconcileLeader(); assert.equal(calls.notify.length, 2);
-  await runtime.reconcileLeader(); assert.equal(calls.notify.length, 2);
-  assert.equal(runtime.leaderState.items[0].status, 'watching'); assert.equal(calls.deliver.length, 0);
-});
-
-test('read and send refuse non-enrolled or stale mapped IDs', async () => {
-  const { runtime, invoke, agent, issue, setup, calls } = fixture(); await setup();
-  for (const request of [issue('b'), { ...issue(), sessionId: 'outside' }]) {
-    assert.equal((await invoke('read', request, agent())).ok, false);
-    for (const action of ['send', 'steer', 'rename', 'model', 'archive']) {
-      assert.equal((await invoke('session', { action, ...request, title: '#a x', model: { provider: 'p', model: 'm' }, text: 't' }, agent())).ok, false, action);
-    }
-    assert.equal((await invoke('note', { ...request, stage: 's' }, agent())).ok, false);
-  }
-  runtime.state.handled['issue-1-a'].sessionId = 'outside';
-  assert.equal((await invoke('read', issue(), agent())).ok, false);
-  assert.equal((await invoke('unenroll', issue())).ok, true);
-  assert.equal(calls.deliver.length, 0);
-});
-
-test('send delivers a non-human Leader message through a strictly persisted frozen outbox and dedupes requestId', async () => {
-  const { runtime, advance, calls, setup, lastAdvance } = fixture(); await setup();
-  const result = await advance({ requestId: 'send-1' }); assert.equal(result.ok, true); assert.equal(calls.deliver.length, 1);
-  assert.match(calls.deliver[0].body, /来自 WorkStation Leader/); assert.match(calls.deliver[0].body, /不是人类输入/); assert.match(calls.deliver[0].body, /仅限原 Issue/);
-  const outbox = lastAdvance(); assert.equal(outbox.status, 'sent'); assert.equal(outbox.requestId, 'send-1');
-  assert.equal(runtime.validateLeaderAdmission(calls.deliver[0]), false); // receipt consumed admission.
-  assert.equal((await advance({ requestId: 'send-1' })).ok, true); assert.equal(calls.deliver.length, 1);
-  assert.equal((await advance({ requestId: 'send-1', text: '另一条内容' })).ok, false);
-  assert.match((await advance()).result.requestId, /^leader-send-/); assert.equal(calls.deliver.length, 2);
-  assert.ok(runtime.leaderState.audit.some((entry) => entry.action === 'session-send'));
-});
-
-test('send needs no evidence token and validates text size', async () => {
-  const { invoke, issue, agent, setup, calls } = fixture(); await setup();
-  for (const text of [undefined, '', '   ', 'x'.repeat(8001)]) assert.equal((await invoke('session', { action: 'send', ...issue(), text }, agent())).ok, false);
-  assert.equal((await invoke('session', { action: 'send', taskId: 'issue-1-a', text: '只给 taskId 也可以' }, agent())).ok, true);
-  assert.equal(calls.deliver.length, 1);
-});
-test('busy, queue, pending native approval/question and cold sessions never advance', async () => {
-  for (const patch of [{ running: true }, { queue: [{}] }, { pendingInput: ['approval'] }, { pendingInput: ['question'] }, { active: false, queue: null }]) {
-    const { sessions, advance, setup, calls } = fixture(); await setup(); sessions.set('worker-a', sessionState(patch));
-    assert.equal((await advance()).ok, false); assert.equal(calls.deliver.length, 0);
-  }
-});
-
-test('unknown, missing, archived state fail closed; no restoration/delete side effect', async () => {
-  for (const type of ['unknown', 'missing', 'archived']) {
-    const { runtime, invoke, issue, setup, calls } = fixture(); await setup();
-    if (type === 'unknown') runtime.host.sessionState = async () => { throw new Error('network'); };
-    else if (type === 'missing') runtime.host.sessionState = async (id) => { if (id === 'worker-a') throw missing(id); return sessionState(); };
-    else runtime.ctx.workspaceRegistry.archivedSessionIds = ['worker-a'];
-    await runtime.reconcileLeader(); assert.equal(calls.deliver.length, 0);
-  }
-});
-
-test('fake not-found code or wrong session details remain unknown rather than missing', async () => {
-  const { runtime } = fixture();
-  for (const error of [new Error('session/not-found'), missing('other'), { code: 'session/not-found', details: { sessionId: 'worker-a' } }]) {
-    runtime.host.sessionState = async () => { throw error; }; assert.equal((await runtime.inspectLeaderSession('worker-a')).status, 'unknown');
-  }
-});
-
-test('outbox write failure prevents delivery and stops the Leader', async () => {
-  const { runtime, advance, setup, calls } = fixture(); await setup();
-  const persist = runtime.persistLeader;
-  runtime.persistLeader = async function () { if (this.leaderState.outbox.some((entry) => entry.kind === 'advance')) throw new Error('outbox disk failure'); return persist.call(this); };
-  assert.equal((await advance()).ok, false); assert.equal(calls.deliver.length, 0); assert.equal(runtime.leaderState.enabled, false);
-});
-
-test('mapping changes during preparing persist cancels outbox before any delivery', async () => {
-  const { runtime, advance, setup, calls } = fixture(); await setup(); const persist = runtime.persistLeader;
-  runtime.persistLeader = async function () {
-    await persist.call(this);
-    if (this.leaderState.outbox.some((entry) => entry.kind === 'advance' && entry.status === 'prepared')) this.state.handled['issue-1-a'].sessionId = 'outside';
-  };
-  assert.equal((await advance()).ok, false); assert.equal(calls.deliver.length, 0);
-});
-
-test('native idle admission race rejection never queues or retries', async () => {
-  const { runtime, advance, setup, calls, sessions } = fixture(); await setup();
-  runtime.leaderAdapter.deliver = async (request) => {
-    calls.deliver.push(request); sessions.set('worker-a', sessionState({ cursor: 11, running: true }));
-    return { ok: false, status: 'rejected', error: 'busy after atomic native guard' };
-  };
-  assert.equal((await advance()).ok, false); assert.equal(runtime.leaderState.outbox.at(-1).status, 'rejected');
-  assert.equal((await advance()).ok, false); assert.equal(calls.deliver.length, 1);
-});
-
-test('uncertain delivery freezes only its Issue and is never resent, even with a new requestId or re-enrollment', async () => {
-  const { runtime, advance, setup, calls, invoke, issue } = fixture(); await setup(2);
-  const deliver = runtime.leaderAdapter.deliver;
-  runtime.leaderAdapter.deliver = async (request) => { calls.deliver.push(request); throw new Error('receipt lost'); };
-  assert.equal((await advance()).ok, false); assert.equal(runtime.leaderState.outbox.at(-1).status, 'uncertain');
-  assert.equal(runtime.leaderState.items[0].status, 'unknown');
-  runtime.leaderAdapter.deliver = deliver;
-  assert.equal((await invoke('unenroll', issue())).ok, true); assert.equal((await invoke('enroll', issue())).ok, true);
-  assert.equal((await advance({ text: '换一种措辞的续办建议，试图生成新 requestId。' })).ok, false);
-  assert.equal((await advance({}, 'b')).ok, true); assert.equal(runtime.leaderState.enabled, true);
-  assert.equal(calls.deliver.length, 2);
-});
-
-test('restart preserves sending uncertainty without replay and permits other Issues after explicit start', async () => {
-  const { runtime, advance, setup, invoke, calls } = fixture(); await setup(2);
-  runtime.leaderAdapter.deliver = async (request) => { calls.deliver.push(request); throw new Error('lost'); };
-  assert.equal((await advance()).ok, false); runtime.leaderState = normalizeLeaderState(calls.persist.at(-1));
-  assert.equal(runtime.leaderState.outbox.at(-1).status, 'uncertain');
-  assert.equal((await invoke('start')).ok, true); assert.equal(calls.deliver.length, 1);
-});
-
-test('needsHuman marks only one Issue needs-human without pausing, alerts deduplicate, formal input cannot be answered by tools', async () => {
-  const { runtime, invoke, issue, agent, setup, advance, calls } = fixture(); await setup(2);
-  const blocker = { ...issue(), needsHuman: '是否采用方案 A？', stage: '业务方案需人类选择' };
-  assert.equal((await invoke('note', blocker, agent())).ok, true);
-  assert.equal((await invoke('note', blocker, agent())).ok, true);
-  assert.equal(runtime.leaderState.items[0].alerts.length, 1);
-  assert.equal(runtime.leaderState.items[0].status, 'needs-human'); assert.equal(runtime.leaderState.enabled, true);
-  assert.equal((await advance({}, 'b')).ok, true);
-  assert.equal((await invoke('answer', { ...issue(), human: true, alertId: runtime.leaderState.items[0].alerts[0].id }, agent())).ok, false);
-  await runtime.reconcileLeader(); const count = calls.notify.length; await runtime.reconcileLeader(); assert.equal(calls.notify.length, count);
-});
-
-test('Leader pause only stops automatic wakes; Leader tools still act', async () => {
-  const { runtime, invoke, setup, calls, issue, agent, advance } = fixture(); await setup(); await invoke('pause');
-  const count = calls.observe.length; await runtime.reconcileLeader(); assert.equal(calls.observe.length, count);
-  assert.equal((await invoke('read', issue(), agent())).ok, true);
-  assert.equal((await advance()).ok, true); assert.equal(calls.deliver.length, 1); assert.equal(calls.notify.length, 1);
-  assert.equal(runtime.state.handled['issue-1-a'].automatic, false);
-});
-
-test('busy wake counter is only a statistic and never stops the run', async () => {
-  const { runtime, setup, advance } = fixture(); await setup();
-  runtime.leaderState.wakeups = 1_000_000; runtime.leaderState.items[0].actions = 999;
-  await runtime.reconcileLeader(); assert.equal(runtime.leaderState.enabled, true);
-  assert.equal((await advance()).ok, true);
-});
-test('separate journal normalization does not change Todo/Issue normalization semantics', () => {
-  const state = initialState(); state.handled.task = { id: 'task', sessionId: 'worker', acceptedAt: 1, automatic: false,
-    outcome: 'session-accepted', item: { id: 'task', source: 'issue', title: 'Title' } };
-  const normalized = normalizeState(state); assert.equal(normalized.handled.task.automatic, false); assert.equal(normalized.version, 6);
-  const leader = normalizeLeaderState(initialLeaderState()); assert.equal(leader.enabled, false); assert.equal(leader.phase, 'not-created');
-  assert.deepEqual(buildLeaderProjection(leader).items, []);
-});
-
-test('concurrent create requests serialize and never create two Leader sessions', async () => {
-  const { invoke, calls } = fixture();
-  const results = await Promise.all([invoke('create', { requestId: 'first' }), invoke('create', { requestId: 'second' })]);
-  assert.equal(results.every((result) => result.ok), true); assert.equal(calls.create.length, 1);
-});
-
-test('explicit create retry cannot silently claim default model reset after native reset failed', async () => {
-  const { runtime, invoke, calls } = fixture();
-  assert.equal((await invoke('create', { settings: { model: { provider: 'p', model: 'm' } } })).ok, true);
-  assert.equal((await invoke('configure', { settings: { model: null } })).ok, false);
-  assert.equal((await invoke('create')).ok, false); assert.equal(runtime.leaderState.configuredModel.model, 'm');
-  runtime.leaderAdapter.resetModel = async () => {};
-  assert.equal((await invoke('create')).ok, true); assert.equal(runtime.leaderState.configuredModel, null); assert.equal(calls.create.length, 1);
-});
-
-test('UI start grant is invisible to native admission until strict write resolves', async () => {
-  const { runtime, invoke } = fixture(); await invoke('create');
-  const persist = runtime.persistLeader; let checked = false;
-  runtime.persistLeader = async function () {
-    if (this.leaderState.enabled && this.leaderDurableEpoch !== this.leaderState.epoch) {
-      checked = true; assert.equal(this.validateLeaderAdmission({ epoch: this.leaderState.epoch, leaderSessionId: 'leader' }), false);
-    }
-    await persist.call(this);
-  };
-  assert.equal((await invoke('start')).ok, true); assert.equal(checked, true);
-});
-
-test('new auto-enrollment requires actual persisted policy proof and current durable admission epoch', async () => {
-  const { runtime, invoke, issue } = fixture();
-  assert.equal((await runtime.autoEnrollLeaderCreated('issue-1-a', 'worker-a')).ok, false);
-  await invoke('configure', { settings: { autoEnrollNew: true } });
-  assert.equal((await runtime.autoEnrollLeaderCreated('issue-1-a', 'worker-a')).ok, false);
-  runtime.state.handled['issue-1-a'].leaderCreatedSession = 'worker-a';
-  assert.equal((await runtime.autoEnrollLeaderCreated('issue-1-a', 'worker-a')).ok, false);
-  runtime.state.handled['issue-1-a'].leaderCreatedPolicyEpoch = runtime.leaderState.creationPolicyEpoch;
-  assert.equal((await runtime.autoEnrollLeaderCreated('issue-1-a', 'worker-a')).ok, true);
-  // Leader is paused: the new Issue waits as standby and is watched on the next start.
-  const item = runtime.leaderState.items[0]; assert.equal('paused' in item, false); assert.equal(item.status, 'standby'); assert.equal(item.provenance.kind, 'created');
-  assert.equal(runtime.state.handled['issue-1-a'].automatic, false);
-  await invoke('unenroll', issue());
-  runtime.state.handled['issue-1-a'].leaderCreatedPolicyEpoch = runtime.leaderState.creationPolicyEpoch;
-  assert.equal((await runtime.autoEnrollLeaderCreated('issue-1-a', 'worker-a')).ok, true);
-  assert.equal(runtime.leaderState.items.length, 0); // consumed tuple is a durable tombstone, not a fresh grant.
-});
-
-test('later enabling auto policy cannot retrospectively enroll stale pending proof', async () => {
-  const { runtime, invoke } = fixture();
-  runtime.state.handled['issue-1-a'].leaderCreatedSession = 'worker-a'; runtime.state.handled['issue-1-a'].leaderCreatedPolicyEpoch = 0;
-  await invoke('configure', { settings: { autoEnrollNew: true } });
-  assert.equal((await runtime.autoEnrollLeaderCreated('issue-1-a', 'worker-a')).ok, false);
-  assert.equal(runtime.leaderState.items.length, 0);
-});
-
-test('parallel new Issue proofs share policy epoch despite each enrollment advancing admission epoch', async () => {
-  const { runtime, invoke } = fixture(); await invoke('configure', { settings: { autoEnrollNew: true } });
-  const policyEpoch = runtime.leaderState.creationPolicyEpoch; const admissionEpoch = runtime.leaderState.epoch;
-  for (const suffix of ['a', 'b']) Object.assign(runtime.state.handled[`issue-1-${suffix}`], {
-    leaderCreatedSession: `worker-${suffix}`, leaderCreatedPolicyEpoch: policyEpoch,
+test('a v1 journal migrates to v2: session, model, creation, tasks and reports survive; the old file is backed up once', async () => {
+  await withStorage(async (f, dir) => {
+    const original = JSON.stringify(v1Journal());
+    await writeFile(join(dir, 'leader.json'), original, 'utf8');
+    const projection = await f.runtime.loadLeader();
+    assert.equal(projection.sessionId, 'leader-old');
+    assert.equal(projection.phase, 'ready');
+    assert.equal(projection.runState, 'ready');
+    assert.deepEqual(projection.settings, { model: { provider: 'prov', model: 'm1' } });
+    assert.equal(projection.tasks.length, 1);
+    assert.equal(projection.tasks[0].taskId, 'leader-task-0123456789ab');
+    assert.equal(projection.reports.length, 1);
+    assert.equal(projection.reports[0].seen, true, 'migrated reports are not re-announced');
+    assert.equal(projection.unseenReports, 0);
+    assert.deepEqual(projection.deliveries, []);
+    const state = f.runtime.leaderState;
+    for (const dropped of ['enabled', 'items', 'outbox', 'queue', 'audit', 'notes', 'migratedFrom']) assert.equal(Object.hasOwn(state, dropped), false, dropped);
+    assert.equal(await readFile(join(dir, 'leader.json.v1.bak'), 'utf8'), original);
+    const written = JSON.parse(await readFile(join(dir, 'leader.json'), 'utf8'));
+    assert.equal(written.version, 2);
+    assert.equal(Object.hasOwn(written, 'items'), false);
+    // A second load must not overwrite the backup with the v2 file.
+    await f.runtime.loadLeader();
+    assert.equal(await readFile(join(dir, 'leader.json.v1.bak'), 'utf8'), original);
   });
-  const results = await Promise.all(['a', 'b'].map((suffix) => runtime.autoEnrollLeaderCreated(`issue-1-${suffix}`, `worker-${suffix}`)));
-  assert.ok(results.every((result) => result.ok)); assert.equal(runtime.leaderState.items.length, 2);
-  assert.equal(runtime.leaderState.epoch, admissionEpoch + 2); assert.equal(runtime.leaderState.creationPolicyEpoch, policyEpoch);
-  assert.equal(runtime.leaderDurableEpoch, runtime.leaderState.epoch);
-  await invoke('configure', { settings: { model: { provider: 'p', model: 'm' } } });
-  await invoke('create'); await invoke('start'); await invoke('pause');
-  assert.equal(runtime.leaderState.creationPolicyEpoch, policyEpoch); // model/mapping/run changes are not policy revocations.
 });
 
-test('policy toggle or restart revokes old pending policy proof without retrospective enrollment', async () => {
-  for (const revoke of ['toggle', 'restart']) {
-    const { runtime, invoke, calls } = fixture(); await invoke('configure', { settings: { autoEnrollNew: true } });
-    const oldPolicy = runtime.leaderState.creationPolicyEpoch;
-    const record = runtime.state.handled['issue-1-a']; delete runtime.state.handled['issue-1-a'];
-    runtime.state.pending['issue-1-a'] = { ...record, leaderCreatedSession: 'worker-a', leaderCreatedPolicyEpoch: oldPolicy };
-    if (revoke === 'toggle') {
-      await invoke('configure', { settings: { autoEnrollNew: false } }); await invoke('configure', { settings: { autoEnrollNew: true } });
-      assert.equal(runtime.leaderState.creationPolicyEpoch, oldPolicy + 2);
-    } else {
-      runtime.leaderState = normalizeLeaderState(calls.persist.at(-1)); await runtime.saveLeaderStrict();
-      assert.equal(runtime.leaderState.creationPolicyEpoch, oldPolicy + 1);
-    }
-    assert.equal((await runtime.autoEnrollLeaderCreated('issue-1-a', 'worker-a')).ok, false);
-    assert.equal(runtime.leaderState.items.length, 0);
+test('a v1 journal in the middle of creation migrates to an uncertain creation that is never recreated', async () => {
+  await withStorage(async (f, dir) => {
+    await writeFile(join(dir, 'leader.json'), JSON.stringify({ version: 1, sessionId: null, creation: { requestId: 'leader-create-x', status: 'creating', createdAt: 2 } }), 'utf8');
+    const projection = await f.runtime.loadLeader();
+    assert.equal(projection.phase, 'uncertain');
+    assert.equal(projection.runState, 'creation-uncertain');
+    const result = await f.invoke('create', {});
+    assert.equal(result.ok, false);
+    assert.equal(f.calls.create.length, 0);
+  });
+});
+
+test('a missing journal starts empty; the first operation writes a v2 file atomically with no stray temp files', async () => {
+  await withStorage(async (f, dir) => {
+    const projection = await f.runtime.loadLeader();
+    assert.equal(projection.phase, 'not-created');
+    await f.createLeader();
+    const written = JSON.parse(await readFile(join(dir, 'leader.json'), 'utf8'));
+    assert.equal(written.version, 2);
+    assert.equal(written.sessionId, 'leader');
+    assert.equal(written.creation.status, 'ready');
+    assert.deepEqual((await readdir(dir)).filter((name) => name.endsWith('.tmp')), []);
+  });
+});
+
+test('a v2 journal restart turns sending deliveries and creating tasks into uncertain records', async () => {
+  await withStorage(async (f, dir) => {
+    await writeFile(join(dir, 'leader.json'), JSON.stringify({ version: 2, sessionId: 'leader', phase: 'ready', settings: { model: null }, configuredModel: null,
+      creation: { requestId: 'leader-create-1', status: 'ready', createdAt: 1 },
+      tasks: [{ taskId: 'leader-task-aaaaaaaaaaaa', sessionId: null, title: 'T', brief: 'B', workspace: '', status: 'creating', createdAt: 1, error: '' }],
+      deliveries: [{ requestId: 'leader-send-1', kind: 'send', taskId: 'issue-1', sessionId: 'worker-a', status: 'sending', at: 3, bodyDigest: 'd'.repeat(64), error: '' }] }), 'utf8');
+    const projection = await f.runtime.loadLeader();
+    assert.equal(projection.tasks[0].status, 'uncertain');
+    assert.match(projection.tasks[0].error, /重启时临时任务创建结果不确定/u);
+    assert.equal(projection.deliveries.length, 1);
+    assert.equal(projection.deliveries[0].status, 'uncertain');
+    assert.match(projection.deliveries[0].error, /重启时投递结果不确定/u);
+  });
+});
+
+test('an unreadable or invalid journal freezes the Leader read-only and is never overwritten', async () => {
+  await withStorage(async (f, dir) => {
+    await writeFile(join(dir, 'leader.json'), '{ not json', 'utf8');
+    const projection = await f.runtime.loadLeader();
+    assert.equal(projection.phase, 'error');
+    assert.match(projection.error, /读取 Leader journal 失败，未覆盖原文件/u);
+    assert.equal(f.runtime.leaderJournalUnreadable, true);
+    const create = await f.invoke('create', {});
+    assert.equal(create.ok, false);
+    assert.match(create.error, /只读冻结/u);
+    assert.equal((await f.invoke('session', { action: 'send', taskId: 'x', text: 'y' }, f.agent())).ok, false);
+    assert.equal((await f.invoke('snapshot', {})).ok, true);
+    f.addIssue(1, 'worker-a');
+    const report = await f.report({ kind: 'progress', text: 'hi' });
+    assert.equal(report.ok, false);
+    assert.match(report.error, /Leader journal 不可用，报告未记录/u);
+    assert.equal(await readFile(join(dir, 'leader.json'), 'utf8'), '{ not json');
+    assert.equal(f.calls.create.length, 0);
+
+    await writeFile(join(dir, 'leader.json'), JSON.stringify({ version: 9 }), 'utf8');
+    assert.equal((await f.runtime.loadLeader()).phase, 'error');
+    await writeFile(join(dir, 'leader.json'), JSON.stringify({ version: 2, sessionId: 12 }), 'utf8');
+    assert.equal((await f.runtime.loadLeader()).phase, 'error');
+    assert.equal(await readFile(join(dir, 'leader.json'), 'utf8'), JSON.stringify({ version: 2, sessionId: 12 }));
+  });
+});
+
+test('a journal write failure stops further Host side effects and reports the fault', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.addIssue(1, 'worker-a');
+  f.runtime.persistLeader = async () => { throw new Error('disk full'); };
+  const result = await f.session({ action: 'create', title: 'T', brief: 'B' });
+  assert.equal(result.ok, false);
+  assert.equal(f.runtime.leaderStorageFault, true);
+  assert.equal(f.runtime.leaderState.phase, 'error');
+  assert.match(f.runtime.leaderState.error, /Leader journal 落盘失败，已停止所有副作用/u);
+  const before = f.calls.create.length;
+  const next = await f.session({ action: 'create', title: 'T2', brief: 'B2' });
+  assert.equal(next.ok, false);
+  assert.match(next.error, /Leader journal 不可写，未创建会话/u);
+  assert.equal(f.calls.create.length, before);
+  const send = await f.session({ action: 'send', taskId: 'issue-1', text: 'hello' });
+  assert.equal(send.ok, false);
+  assert.match(send.error, /Leader journal 不可写，未执行/u);
+  assert.equal(f.calls.deliver.length, 0);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Authorization
+// ---------------------------------------------------------------------------------------------------------------
+
+test('callers are opaque Host-minted brands: forged objects and missing ids are rejected', async () => {
+  const f = fixture();
+  await f.createLeader();
+  assert.throws(() => createLeaderAgentCaller({ sessionId: '', agentId: 'a' }));
+  assert.throws(() => createLeaderWorkerCaller({ sessionId: 'w', agentId: '' }));
+  for (const forged of [null, {}, { kind: 'ui' }, { kind: 'agent', sessionId: 'leader' }, Object.freeze({})]) {
+    const result = await f.invoke('snapshot', {}, forged);
+    assert.equal(result.ok, false, JSON.stringify(forged));
+    assert.match(result.error, /拒绝无可信身份的 Leader 调用/u);
+  }
+  // A caller minted by one call cannot be reused as another kind.
+  const ui = createLeaderUiCaller();
+  assert.equal((await f.invoke('board', {}, ui)).ok, false);
+});
+
+test('the UI caller can manage the Leader record but cannot use the Leader tools or report as a worker', async () => {
+  const f = fixture();
+  await f.createLeader();
+  for (const operation of ['board', 'session']) {
+    const result = await f.invoke(operation, { action: 'send' }, f.ui);
+    assert.equal(result.ok, false, operation);
+    assert.match(result.error, /仅限 Leader Agent 工具调用/u);
+  }
+  const report = await f.invoke('workerReport', { kind: 'progress', text: 'x' }, f.ui);
+  assert.equal(report.ok, false);
+  assert.match(report.error, /workerReport 仅限插件创建的 worker 会话调用/u);
+  for (const operation of ['snapshot', 'configure', 'resolveCreation', 'resolveTask', 'resolveDelivery']) {
+    const result = await f.invoke(operation, operation === 'configure' ? { settings: { model: null } } : {}, f.ui);
+    assert.notEqual(result.error ?? '', '该操作仅限 Leader Agent 工具调用。', operation);
   }
 });
 
-test('create settings policy changes use the same revocation counter and strict durable grant', async () => {
-  const { runtime, invoke } = fixture(); assert.equal((await invoke('create', { settings: { autoEnrollNew: true } })).ok, true);
-  const policy = runtime.leaderState.creationPolicyEpoch; assert.equal(policy, 1);
-  Object.assign(runtime.state.handled['issue-1-a'], { leaderCreatedSession: 'worker-a', leaderCreatedPolicyEpoch: policy });
-  await invoke('create', { settings: { autoEnrollNew: false } }); await invoke('create', { settings: { autoEnrollNew: true } });
-  assert.equal(runtime.leaderState.creationPolicyEpoch, policy + 2);
-  assert.equal(runtime.leaderDurableEpoch, runtime.leaderState.epoch);
-  assert.equal((await runtime.autoEnrollLeaderCreated('issue-1-a', 'worker-a')).ok, false);
+test('the Leader Agent cannot create or configure the Leader, resolve creation, tasks or UI-only records', async () => {
+  const f = fixture();
+  await f.createLeader();
+  for (const operation of ['create', 'configure', 'resolveCreation', 'resolveTask', 'resolveDelivery']) {
+    const result = await f.invoke(operation, { settings: { model: null } }, f.agent());
+    assert.equal(result.ok, false, operation);
+    assert.match(result.error, /Leader Agent 不能修改 Leader 设置、创建 Leader 或处理 Leader 创建记录/u);
+  }
+  // Snapshot is a UI operation; the Leader reads state through the board.
+  assert.equal((await f.invoke('snapshot', {}, f.agent())).ok, false);
 });
 
-test('legacy proof domain is ignored and malformed policy counters cannot admit an undefined proof', async () => {
-  const { runtime, invoke } = fixture(); await invoke('configure', { settings: { autoEnrollNew: true } });
-  Object.assign(runtime.state.handled['issue-1-a'], { leaderCreatedSession: 'worker-a', leaderCreatedEpoch: runtime.leaderState.creationPolicyEpoch });
-  const normalized = normalizeState(runtime.state); assert.equal('leaderCreatedPolicyEpoch' in normalized.handled['issue-1-a'], false);
-  assert.equal('leaderCreatedEpoch' in normalized.handled['issue-1-a'], false);
-  assert.equal((await runtime.autoEnrollLeaderCreated('issue-1-a', 'worker-a')).ok, false);
-  delete runtime.leaderState.creationPolicyEpoch;
-  assert.equal((await runtime.autoEnrollLeaderCreated('issue-1-a', 'worker-a')).ok, false);
-  for (const invalid of [null, -1, '1', 1.5, Number.MAX_SAFE_INTEGER]) assert.throws(() => normalizeLeaderState({ ...initialLeaderState(), creationPolicyEpoch: invalid }));
-  const legacy = initialLeaderState(); delete legacy.creationPolicyEpoch;
-  assert.equal(normalizeLeaderState(legacy).creationPolicyEpoch, 1);
+test('only the selected Leader session may call the Leader tools', async () => {
+  const f = fixture();
+  await f.createLeader();
+  const stranger = await f.invoke('board', {}, f.agent('worker-a'));
+  assert.equal(stranger.ok, false);
+  assert.match(stranger.error, /调用 Agent 不属于当前 Leader 会话/u);
+  assert.equal((await f.invoke('board', {}, f.agent('leader'))).ok, true);
 });
 
-test('known partial creation remains explicitly retryable after pause and successful model configuration', async () => {
-  const { runtime, invoke, calls } = fixture(); const rename = runtime.host.renameSession;
-  runtime.host.renameSession = async () => { throw new Error('rename unavailable'); };
-  assert.equal((await invoke('create')).ok, false); assert.equal(runtime.leaderState.creation.status, 'created');
-  await invoke('pause'); assert.equal((await invoke('configure', { settings: { model: { provider: 'p', model: 'm' } } })).ok, true);
-  assert.equal(runtime.leaderState.phase, 'paused'); assert.match(runtime.leaderState.error, /设置尚未完成.*重试设置/);
-  assert.equal(runtime.leaderState.creation.status, 'created'); assert.equal((await invoke('start')).ok, false);
-  runtime.host.renameSession = rename; assert.equal((await invoke('create')).ok, true);
-  assert.equal(runtime.leaderState.creation.status, 'ready'); assert.equal(runtime.leaderState.error, ''); assert.equal(calls.create.length, 1);
+test('worker callers may only report and only from plugin-created sessions', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.addIssue(1, 'worker-a');
+  for (const operation of ['board', 'session', 'snapshot', 'create', 'configure', 'resolveCreation', 'resolveTask', 'resolveDelivery']) {
+    const result = await f.invoke(operation, { action: 'send' }, f.worker('worker-a'));
+    assert.equal(result.ok, false, operation);
+    assert.match(result.error, /worker 会话只能向 Leader 报告/u);
+    assert.equal(Object.hasOwn(result, 'result') && result.result !== null && result.result !== undefined && 'sessionId' in (result.result ?? {}), false, 'no Leader projection leaks to workers');
+  }
+  const foreign = await f.invoke('workerReport', { kind: 'progress', text: 'hi' }, f.worker('human'));
+  assert.equal(foreign.ok, false);
+  assert.match(foreign.error, /调用会话不是当前插件创建的 worker/u);
+  const leaderAsWorker = await f.invoke('workerReport', { kind: 'progress', text: 'hi' }, f.worker('leader'));
+  assert.equal(leaderAsWorker.ok, false);
+  assert.equal((await f.report({ kind: 'progress', text: 'hi' })).ok, true);
 });
 
-test('creation proof normalization preserves only exact current IDs and never invents historical provenance', () => {
-  const { runtime } = fixture(); const state = runtime.state;
-  state.handled['issue-1-a'].leaderCreatedSession = 'worker-a'; state.handled['issue-1-a'].leaderCreatedPolicyEpoch = 2;
-  state.handled['issue-1-b'].leaderCreatedSession = 'outside'; state.handled['issue-1-b'].leaderCreatedPolicyEpoch = 2;
-  state.pending.pending = { sessionId: 'pending-worker', item: { id: 'pending', source: 'issue' }, automatic: false, leaderCreatedSession: 'pending-worker', leaderCreatedPolicyEpoch: 3 };
-  const normalized = normalizeState(state);
-  assert.equal(normalized.handled['issue-1-a'].leaderCreatedSession, 'worker-a'); assert.equal(normalized.handled['issue-1-a'].leaderCreatedPolicyEpoch, 2);
-  assert.equal('leaderCreatedSession' in normalized.handled['issue-1-b'], false);
-  assert.equal(normalized.pending.pending.leaderCreatedPolicyEpoch, 3);
-  delete state.handled['issue-1-a'].leaderCreatedSession;
-  assert.equal('leaderCreatedPolicyEpoch' in normalizeState(state).handled['issue-1-a'], false);
+test('a stopping plugin rejects every Leader operation', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.runtime.leaderStopping = true;
+  for (const [operation, caller] of [['snapshot', f.ui], ['board', f.agent()], ['workerReport', f.worker('worker-a')]]) {
+    const result = await f.invoke(operation, { kind: 'progress', text: 'x' }, caller);
+    assert.equal(result.ok, false, operation);
+  }
 });
 
-test('cold Leader start prepares and binds before evaluating dynamic native capabilities', async () => {
-  const { runtime, invoke, sessions, calls } = fixture(); let bound = false;
-  sessions.set('leader', sessionState({ active: false, queue: null }));
-  Object.defineProperty(runtime.leaderAdapter, 'capabilities', { get: () => ({ atomicIdleDelivery: bound, nonHumanSource: bound }) });
-  runtime.leaderAdapter.prepare = async (sessionId) => {
-    assert.equal(runtime.leaderState.enabled, false);
-    assert.equal(calls.persist.at(-1).sessionId, sessionId); calls.prepare.push(sessionId);
-    sessions.set(sessionId, sessionState()); bound = true; return { ok: true, status: 'prepared', sessionId };
+test('non-object arguments are rejected for every caller kind', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.addIssue(1, 'worker-a');
+  assert.equal((await f.invoke('board', null, f.agent())).ok, false);
+  assert.equal((await f.invoke('session', [], f.agent())).ok, false);
+  assert.match((await f.report('text')).error, /报告参数必须是对象/u);
+  assert.match((await f.invoke('session', 'x', f.agent())).error, /Leader 参数必须是对象/u);
+});
+
+test('unknown operations and unknown session actions fail without side effects', async () => {
+  const f = fixture();
+  await f.createLeader();
+  const unknown = await f.invoke('enroll', {}, f.ui);
+  assert.equal(unknown.ok, false);
+  const action = await f.session({ action: 'delete' });
+  assert.equal(action.ok, false);
+  assert.match(action.error, /action 必须是/u);
+  assert.equal(f.calls.deliver.length + f.calls.archive.length + f.calls.setArchived.length, 0);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// Board
+// ---------------------------------------------------------------------------------------------------------------
+
+test('the board lists Issues, Todos, ad-hoc tasks, reports and open deliveries without granting anything', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.addIssue(1, 'worker-a');
+  f.addIssue(2);
+  f.addTodo('todo-1');
+  f.addTodo('todo-2', 'worker-b');
+  await f.session({ action: 'create', title: 'IAM 架构', brief: '看一下 IAM' });
+  await f.report({ kind: 'done', text: '#1 完成' });
+  const board = (await f.board()).result;
+  const byId = Object.fromEntries(board.issues.map((entry) => [entry.taskId, entry]));
+  assert.equal(byId['issue-1'].sessionId, 'worker-a');
+  assert.equal(byId['issue-2'].sessionId, null);
+  assert.equal(byId['issue-1'].untrusted, true);
+  const todos = Object.fromEntries(board.todos.map((entry) => [entry.taskId, entry]));
+  assert.equal(todos['todo-1'].status, 'new');
+  assert.equal(todos['todo-2'].status, 'handled');
+  assert.equal(todos['todo-2'].sessionId, 'worker-b');
+  assert.equal(board.tasks.length, 1);
+  assert.equal(board.tasks[0].status, 'created');
+  assert.equal(board.reports.length, 1);
+  assert.equal(board.reports[0].untrusted, true);
+  assert.equal(board.managedSessions, 3);
+  assert.ok(board.glossary.executionStatus);
+  assert.deepEqual(board.openDeliveries, []);
+  assert.equal('detail' in board, false);
+});
+
+test('a routed Todo (someone else\'s session) is shown on the board without a manageable session', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.addTodo('todo-9', 'human', { routed: true });
+  const board = (await f.board()).result;
+  const todo = board.todos.find((entry) => entry.taskId === 'todo-9');
+  assert.equal(todo.routed, true);
+  assert.equal(todo.sessionId, null);
+  assert.equal(board.managedSessions, 0);
+  const detail = await f.board({ taskId: 'todo-9' });
+  assert.equal(detail.ok, false);
+  assert.match(detail.error, /当前没有可管理的会话/u);
+});
+
+test('refresh=true refreshes the Issue list and the inbox first and reports refresh problems', async () => {
+  const f = fixture();
+  await f.createLeader();
+  const order = [];
+  f.runtime.refreshIssues = async () => { order.push('issues'); };
+  f.runtime.poll = async (reason) => { order.push(`poll:${reason}`); };
+  assert.equal((await f.board({ refresh: true })).ok, true);
+  assert.deepEqual(order, ['issues', 'poll:leader']);
+  f.runtime.refreshIssues = async () => { throw new Error('glab killed'); };
+  const failed = await f.board({ refresh: true });
+  assert.equal(failed.ok, true);
+  assert.match(failed.result.refreshError, /Issue 列表刷新失败：glab killed/u);
+  order.length = 0;
+  await f.board({});
+  assert.deepEqual(order, []);
+});
+
+test('board detail for a managed session shows state, events, pending questions and marks its reports seen', async () => {
+  const f = fixture({ observe: () => ({ cursor: 11, truncated: true, events: [{ type: 'assistant', text: 'hello' }] }), questions: ['要不要继续？'] });
+  await f.createLeader();
+  f.addIssue(1, 'worker-a');
+  f.sessions.set('worker-a', sessionState({ pendingInput: ['question'] }));
+  await f.report({ kind: 'question', text: '该选哪个分支？' });
+  await f.report({ kind: 'progress', text: 'other', }, 'worker-a');
+  assert.equal(f.runtime.leaderProjection().unseenReports, 2);
+  const result = await f.board({ taskId: 'issue-1' });
+  assert.equal(result.ok, true);
+  const detail = result.result.detail;
+  assert.equal(detail.kind, 'issue');
+  assert.equal(detail.sessionId, 'worker-a');
+  assert.equal(detail.session.status, 'active');
+  assert.deepEqual(detail.session.pendingInput, ['question']);
+  assert.equal(detail.events[0].untrusted, true);
+  assert.equal(detail.events[0].sourceSessionId, 'worker-a');
+  assert.equal(detail.eventsTruncated, true);
+  assert.deepEqual(detail.pendingQuestions, ['要不要继续？']);
+  assert.match(detail.pendingNote, /只能由人类在会话内回答/u);
+  assert.equal(detail.reports.length, 2);
+  assert.equal(f.runtime.leaderProjection().unseenReports, 0);
+  assert.equal(f.calls.persist.at(-1).reports.every((entry) => entry.seen === true), true, 'seen is persisted');
+});
+
+test('board detail survives an unreadable event log and a failing question read', async () => {
+  const f = fixture({ observe: () => { throw new Error('page failed'); }, questions: undefined });
+  f.runtime.leaderAdapter.questions = async () => { throw new Error('fence broken'); };
+  await f.createLeader();
+  f.addIssue(1, 'worker-a');
+  f.sessions.set('worker-a', sessionState({ pendingInput: ['question'] }));
+  const detail = (await f.board({ taskId: 'issue-1' })).result.detail;
+  assert.match(detail.eventsError, /page failed/u);
+  assert.match(detail.pendingQuestions[0], /问题原文不可读取：fence broken/u);
+});
+
+test('board detail for an ad-hoc task carries its brief; for an unmanaged or invented taskId it fails', async () => {
+  const f = fixture();
+  await f.createLeader();
+  const created = (await f.session({ action: 'create', title: 'T', brief: 'do the thing' })).result;
+  const detail = (await f.board({ taskId: created.taskId })).result.detail;
+  assert.equal(detail.kind, 'task');
+  assert.equal(detail.brief, 'do the thing');
+  for (const taskId of ['issue-404', 'leader-task-ffffffffffff', 'human', '']) {
+    const result = await f.board({ taskId });
+    assert.equal(result.ok, false, taskId);
+  }
+  // An explicit sessionId that does not match the record is refused (no arbitrary session IDs).
+  const mismatch = await f.board({ taskId: created.taskId, sessionId: 'human' });
+  assert.equal(mismatch.ok, false);
+  assert.match(mismatch.error, /拒绝任意\/历史会话 ID/u);
+});
+
+test('board detail reports archived, missing and unknown sessions without throwing', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.addIssue(1, 'worker-a');
+  f.archivedSessionIds.push('worker-a');
+  assert.equal((await f.board({ taskId: 'issue-1' })).result.detail.session.status, 'archived');
+  f.archivedSessionIds.length = 0;
+  f.sessions.delete('worker-a');
+  assert.equal((await f.board({ taskId: 'issue-1' })).result.detail.session.status, 'missing');
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// session create
+// ---------------------------------------------------------------------------------------------------------------
+
+test('session create for an Issue uses the normal dispatch and makes the worker manageable', async () => {
+  const f = fixture();
+  await f.createLeader();
+  const item = f.addIssue(5);
+  const result = await f.session({ action: 'create', taskId: item.id });
+  assert.equal(result.ok, true);
+  assert.equal(result.result.existing, false);
+  assert.match(result.result.sessionId, /^worker-new-/u);
+  assert.equal(f.calls.dispatch.length, 1);
+  assert.equal(f.calls.dispatch[0].item.id, 'issue-5');
+  assert.equal(f.calls.dispatch[0].retry, false);
+  assert.equal(f.runtime.isLeaderManagedSession(result.result.sessionId), true);
+  assert.equal(f.calls.refresh.length > 0, true, 'worker report tool bindings refreshed');
+});
+
+test('session create works for an inbox Todo and keeps the Todo record keyed by its own id', async () => {
+  const f = fixture();
+  await f.createLeader();
+  const todo = f.addTodo('todo-3');
+  const result = await f.session({ action: 'create', taskId: todo.id });
+  assert.equal(result.ok, true);
+  assert.equal(f.runtime.state.handled['todo-3'].sessionId, result.result.sessionId);
+  assert.equal(f.runtime.leaderTaskForSession(result.result.sessionId), 'todo-3');
+});
+
+test('session create for an Issue that already has an active worker takes it over instead of creating another', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.addIssue(1, 'worker-a');
+  const result = await f.session({ action: 'create', taskId: 'issue-1' });
+  assert.equal(result.ok, true);
+  assert.equal(result.result.sessionId, 'worker-a');
+  assert.equal(result.result.existing, true);
+  assert.equal(f.calls.dispatch.length, 0);
+});
+
+test('session create re-dispatches an Issue whose worker was archived, flagged as a retry', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.addIssue(1, 'worker-a');
+  f.archivedSessionIds.push('worker-a');
+  const result = await f.session({ action: 'create', taskId: 'issue-1' });
+  assert.equal(result.ok, true);
+  assert.equal(result.result.existing, false);
+  assert.equal(f.calls.dispatch[0].retry, true);
+});
+
+test('session create refuses unknown taskIds, in-flight items and Host dispatch failures', async () => {
+  const f = fixture();
+  await f.createLeader();
+  const unknown = await f.session({ action: 'create', taskId: 'issue-999' });
+  assert.equal(unknown.ok, false);
+  assert.match(unknown.error, /不在 Issue 列表或收件箱当前列表中/u);
+  assert.match(unknown.error, /title \+ brief/u);
+  assert.equal((await f.session({ action: 'create', taskId: '' })).ok, false);
+
+  f.addIssue(1);
+  f.runtime.state.pending['issue-1'] = { sessionId: null };
+  const inflight = await f.session({ action: 'create', taskId: 'issue-1' });
+  assert.equal(inflight.ok, false);
+  assert.match(inflight.error, /已有正在创建的会话/u);
+  delete f.runtime.state.pending['issue-1'];
+  f.runtime.dispatches = new Set(['issue-1']);
+  assert.equal((await f.session({ action: 'create', taskId: 'issue-1' })).ok, false);
+  f.runtime.dispatches = new Set();
+
+  f.runtime.dispatch = async () => { throw new Error('host down'); };
+  const thrown = await f.session({ action: 'create', taskId: 'issue-1' });
+  assert.equal(thrown.ok, false);
+  assert.match(thrown.error, /创建会话失败：host down/u);
+  f.runtime.dispatch = async () => ({ ok: false, error: '并发槽已满' });
+  assert.equal((await f.session({ action: 'create', taskId: 'issue-1' })).error, '并发槽已满');
+  f.runtime.dispatch = async () => ({ ok: true, sessionId: null });
+  assert.equal((await f.session({ action: 'create', taskId: 'issue-1' })).ok, false);
+});
+
+test('a Todo that dispatch routes into someone else\'s session is reported as routed, not as a new managed worker', async () => {
+  const f = fixture({ dispatch: () => ({ ok: true, sessionId: 'human', routed: true, routeMode: 'queue' }) });
+  await f.createLeader();
+  f.addTodo('todo-4');
+  const refreshed = f.calls.refresh.length;
+  const result = await f.session({ action: 'create', taskId: 'todo-4' });
+  assert.equal(result.ok, true);
+  assert.equal(result.result.routed, true);
+  assert.equal(result.result.existing, true);
+  assert.equal(result.result.routeMode, 'queue');
+  assert.equal(f.runtime.isLeaderManagedSession('human'), false);
+  assert.equal(f.calls.refresh.length, refreshed);
+});
+
+test('an ad-hoc task reserves its tombstone before the Host call, then renames, selects the model and queues the brief', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.runtime.state.settings.issueSessionModel = { provider: 'prov', model: 'm2' };
+  const result = await f.session({ action: 'create', title: '  查一下   IAM 架构 ', brief: '  阅读仓库并给出结论  ' });
+  assert.equal(result.ok, true);
+  const created = result.result;
+  assert.match(created.taskId, /^leader-task-[0-9a-f]{12}$/u);
+  assert.equal(created.kind, 'task');
+  assert.equal(created.existing, false);
+  assert.equal(created.briefDelivered, true);
+  assert.deepEqual(created.warnings, []);
+  // Host call #2 is the task session; the journal already held the tombstone.
+  const call = f.calls.create[1];
+  assert.deepEqual(call.request, { workspaceId: 'issue-workspace' });
+  assert.equal(call.journal.tasks.length, 1);
+  assert.equal(call.journal.tasks[0].status, 'creating');
+  assert.equal(call.journal.tasks[0].sessionId, null);
+  assert.equal(call.journal.tasks[0].taskId, created.taskId);
+  const task = f.runtime.leaderState.tasks[0];
+  assert.equal(task.status, 'created');
+  assert.equal(task.sessionId, created.sessionId);
+  assert.equal(task.title, '查一下 IAM 架构');
+  assert.deepEqual(f.calls.rename.at(-1), { sessionId: created.sessionId, title: '[临时] 查一下 IAM 架构' });
+  assert.deepEqual(f.calls.model.at(-1), { sessionId: created.sessionId, provider: 'prov', model: 'm2' });
+  const prompt = f.calls.prompt.at(-1);
+  assert.equal(prompt.requestId, `${created.taskId}-brief`);
+  assert.equal(prompt.mode, 'queue');
+  assert.match(prompt.content[0].text, /不对应 GitLab Issue，不授予新权限/u);
+  assert.match(prompt.content[0].text, /gitlab_leader_report/u);
+  assert.match(prompt.content[0].text, /阅读仓库并给出结论/u);
+  assert.equal(f.runtime.isLeaderManagedSession(created.sessionId), true);
+  assert.equal(f.runtime.leaderTaskForSession(created.sessionId), created.taskId);
+  assert.equal(f.calls.refresh.length > 0, true);
+});
+
+test('an ad-hoc task passes the agent preset and a registered working directory to the Host', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.runtime.config.agentPreset = 'worker-preset';
+  const result = await f.session({ action: 'create', title: 'T', brief: 'B', workingDirectory: ' D:/repo ' });
+  assert.equal(result.ok, true);
+  assert.deepEqual(f.calls.create[1].request, { workspaceId: 'D:/repo', agentPreset: 'worker-preset' });
+  assert.equal(f.runtime.leaderState.tasks[0].workspace, 'D:/repo');
+});
+
+test('ad-hoc task arguments are validated before anything is reserved or created', async () => {
+  const f = fixture();
+  await f.createLeader();
+  const cases = [
+    [{ brief: 'B' }, /1..70 字符的 title/u], [{ title: '', brief: 'B' }, /title/u], [{ title: 'x'.repeat(71), brief: 'B' }, /title/u],
+    [{ title: 'T' }, /1..8000 字符的 brief/u], [{ title: 'T', brief: '   ' }, /brief/u], [{ title: 'T', brief: 'x'.repeat(8001) }, /brief/u],
+    [{ title: 'T', brief: 'B', workingDirectory: 7 }, /workingDirectory/u], [{ title: 'T', brief: 'B', workingDirectory: 'x'.repeat(501) }, /workingDirectory/u],
+  ];
+  for (const [args, pattern] of cases) {
+    const result = await f.session({ action: 'create', ...args });
+    assert.equal(result.ok, false, JSON.stringify(args).slice(0, 80));
+    assert.match(result.error, pattern);
+  }
+  const badDir = await f.session({ action: 'create', title: 'T', brief: 'B', workingDirectory: 'bad' });
+  assert.equal(badDir.ok, false);
+  assert.match(badDir.error, /工作区不可用/u);
+  assert.deepEqual(badDir.result, { available: [] });
+  assert.equal(f.calls.create.length, 1, 'only the Leader session was ever created');
+  assert.deepEqual(f.runtime.leaderState.tasks, []);
+});
+
+test('ad-hoc tasks need a created Leader', async () => {
+  const f = fixture();
+  const result = await f.invoke('session', { action: 'create', title: 'T', brief: 'B' }, f.agent());
+  assert.equal(result.ok, false);
+});
+
+test('an uncertain ad-hoc creation is marked uncertain, never recreated, and only a human can dismiss it', async () => {
+  let failing = true;
+  const f = fixture({ createSession: (request, n) => {
+    if (n === 1) return 'leader';
+    if (failing) throw new Error('host timeout');
+    return 'later-session';
+  } });
+  await f.createLeader();
+  const failed = await f.session({ action: 'create', title: 'IAM', brief: 'B' });
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /创建临时任务会话失败：host timeout/u);
+  const taskId = failed.result.taskId;
+  assert.match(taskId, /^leader-task-/u);
+  const task = f.runtime.leaderState.tasks[0];
+  assert.equal(task.status, 'uncertain');
+  assert.match(task.error, /宿主创建会话报错，结果不确定/u);
+  assert.equal(f.runtime.leaderState.tasks.length, 1);
+  assert.equal(f.calls.create.length, 2);
+  assert.equal(f.runtime.isLeaderManagedSession('later-session'), false);
+  // The agent cannot dismiss it; the board shows it; the UI dismisses it.
+  assert.equal((await f.invoke('resolveTask', { taskId, action: 'dismiss' }, f.agent())).ok, false);
+  assert.equal((await f.board()).result.tasks[0].status, 'uncertain');
+  const dismissed = await f.invoke('resolveTask', { taskId, action: 'dismiss' });
+  assert.equal(dismissed.ok, true);
+  assert.equal(f.runtime.leaderState.tasks[0].status, 'archived');
+  assert.equal(f.calls.create.length, 2, 'dismissal does not create anything');
+  // Only uncertain tasks can be dismissed.
+  failing = false;
+  const ok = await f.session({ action: 'create', title: 'again', brief: 'B' });
+  assert.equal(ok.ok, true);
+  assert.equal((await f.invoke('resolveTask', { taskId: ok.result.taskId, action: 'dismiss' })).ok, false);
+});
+
+test('an invalid session ID from the Host marks the ad-hoc task uncertain', async () => {
+  const f = fixture({ createSession: (request, n) => (n === 1 ? 'leader' : '') });
+  await f.createLeader();
+  const result = await f.session({ action: 'create', title: 'T', brief: 'B' });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /宿主未返回有效会话 ID；临时任务已标记为不确定/u);
+  assert.equal(f.runtime.leaderState.tasks[0].status, 'uncertain');
+});
+
+test('ad-hoc setup problems after creation become warnings; the task stays created and the brief failure is explicit', async () => {
+  const f = fixture({ rename: (id, title) => { if (title.startsWith('[临时]')) throw new Error('rename refused'); }, prompt: (request) => { if (request.mode === 'queue' && /-brief$/u.test(request.requestId)) throw new Error('queue full'); } });
+  f.runtime.state.settings.issueSessionModel = { provider: 'prov', model: 'm1' };
+  f.runtime.host.selectModel = async () => { throw new Error('model refused'); };
+  await f.createLeader();
+  const result = await f.session({ action: 'create', title: 'T', brief: 'B' });
+  assert.equal(result.ok, true);
+  assert.equal(result.result.briefDelivered, false);
+  assert.equal(result.result.warnings.length, 3);
+  assert.match(result.result.warnings.join('\n'), /改名失败：rename refused/u);
+  assert.match(result.result.warnings.join('\n'), /选择模型失败：model refused/u);
+  assert.match(result.result.warnings.join('\n'), /任务说明投递失败/u);
+  assert.equal(f.runtime.leaderState.tasks[0].status, 'created');
+});
+
+test('the ad-hoc task registry is capped; archived records make room', async () => {
+  const f = fixture();
+  await f.createLeader();
+  const make = (i, status) => ({ taskId: `leader-task-${String(i).padStart(12, '0')}`, sessionId: status === 'created' ? `s-${i}` : null, title: 't', brief: 'b', workspace: '', status, createdAt: i, error: '' });
+  f.runtime.leaderState.tasks = Array.from({ length: LEADER_LIMITS.maxTasks }, (_, i) => make(i, 'created'));
+  const full = await f.session({ action: 'create', title: 'T', brief: 'B' });
+  assert.equal(full.ok, false);
+  assert.match(full.error, /临时任务记录已达/u);
+  assert.equal(f.calls.create.length, 1);
+  f.runtime.leaderState.tasks[0].status = 'archived';
+  const room = await f.session({ action: 'create', title: 'T', brief: 'B' });
+  assert.equal(room.ok, true);
+  assert.equal(f.runtime.leaderState.tasks.length, LEADER_LIMITS.maxTasks);
+});
+
+test('the Leader session can never become a managed worker, even through a forged handled record', async () => {
+  const f = fixture();
+  await f.createLeader();
+  const item = f.addIssue(1);
+  f.runtime.state.handled[item.id] = handledRecord(item, 'leader');
+  assert.equal(f.runtime.isLeaderManagedSession('leader'), false);
+  assert.equal(f.runtime.leaderManagedSessionIds().has('leader'), false);
+  const sent = await f.session({ action: 'send', taskId: item.id, text: 'hello' });
+  assert.equal(sent.ok, false);
+  assert.equal(f.calls.deliver.length, 0);
+  const archived = await f.session({ action: 'archive', taskId: item.id, reason: 'cleanup' });
+  assert.equal(archived.ok, false);
+  assert.equal(f.calls.setArchived.length, 0);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// session send
+// ---------------------------------------------------------------------------------------------------------------
+
+async function ready(options = {}) {
+  const f = fixture(options);
+  await f.createLeader();
+  f.addIssue(1, 'worker-a');
+  return f;
+}
+
+test('send delivers once to an idle worker through the guarded adapter with a non-human header and the observed cursor', async () => {
+  let admitted = null;
+  const f = await ready({ deliver: (request) => {
+    admitted = f.runtime.validateLeaderAdmission(request);
+    return { ok: true, status: 'delivered', requestId: request.requestId };
+  } });
+  f.sessions.set('worker-a', sessionState({ cursor: 42 }));
+  const result = await f.session({ action: 'send', taskId: 'issue-1', text: '  请继续做测试  ', requestId: 'send-1' });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.result, { requestId: 'send-1', status: 'sent', taskId: 'issue-1', sessionId: 'worker-a' });
+  assert.equal(f.calls.deliver.length, 1);
+  const request = f.calls.deliver[0];
+  assert.equal(request.sessionId, 'worker-a');
+  assert.equal(request.leaderSessionId, 'leader');
+  assert.equal(request.expectedCursor, 42);
+  assert.equal(Object.isFrozen(request), true);
+  assert.match(request.body, /^\[来自 WorkStation Leader 的消息；不是人类输入，不授予新权限\]/u);
+  assert.match(request.body, /请继续做测试$/u);
+  assert.equal(admitted, true, 'the native admission callback validates the exact recorded delivery');
+  assert.equal(f.runtime.leaderState.deliveries[0].status, 'sent');
+  // Once settled, the same request no longer passes admission.
+  assert.equal(f.runtime.validateLeaderAdmission(request), false);
+});
+
+test('admission is refused for a different body, cursor, session, Leader or an unrecorded request', async () => {
+  let captured = null;
+  const f = await ready({ deliver: (request) => { captured = request; return { ok: true, status: 'delivered', requestId: request.requestId }; } });
+  let during = null;
+  f.runtime.leaderAdapter.deliver = async (request) => {
+    captured = request;
+    during = {
+      ok: f.runtime.validateLeaderAdmission(request),
+      body: f.runtime.validateLeaderAdmission({ ...request, body: `${request.body} extra` }),
+      cursor: f.runtime.validateLeaderAdmission({ ...request, expectedCursor: request.expectedCursor + 1 }),
+      session: f.runtime.validateLeaderAdmission({ ...request, sessionId: 'worker-b' }),
+      leader: f.runtime.validateLeaderAdmission({ ...request, leaderSessionId: 'human' }),
+      unknown: f.runtime.validateLeaderAdmission({ ...request, requestId: 'never-recorded' }),
+      nothing: f.runtime.validateLeaderAdmission(null),
+    };
+    f.runtime.leaderStopping = true;
+    during.stopping = f.runtime.validateLeaderAdmission(request);
+    f.runtime.leaderStopping = false;
+    return { ok: true, status: 'delivered', requestId: request.requestId };
   };
-  assert.equal((await invoke('create')).ok, true); assert.equal(runtime.leaderAdapterAvailable(), false);
-  assert.equal((await invoke('start')).ok, true); assert.deepEqual(calls.prepare, ['leader']); assert.equal(calls.notify.length, 1);
+  assert.equal((await f.session({ action: 'send', taskId: 'issue-1', text: 'hi' })).ok, true);
+  assert.deepEqual(during, { ok: true, body: false, cursor: false, session: false, leader: false, unknown: false, nothing: false, stopping: false });
+  assert.ok(captured);
 });
 
-test('supervisor consumption never loses the report inspected by the next Leader read', async () => {
-  const { runtime, setup, sessions, logs, issue, agent, calls, invoke } = fixture(); await setup();
-  sessions.set('worker-a', sessionState({ cursor: 11 }));
-  logs.get('worker-a').push({ seq: 11, type: 'assistant/message', data: { text: 'Current Issue report after CI' } });
-  await runtime.reconcileLeader(); assert.equal(runtime.leaderState.items[0].cursor, 11);
-  const read = await invoke('read', issue(), agent()); assert.equal(read.ok, true);
-  assert.ok(read.result.events.some((event) => event.seq === 11 && event.data.includes('Current Issue report after CI')));
-  assert.equal(read.result.sessionId, 'worker-a'); assert.equal(read.result.untrusted, true); assert.equal('evidenceToken' in read.result, false);
-  assert.equal(read.result.eventsTruncated, false); assert.ok(read.result.events.every((event) => event.sourceSessionId === 'worker-a' && event.untrusted));
-  assert.doesNotMatch(JSON.stringify(read.result.events), /HISTORICAL SECRET/); assert.equal(calls.deliver.length, 0);
-  const restored = normalizeLeaderState(calls.persist.at(-1));
-  assert.ok(restored.items[0].recentEvents.some((event) => event.data.includes('Current Issue report after CI')));
-  assert.equal(restored.items[0].observation, null); // cached context never restores advancement authority.
+test('send to a busy, queued, or cold-unactivatable worker is refused without any delivery', async () => {
+  const f = await ready();
+  f.sessions.set('worker-a', sessionState({ running: true }));
+  const running = await f.session({ action: 'send', taskId: 'issue-1', text: 'hi' });
+  assert.equal(running.ok, false);
+  assert.match(running.error, /worker 忙碌或有 queue/u);
+  f.sessions.set('worker-a', sessionState({ queue: ['x'] }));
+  assert.equal((await f.session({ action: 'send', taskId: 'issue-1', text: 'hi' })).ok, false);
+  assert.equal(f.calls.deliver.length, 0);
+  assert.deepEqual(f.runtime.leaderState.deliveries, []);
 });
 
-test('needs-human Issues remain readable; a pending native question blocks sending', async () => {
-  const { runtime, setup, sessions, logs, issue, agent, advance, calls, invoke } = fixture(); await setup();
-  sessions.set('worker-a', sessionState({ cursor: 11, pendingInput: ['question'] }));
-  logs.get('worker-a').push({ seq: 11, type: 'assistant/message', data: { text: 'Need a business decision' } });
-  await runtime.reconcileLeader(); assert.equal(runtime.leaderState.items[0].status, 'needs-human');
-  const read = await invoke('read', issue(), agent()); assert.equal(read.ok, true);
-  assert.ok(read.result.events.some((event) => event.data.includes('Need a business decision')));
-  assert.equal((await advance()).ok, false); assert.equal(calls.deliver.length, 0);
-  assert.equal((await invoke('read', { ...issue(), sessionId: 'outside' }, agent())).ok, false);
-});
-
-test('continued native questions fence start and advancement despite an empty raw pending queue', async () => {
-  const { runtime, setup, sessions, issue, agent, advance, calls, invoke } = fixture(); await setup();
-  runtime.leaderAdapter.state = async (id) => ({ ...copy(sessions.get(id)), pendingInput: id === 'worker-a' ? ['question'] : [] });
-  const read = await invoke('read', issue(), agent()); assert.equal(read.ok, true);
-  assert.equal(read.result.status, 'needs-human'); assert.equal((await advance()).ok, false); assert.equal(calls.deliver.length, 0);
-  await invoke('pause');
-  runtime.leaderAdapter.state = async (id) => ({ ...copy(sessions.get(id)), pendingInput: id === 'leader' ? ['question'] : [] });
-  assert.equal((await invoke('start')).ok, false); assert.equal(runtime.leaderState.enabled, false);
-});
-
-test('recent report cache is bounded and marks context truncation', async () => {
-  const { runtime, setup, sessions, logs, issue, agent, invoke } = fixture(); await setup();
-  sessions.set('worker-a', sessionState({ cursor: 71 }));
-  logs.set('worker-a', Array.from({ length: 60 }, (_, index) => ({ seq: index + 11, type: 'assistant/message', data: { text: 'x'.repeat(1000) } })));
-  await runtime.reconcileLeader(); const item = runtime.leaderState.items[0];
-  assert.ok(item.recentEvents.length <= 40); assert.ok(JSON.stringify(item.recentEvents).length <= 20100);
-  const read = await invoke('read', issue(), agent()); assert.equal(read.result.eventsTruncated, true);
-  assert.equal(runtime.leaderState.items[0].observation.truncated, false);
-  assert.doesNotThrow(() => normalizeLeaderState(runtime.leaderState));
-});
-
-test('malformed/unknown journal is Leader-only read-only failure and never overwritten', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'workstation-leader-'));
-  try {
-    for (const source of ['{broken', JSON.stringify({ ...initialLeaderState(), version: 900 }), JSON.stringify({ ...initialLeaderState(), sessionId: '' })]) {
-      await writeFile(join(directory, 'leader.json'), source);
-      const { runtime, invoke, issue, calls } = fixture(); runtime.storageDirectory = () => directory; runtime.persistLeader = leaderMethods.persistLeader;
-      const projection = await runtime.loadLeader(); assert.equal(projection.enabled, false); assert.equal(projection.phase, 'error');
-      assert.equal((await invoke('snapshot')).ok, true);
-      for (const operation of ['create', 'configure', 'start', 'enroll']) assert.equal((await invoke(operation, issue())).ok, false);
-      assert.equal(await readFile(join(directory, 'leader.json'), 'utf8'), source); assert.equal(calls.create.length, 0);
-    }
-  } finally { await rm(directory, { recursive: true, force: true }); }
-});
-
-test('atomic standalone journal survives disk roundtrip, reload is off and no duplicate create', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'workstation-leader-'));
-  try {
-    const { runtime, invoke, calls, issue } = fixture(); runtime.storageDirectory = () => directory; runtime.persistLeader = leaderMethods.persistLeader;
-    await runtime.loadLeader(); assert.equal((await invoke('create')).ok, true); assert.equal((await invoke('enroll', issue())).ok, true);
-    assert.equal((await invoke('start')).ok, true); await runtime.loadLeader(); assert.equal(runtime.leaderState.enabled, false);
-    assert.equal(runtime.leaderState.items.length, 1); assert.equal((await invoke('create')).ok, true); assert.equal(calls.create.length, 1);
-  } finally { await rm(directory, { recursive: true, force: true }); }
-});
-
-// ---- Leader hardening (outbox compaction, triage, rollback, cold workers, budgets, recovery) ----
-
-test('terminal outbox is compacted so a long-running Leader never wedges at the old 500 cap', async () => {
-  const { runtime, setup, advance } = fixture(); await setup();
-  runtime.leaderState.outbox.push(...Array.from({ length: 600 }, (_, index) => ({ kind: 'notify', requestId: `old-${index}`, sessionId: 'leader',
-    status: 'sent', body: 'x'.repeat(100), fingerprint: 'f', createdAt: index, epoch: 0, expectedCursor: 0, error: '' })));
-  const advanced = await advance(); assert.equal(advanced.ok, true, advanced.error);
-  const outbox = runtime.leaderState.outbox;
-  assert.ok(outbox.length <= 202, `outbox ${outbox.length}`);
-  assert.ok(outbox.filter((entry) => entry.compacted === true && entry.body === '').length > 0);
-  assert.equal(outbox.at(-1).kind, 'advance'); assert.equal(outbox.at(-1).status, 'sent');
-  assert.doesNotThrow(() => normalizeLeaderState(runtime.leaderState));
-});
-
-test('unresolved deliveries still hard-stop new outbox entries', async () => {
-  const { runtime, setup, advance } = fixture(); await setup();
-  runtime.leaderState.outbox.push(...Array.from({ length: 100 }, (_, index) => ({ kind: 'advance', requestId: `open-${index}`, taskId: `other-${index}`,
-    sessionId: `other-${index}`, status: 'uncertain', body: 'x', fingerprint: 'f', createdAt: index, epoch: 0, expectedCursor: 0, error: '' })));
-  assert.equal((await advance()).ok, false);
-});
-
-test('stale-policy created-enrollment tombstones are pruned on load', () => {
-  const state = { ...initialLeaderState(), creationPolicyEpoch: 3,
-    createdEnrollments: [{ taskId: 't', sessionId: 's', epoch: 1, creationPolicyEpoch: 3, createdAt: 1 }] };
-  // Reload bumps creationPolicyEpoch, so proofs stamped under the old policy can never match again.
-  const normalized = normalizeLeaderState(JSON.parse(JSON.stringify(state)));
-  assert.equal(normalized.creationPolicyEpoch, 4); assert.equal(normalized.createdEnrollments.length, 0);
-});
-
-test('worker log chatter does not wake the Leader; turn/end does, once', async () => {
-  const { runtime, setup, sessions, logs, calls } = fixture(); await setup();
-  assert.equal(calls.notify.length, 1);
-  sessions.set('worker-a', sessionState({ cursor: 11 })); logs.set('worker-a', [{ seq: 11, type: 'assistant/message', data: { text: 'progress' } }]);
-  await runtime.reconcileLeader(); assert.equal(calls.notify.length, 1);
-  sessions.set('worker-a', sessionState({ cursor: 12 })); logs.set('worker-a', [...logs.get('worker-a'), { seq: 12, type: 'turn/end', data: {} }]);
-  await runtime.reconcileLeader(); assert.equal(calls.notify.length, 2);
-  assert.match(calls.notify[1].body, /turn-end/); assert.match(calls.notify[1].body, /人类只看本会话/);
-  await runtime.reconcileLeader(); assert.equal(calls.notify.length, 2);
-});
-
-test('a busy Leader keeps the wake reason durable and is notified when idle', async () => {
-  const { runtime, setup, sessions, logs, calls } = fixture(); await setup();
-  sessions.set('leader', sessionState({ running: true }));
-  sessions.set('worker-a', sessionState({ cursor: 11 })); logs.set('worker-a', [{ seq: 11, type: 'turn/end', data: {} }]);
-  await runtime.reconcileLeader(); assert.equal(calls.notify.length, 1);
-  assert.deepEqual(runtime.leaderState.items[0].pendingWake, ['turn-end']);
-  sessions.set('leader', sessionState());
-  await runtime.reconcileLeader(); assert.equal(calls.notify.length, 2); assert.deepEqual(runtime.leaderState.items[0].pendingWake, []);
-});
-
-test('rejected bootstrap rolls start back to paused instead of a silent enabled Leader', async () => {
-  const { runtime, invoke, issue, calls } = fixture();
-  assert.equal((await invoke('create')).ok, true); assert.equal((await invoke('enroll', issue())).ok, true);
-  const notify = runtime.leaderAdapter.notify;
-  runtime.leaderAdapter.notify = async (request) => ({ ok: false, status: 'rejected', error: 'busy', requestId: request.requestId });
-  const started = await invoke('start'); assert.equal(started.ok, false);
-  assert.equal(runtime.leaderState.enabled, false); assert.equal(runtime.leaderState.phase, 'paused');
-  assert.equal(runtime.leaderState.items[0].status, 'standby'); assert.match(runtime.leaderState.error, /启动简报未送达/);
-  runtime.leaderAdapter.notify = notify;
-  assert.equal((await invoke('start')).ok, true); assert.equal(calls.notify.length, 1); assert.equal(runtime.leaderState.error, '');
-});
-
-test('explicit start and a guarded advance activate quiet cold workers', async () => {
-  const { runtime, invoke, issue, sessions, advance, calls } = fixture();
-  const prepared = [];
-  runtime.leaderAdapter.prepareWorker = async (sessionId) => { prepared.push(sessionId); sessions.set(sessionId, { ...sessions.get(sessionId), active: true }); return { ok: true, status: 'prepared', sessionId }; };
-  assert.equal((await invoke('create')).ok, true); assert.equal((await invoke('enroll', issue())).ok, true);
-  sessions.set('worker-a', sessionState({ active: false }));
-  assert.equal((await invoke('start')).ok, true); assert.deepEqual(prepared, ['worker-a']);
-  sessions.set('worker-a', sessionState({ active: false }));
-  const result = await advance(); assert.equal(result.ok, true, result.error); assert.deepEqual(prepared, ['worker-a', 'worker-a']);
-  assert.equal(calls.deliver.length, 1);
-});
-
-test('cold worker without an activation path is shown as cold, not as an error', async () => {
-  const { runtime, setup, sessions } = fixture(); await setup();
-  sessions.set('worker-a', sessionState({ active: false }));
-  await runtime.reconcileLeader();
-  assert.equal(runtime.leaderState.items[0].status, 'cold'); assert.equal(runtime.leaderState.items[0].error, '');
-});
-
-test('Leader is created with the built-in tool-less preset; explicit bad preset fails without latching', async () => {
-  const { runtime, invoke, calls } = fixture();
-  runtime.leaderServicesContext = { agentPresets: { async resolve(id) { if (id !== 'gitlab-issue-leader') throw new Error('unknown preset'); return { id }; } } };
-  runtime.config.leaderAgentPreset = 'missing-preset';
-  assert.equal((await invoke('create')).ok, false); assert.equal(calls.create.length, 0); assert.equal(runtime.leaderState.creation, null);
-  delete runtime.config.leaderAgentPreset;
-  assert.equal((await invoke('create')).ok, true);
-  assert.equal(calls.create[0].agentPreset, 'gitlab-issue-leader'); assert.equal(runtime.leaderProjection().creation.agentPreset, 'gitlab-issue-leader');
-});
-
-test('empty leaderAgentPreset and a broken default fall back to the host default preset', async () => {
-  for (const variant of ['empty', 'broken']) {
-    const { runtime, invoke, calls } = fixture();
-    runtime.leaderServicesContext = { agentPresets: { async resolve(id) { return { id, broken: 'missing plugin' }; } } };
-    if (variant === 'empty') runtime.config.leaderAgentPreset = '';
-    assert.equal((await invoke('create')).ok, true); assert.equal('agentPreset' in calls.create[0], false);
+test('send to a worker waiting on a native approval or question is refused: only the human answers those', async () => {
+  const f = await ready();
+  for (const kind of ['approval', 'question']) {
+    f.sessions.set('worker-a', sessionState({ pendingInput: [kind] }));
+    const result = await f.session({ action: 'send', taskId: 'issue-1', text: 'approve it' });
+    assert.equal(result.ok, false);
+    assert.match(result.error, /等待原生审批\/问答，只能由人类在该会话里回答/u);
   }
+  assert.equal(f.calls.deliver.length, 0);
 });
 
-test('human can resolve an uncertain advance; nothing is resent automatically', async () => {
-  const { runtime, setup, invoke, issue, advance, calls, lastAdvance } = fixture(); await setup();
-  runtime.leaderAdapter.deliver = async () => { throw new Error('socket closed'); };
-  assert.equal((await advance()).ok, false);
-  const requestId = lastAdvance().requestId;
-  assert.equal(runtime.leaderState.outbox.at(-1).status, 'uncertain'); assert.equal(runtime.leaderState.items[0].status, 'unknown');
-  assert.equal((await invoke('resolveDelivery', { requestId: 'nope', resolution: 'delivered' })).ok, false);
-  assert.equal((await invoke('resolveDelivery', { requestId, resolution: 'maybe' })).ok, false);
-  assert.equal((await invoke('resolveDelivery', { requestId, resolution: 'not-delivered' })).ok, true);
-  assert.equal(runtime.leaderState.outbox.find((entry) => entry.requestId === requestId).status, 'rejected');
-  assert.equal((await invoke('resolveDelivery', { requestId, resolution: 'delivered' })).ok, false);
-  assert.equal(runtime.leaderState.items[0].status, 'watching');
-  runtime.leaderAdapter.deliver = async (request) => { calls.deliver.push(copy(request)); return { ok: true, status: 'delivered', requestId: request.requestId }; };
-  const result = await advance({ text: '重新核查后再次续办，措辞不同。' }); assert.equal(result.ok, true, result.error);
-  assert.equal(calls.deliver.length, 1);
+test('send wakes a cold session first, and refuses when it cannot be woken', async () => {
+  const f = await ready();
+  const cold = () => sessionState({ active: false, queue: null });
+  f.sessions.set('worker-a', cold());
+  let prepared = 0;
+  f.runtime.leaderAdapter.prepareWorker = async (sessionId) => { prepared += 1; f.sessions.set(sessionId, sessionState({ cursor: 20 })); return { ok: true }; };
+  const result = await f.session({ action: 'send', taskId: 'issue-1', text: 'wake up' });
+  assert.equal(result.ok, true);
+  assert.equal(prepared, 1);
+  assert.equal(f.calls.deliver[0].expectedCursor, 20);
+
+  f.sessions.set('worker-a', cold());
+  f.runtime.leaderAdapter.prepareWorker = async () => ({ ok: false, error: 'cannot resume' });
+  const refused = await f.session({ action: 'send', taskId: 'issue-1', text: 'again' });
+  assert.equal(refused.ok, false);
+  assert.match(refused.error, /冷会话未能激活：cannot resume/u);
+  // Still cold after a "successful" prepare that changed nothing: refused rather than delivered blind.
+  f.runtime.leaderAdapter.prepareWorker = async () => ({ ok: true });
+  const stillCold = await f.session({ action: 'send', taskId: 'issue-1', text: 'third' });
+  assert.equal(stillCold.ok, false);
+  assert.equal(f.calls.deliver.length, 1);
 });
 
-test('uncertain Leader notify can be resolved by the human and start is allowed again', async () => {
-  const { runtime, invoke, issue } = fixture();
-  assert.equal((await invoke('create')).ok, true); assert.equal((await invoke('enroll', issue())).ok, true);
-  const notify = runtime.leaderAdapter.notify;
-  runtime.leaderAdapter.notify = async () => { throw new Error('lost receipt'); };
-  assert.equal((await invoke('start')).ok, false); assert.equal(runtime.leaderProjection().runState, 'delivery-uncertain');
-  assert.equal((await invoke('start')).ok, false);
-  const pending = runtime.leaderProjection().deliveries; assert.equal(pending.length, 1); assert.equal(pending[0].kind, 'notify');
-  assert.equal((await invoke('resolveDelivery', { requestId: pending[0].requestId, resolution: 'delivered' })).ok, true);
-  assert.equal(runtime.leaderState.phase, 'paused');
-  runtime.leaderAdapter.notify = notify; assert.equal((await invoke('start')).ok, true);
+test('send is refused when the Host lacks guarded non-human delivery', async () => {
+  const f = await ready();
+  f.runtime.leaderAdapter.capabilities = { atomicIdleDelivery: true, nonHumanSource: false };
+  const result = await f.session({ action: 'send', taskId: 'issue-1', text: 'hi' });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /宿主不支持非 human 的原子空闲投递/u);
+  delete f.runtime.leaderAdapter.deliver;
+  f.runtime.leaderAdapter.capabilities = { atomicIdleDelivery: true, nonHumanSource: true };
+  assert.equal((await f.session({ action: 'send', taskId: 'issue-1', text: 'hi' })).ok, false);
 });
 
-test('uncertain Leader creation can be abandoned or claimed, never silently recreated', async () => {
-  for (const resolution of ['abandon', 'claim']) {
-    const { runtime, invoke, calls } = fixture();
-    const create = runtime.host.createSession;
-    runtime.host.createSession = async () => { throw new Error('timeout'); };
-    assert.equal((await invoke('create')).ok, false); assert.equal(runtime.leaderProjection().runState, 'creation-uncertain');
-    assert.equal((await invoke('create')).ok, false);
-    runtime.host.createSession = create;
-    if (resolution === 'abandon') {
-      assert.equal((await invoke('resolveCreation', { resolution: 'abandon' })).ok, true);
-      assert.equal(runtime.leaderState.abandonedCreations.length, 1); assert.equal(runtime.leaderState.phase, 'not-created');
-      assert.equal((await invoke('create')).ok, true); assert.equal(calls.create.length, 1);
-    } else {
-      assert.equal((await invoke('resolveCreation', { resolution: 'claim', sessionId: 'worker-a' })).ok, false);
-      assert.equal((await invoke('resolveCreation', { resolution: 'claim', sessionId: 'ghost' })).ok, false);
-      const claimed = await invoke('resolveCreation', { resolution: 'claim', sessionId: 'outside' }); assert.equal(claimed.ok, true, claimed.error);
-      assert.equal(runtime.leaderState.sessionId, 'outside'); assert.equal(runtime.leaderState.creation.status, 'ready');
-      assert.equal(calls.create.length, 0); assert.deepEqual(calls.rename.at(-1), ['outside', 'WorkStation Leader']);
-    }
+test('send validates text and requestId before touching anything', async () => {
+  const f = await ready();
+  for (const args of [{ text: '' }, { text: '   ' }, { text: 5 }, {}, { text: 'x'.repeat(LEADER_LIMITS.maxPromptText + 1) }]) {
+    const result = await f.session({ action: 'send', taskId: 'issue-1', ...args });
+    assert.equal(result.ok, false, JSON.stringify(args).slice(0, 50));
+    assert.match(result.error, /text 必须是 1\.\./u);
   }
+  assert.match((await f.session({ action: 'send', taskId: 'issue-1', text: 'hi', requestId: ' ' })).error, /requestId 无效/u);
+  assert.equal((await f.session({ action: 'send', taskId: 'issue-1', text: 'x'.repeat(LEADER_LIMITS.maxPromptText) })).ok, true);
+  assert.equal(f.calls.deliver.length, 1);
 });
 
-test('projection exposes run state and standby items while the Leader is paused', async () => {
-  const { runtime, invoke, issue, setup } = fixture();
-  assert.equal((await invoke('create')).ok, true); assert.equal(runtime.leaderProjection().runState, 'never-started');
-  assert.equal((await invoke('enroll', issue())).ok, true); assert.equal(runtime.leaderProjection().items[0].status, 'standby');
-  assert.equal((await invoke('start')).ok, true);
-  let projection = runtime.leaderProjection();
-  assert.equal(projection.runState, 'running'); assert.equal(projection.items[0].status, 'watching');
-  assert.equal('maxActions' in projection.items[0], false); assert.equal('expiresAt' in projection.run, false); assert.equal(projection.run.wakeups, 1);
-  assert.equal((await invoke('pause')).ok, true); projection = runtime.leaderProjection();
-  assert.equal(projection.runState, 'paused'); assert.equal(projection.items[0].status, 'standby');
-  const reloaded = normalizeLeaderState(JSON.parse(JSON.stringify({ ...runtime.leaderState, enabled: true })));
-  assert.equal(reloaded.items[0].status, 'standby'); void setup;
-});
-
-test('snapshot gives the UI a read-only overview of every Issue session', async () => {
-  const { setup, invoke } = fixture(); await setup();
-  const snapshot = await invoke('snapshot'); assert.equal(snapshot.ok, true);
-  const issues = snapshot.result.issues; assert.equal(issues.length, 2);
-  assert.deepEqual(issues.map((item) => [item.taskId, item.sessionId, item.enrolled]), [['issue-1-a', 'worker-a', true], ['issue-1-b', 'worker-b', false]]);
-  assert.equal(issues.every((item) => item.untrusted === true), true);
-});
-
-test('items are observed concurrently', async () => {
-  const { runtime, setup, invoke, issue, calls } = fixture(); await setup(2);
-  let active = 0; let peak = 0; const observe = runtime.leaderAdapter.observe;
-  runtime.leaderAdapter.observe = async (...args) => { active += 1; peak = Math.max(peak, active); await new Promise((resolve) => setTimeout(resolve, 10)); try { return await observe(...args); } finally { active -= 1; } };
-  await runtime.reconcileLeader(); assert.equal(peak, 2); void invoke; void issue; void calls;
-});
-
-test('unchanged Leader journal is not rewritten', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'workstation-leader-'));
-  try {
-    const { runtime, invoke } = fixture(); runtime.storageDirectory = () => directory; runtime.persistLeader = leaderMethods.persistLeader;
-    await runtime.loadLeader(); assert.equal((await invoke('create')).ok, true);
-    const file = join(directory, 'leader.json'); await rm(file);
-    await runtime.persistLeader(); await assert.rejects(readFile(file, 'utf8'));
-    runtime.leaderState.settings = { ...runtime.leaderState.settings }; runtime.leaderState.epoch += 1;
-    await runtime.persistLeader(); assert.equal(JSON.parse(await readFile(file, 'utf8')).epoch, runtime.leaderState.epoch);
-  } finally { await rm(directory, { recursive: true, force: true }); }
-});
-
-// ---- Leader capabilities (v2.36: session management, evidence token, relay, notes, stall) ----
-
-const withIssueLookup = (runtime) => { runtime.itemById = (id) => runtime.state.issues.find((item) => item.id === id) ?? null; };
-
-test('Leader-only capability operations are rejected for UI callers and for non-Leader agents', async () => {
-  const { setup, invoke, issue } = fixture(); await setup();
-  const stranger = createLeaderAgentCaller({ sessionId: 'worker-a', agentId: 'verified-agent' });
-  for (const operation of ['overview', 'read', 'session', 'note', 'gitlabApi', 'run']) {
-    assert.equal((await invoke(operation, issue())).ok, false, `ui ${operation}`);
-    assert.equal((await invoke(operation, issue(), stranger)).ok, false, `stranger ${operation}`);
+test('send only reaches plugin-created workers: unknown taskIds, human sessions and archived workers are refused', async () => {
+  const f = await ready();
+  f.addTodo('todo-9', 'human', { routed: true });
+  for (const args of [{ taskId: 'issue-404' }, { taskId: 'todo-9' }, { taskId: 'human' }, { taskId: 'issue-1', sessionId: 'human' }, { taskId: 'issue-1', sessionId: 'leader' }, {}]) {
+    const result = await f.session({ action: 'send', text: 'hi', ...args });
+    assert.equal(result.ok, false, JSON.stringify(args));
   }
+  f.archivedSessionIds.push('worker-a');
+  assert.equal((await f.session({ action: 'send', taskId: 'issue-1', text: 'hi' })).ok, false);
+  assert.equal(f.calls.deliver.length, 0);
 });
 
-test('session_create enrolls an existing live worker instead of creating a duplicate', async () => {
-  const { runtime, setup, invoke, agent, session } = fixture(); await setup();
-  let dispatched = 0; runtime.dispatch = async () => { dispatched += 1; return { ok: true, sessionId: 'never' }; };
-  const result = await session('create', { taskId: 'issue-1-b' }, agent()); assert.equal(result.ok, true, result.error);
-  assert.equal(result.result.existing, true); assert.equal(result.result.sessionId, 'worker-b'); assert.equal(dispatched, 0);
-  const item = runtime.leaderState.items.find((entry) => entry.taskId === 'issue-1-b');
-  assert.equal(item.provenance.kind, 'leader'); assert.equal(runtime.leaderProjection().audit.at(-1).action, 'session-enroll');
-  assert.equal((await session('create', { taskId: 'not-listed' }, agent())).ok, false);
-  assert.equal((await session('create', { taskId: '' }, agent())).ok, false);
+test('a repeated requestId with the same message returns the earlier result without resending; a different message is refused', async () => {
+  const f = await ready();
+  const first = await f.session({ action: 'send', taskId: 'issue-1', text: 'hello', requestId: 'r-1' });
+  assert.equal(first.ok, true);
+  const again = await f.session({ action: 'send', taskId: 'issue-1', text: 'hello', requestId: 'r-1' });
+  assert.equal(again.ok, true);
+  assert.deepEqual(again.result, { requestId: 'r-1', status: 'sent', duplicate: true });
+  const other = await f.session({ action: 'send', taskId: 'issue-1', text: 'something else', requestId: 'r-1' });
+  assert.equal(other.ok, false);
+  assert.match(other.error, /requestId 已绑定另一条消息，不可重用/u);
+  assert.equal(f.calls.deliver.length, 1);
 });
 
-test('session_create dispatches through the Issue path once the old worker is archived and replaces the roster entry', async () => {
-  const { runtime, setup, invoke, agent, sessions, session } = fixture(); await setup();
-  runtime.ctx.workspaceRegistry.archivedSessionIds = ['worker-a'];
-  const forced = [];
-  runtime.dispatch = async (todo, force) => {
-    forced.push([todo.id, force]); sessions.set('worker-new', sessionState());
-    runtime.state.handled[todo.id] = { ...runtime.state.handled[todo.id], sessionId: 'worker-new', acceptedAt: Date.now() };
-    return { ok: true, sessionId: 'worker-new', duplicate: false };
+test('a throwing deliver is recorded as uncertain, never resent, blocks further sends and archive until resolved', async () => {
+  let fail = true;
+  const f = await ready({ deliver: (request) => { if (fail) throw new Error('socket closed'); return { ok: true, status: 'delivered', requestId: request.requestId }; } });
+  const first = await f.session({ action: 'send', taskId: 'issue-1', text: 'hello', requestId: 'r-1' });
+  assert.equal(first.ok, false);
+  assert.match(first.error, /投递结果不确定，不会自动重发/u);
+  assert.equal(f.runtime.leaderState.deliveries[0].status, 'uncertain');
+  assert.equal(f.runtime.leaderAdmissions.has('r-1'), false, 'admission is closed once settled');
+  fail = false;
+  // Same request: not resent.
+  const same = await f.session({ action: 'send', taskId: 'issue-1', text: 'hello', requestId: 'r-1' });
+  assert.equal(same.ok, false);
+  assert.match(same.error, /不自动重发/u);
+  // New request on the same worker: blocked while the earlier delivery is unconfirmed.
+  const next = await f.session({ action: 'send', taskId: 'issue-1', text: 'hello', requestId: 'r-2' });
+  assert.equal(next.ok, false);
+  assert.match(next.error, /该会话有未确认投递/u);
+  const archive = await f.session({ action: 'archive', taskId: 'issue-1', reason: 'done' });
+  assert.equal(archive.ok, false);
+  assert.match(archive.error, /未确认投递/u);
+  assert.equal(f.calls.deliver.length, 1);
+  // The board surfaces it.
+  assert.equal((await f.board()).result.openDeliveries[0].requestId, 'r-1');
+  // After a human/Leader check, the same worker accepts a new message again.
+  assert.equal((await f.session({ action: 'resolve_delivery', requestId: 'r-1', resolution: 'not-delivered' })).ok, true);
+  assert.equal((await f.session({ action: 'send', taskId: 'issue-1', text: 'hello', requestId: 'r-2' })).ok, true);
+});
+
+test('a rejected delivery is recorded as rejected; an unverifiable receipt is uncertain', async () => {
+  const f = await ready({ deliver: (request) => ({ ok: false, status: 'rejected', error: 'worker became busy' }) });
+  const rejected = await f.session({ action: 'send', taskId: 'issue-1', text: 'hello', requestId: 'r-1' });
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error, /宿主拒绝投递：worker became busy/u);
+  assert.equal(f.runtime.leaderState.deliveries[0].status, 'rejected');
+  // A rejected record does not block a new request; the same requestId stays blocked.
+  assert.equal((await f.session({ action: 'send', taskId: 'issue-1', text: 'hello', requestId: 'r-1' })).ok, false);
+  f.runtime.leaderAdapter.deliver = async () => ({ ok: true, status: 'delivered', requestId: 'someone-else' });
+  const unverifiable = await f.session({ action: 'send', taskId: 'issue-1', text: 'hello', requestId: 'r-2' });
+  assert.equal(unverifiable.ok, false);
+  assert.match(unverifiable.error, /投递回执不可验证，不会自动重发/u);
+  assert.equal(f.runtime.leaderState.deliveries.find((entry) => entry.requestId === 'r-2').status, 'uncertain');
+  f.runtime.leaderAdapter.deliver = async () => undefined;
+  const none = await f.session({ action: 'send', taskId: 'issue-1', text: 'hello', requestId: 'r-3' });
+  assert.equal(none.ok, false);
+});
+
+test('the delivery is durably recorded as sending before the adapter is called', async () => {
+  const f = await ready();
+  let journalAtDeliver = null;
+  f.runtime.leaderAdapter.deliver = async (request) => {
+    journalAtDeliver = copy(f.runtime.leaderState.deliveries);
+    return { ok: true, status: 'delivered', requestId: request.requestId };
   };
-  const result = await session('create', { taskId: 'issue-1-a' }, agent()); assert.equal(result.ok, true, result.error);
-  assert.deepEqual(forced, [['issue-1-a', true]]); assert.equal(result.result.existing, false);
-  const items = runtime.leaderState.items.filter((entry) => entry.taskId === 'issue-1-a');
-  assert.deepEqual(items.map((entry) => entry.sessionId), ['worker-new']); assert.equal(items[0].status, 'watching');
-  assert.equal(runtime.leaderProjection().audit.at(-1).action, 'session-create');
-  runtime.dispatch = async () => ({ ok: false, error: 'GitLab unavailable' });
-  runtime.ctx.workspaceRegistry.archivedSessionIds = ['worker-a', 'worker-b'];
-  const failed = await session('create', { taskId: 'issue-1-b' }, agent()); assert.equal(failed.ok, false); assert.match(failed.error, /GitLab unavailable/);
+  const persists = f.calls.persist.length;
+  await f.session({ action: 'send', taskId: 'issue-1', text: 'hello', requestId: 'r-1' });
+  assert.equal(journalAtDeliver[0].status, 'sending');
+  assert.ok(f.calls.persist.length > persists);
+  assert.equal(f.calls.persist.some((snapshot) => snapshot.deliveries.some((entry) => entry.requestId === 'r-1' && entry.status === 'sending')), true);
 });
 
-test('session_rename keeps the Issue prefix, updates the Issue record and is audited', async () => {
-  const { runtime, setup, invoke, issue, agent, calls, session } = fixture(); await setup(); withIssueLookup(runtime);
-  for (const title of ['修复 CI', '#b 错误 Issue', `#a ${'x'.repeat(80)}`, '']) assert.equal((await session('rename', { ...issue(), title }, agent())).ok, false, title);
-  assert.equal((await session('rename', { taskId: 'issue-1-a', sessionId: 'leader', title: '#a x' }, agent())).ok, false);
-  const result = await session('rename', { ...issue(), title: '#a 修复 CI 流水线' }, agent()); assert.equal(result.ok, true, result.error);
-  assert.deepEqual(calls.rename.at(-1), ['worker-a', '#a 修复 CI 流水线']);
-  assert.equal(runtime.state.handled['issue-1-a'].sessionTitle, '#a 修复 CI 流水线');
-  assert.equal(runtime.leaderProjection().audit.at(-1).action, 'session-rename');
+test('a send whose journal write fails never reaches the adapter', async () => {
+  const f = await ready();
+  const before = f.calls.persist.length;
+  f.runtime.persistLeader = async () => { throw new Error('disk full'); };
+  const result = await f.session({ action: 'send', taskId: 'issue-1', text: 'hello' });
+  assert.equal(result.ok, false);
+  assert.equal(f.calls.deliver.length, 0);
+  assert.ok(f.calls.persist.length >= before);
 });
 
-test('session archive takes an optional reason, reports a DSH refusal as an error and unenrolls the archived worker', async () => {
-  const { runtime, setup, issue, session } = fixture(); await setup();
-  const archived = []; let refuse = true;
-  runtime.setSessionArchived = async (sessionId, value) => { if (refuse) throw new Error('session is running'); archived.push([sessionId, value]); return { ok: true }; };
-  const refused = await session('archive', issue()); assert.equal(refused.ok, false); assert.match(refused.error, /session is running/);
-  assert.equal(runtime.leaderState.items.length, 1); refuse = false;
-  assert.equal((await session('archive', { ...issue(), reason: 'x'.repeat(501) })).ok, false);
-  const result = await session('archive', { ...issue(), reason: '任务已完成，MR 已合并' }); assert.equal(result.ok, true, result.error);
-  assert.deepEqual(archived, [['worker-a', true]]); assert.equal(runtime.leaderState.items.length, 0);
-  const audit = runtime.leaderProjection().audit.at(-1); assert.equal(audit.action, 'session-archive'); assert.match(audit.detail, /MR 已合并/);
-  assert.equal((await session('archive', issue())).ok, false);
-});
-test('session_select_model only accepts catalog models on a quiet worker and lists choices on refusal', async () => {
-  const { runtime, setup, invoke, issue, agent, calls, sessions, session } = fixture(); await setup();
-  runtime.host.modelCatalog = async () => ({ groups: [{ id: 'kiro', models: [{ id: 'fast' }, { id: 'deep' }] }] });
-  const unknown = await session('model', { ...issue(), model: { provider: 'kiro', model: 'ghost' } }, agent());
-  assert.equal(unknown.ok, false); assert.deepEqual(unknown.result.available, [{ provider: 'kiro', model: 'fast' }, { provider: 'kiro', model: 'deep' }]);
-  sessions.set('worker-a', sessionState({ running: true }));
-  assert.equal((await session('model', { ...issue(), model: { provider: 'kiro', model: 'deep' } }, agent())).ok, false);
-  sessions.set('worker-a', sessionState());
-  const result = await session('model', { ...issue(), model: { provider: 'kiro', model: 'deep' } }, agent()); assert.equal(result.ok, true, result.error);
-  assert.equal(calls.model.at(-1).sessionId, 'worker-a'); assert.equal(calls.model.at(-1).model, 'deep');
-  assert.equal(runtime.leaderProjection().audit.at(-1).action, 'session-model');
+// ---------------------------------------------------------------------------------------------------------------
+// steer
+// ---------------------------------------------------------------------------------------------------------------
+
+test('steer sends a guided prompt to a running worker with a deterministic requestId and the Leader label', async () => {
+  const f = await ready();
+  f.sessions.set('worker-a', sessionState({ running: true }));
+  const result = await f.session({ action: 'steer', taskId: 'issue-1', text: '先别改接口', reason: '范围过大' });
+  assert.equal(result.ok, true);
+  assert.equal(result.result.mode, 'steer');
+  assert.match(result.result.requestId, /^leader-steer-[0-9a-f]{40}$/u);
+  const prompt = f.calls.prompt.at(-1);
+  assert.equal(prompt.mode, 'steer');
+  assert.equal(prompt.sessionId, 'worker-a');
+  assert.equal(prompt.requestId, result.result.requestId);
+  const text = prompt.content[0].text;
+  assert.match(text, /^\[来自 WorkStation Leader 的纠偏引导；不是人类输入，不授予新权限\]/u);
+  assert.match(text, /原因：范围过大/u);
+  assert.match(text, /先别改接口$/u);
+  assert.equal(f.runtime.leaderState.deliveries[0].kind, 'steer');
+  assert.equal(f.runtime.leaderState.deliveries[0].status, 'sent');
+  // The identical steer is a duplicate, not a second prompt.
+  const again = await f.session({ action: 'steer', taskId: 'issue-1', text: '先别改接口', reason: '范围过大' });
+  assert.equal(again.ok, true);
+  assert.equal(again.result.duplicate, true);
+  assert.equal(f.calls.prompt.filter((entry) => entry.mode === 'steer').length, 1);
 });
 
-test('note stores structured notes; needsHuman marks only that Issue needs-human without pausing', async () => {
-  const { runtime, setup, invoke, issue, agent, advance } = fixture(); await setup(2);
-  assert.equal((await invoke('note', { ...issue(), stage: 'x'.repeat(201) }, agent())).ok, false);
-  assert.equal((await invoke('note', { ...issue(), bogus: 1 }, agent())).ok, false);
-  const updated = await invoke('note', { ...issue(), stage: '修复中', next: '等 CI', decisions: ['采用方案 B'] }, agent());
-  assert.equal(updated.ok, true, updated.error); assert.equal(updated.result.alertId, null);
-  const item = runtime.leaderProjection().items[0];
-  assert.equal(item.notes.stage, '修复中'); assert.deepEqual(item.notes.decisions, ['采用方案 B']); assert.match(item.summary, /下一步：等 CI/);
-  const merged = await invoke('note', { taskId: 'issue-1-a', waitingOn: '人类确认' }, agent());
-  assert.equal(merged.result.notes.stage, '修复中'); assert.equal(merged.result.notes.waitingOn, '人类确认');
-  const asked = await invoke('note', { ...issue(), needsHuman: '是否发布到生产？' }, agent()); assert.ok(asked.result.alertId);
-  assert.equal(runtime.leaderState.items[0].status, 'needs-human'); assert.equal('paused' in runtime.leaderState.items[0], false);
-  assert.equal((await advance()).ok, true); assert.equal((await advance({}, 'b')).ok, true);
-  assert.equal(runtime.leaderProjection().audit.some((entry) => entry.action === 'note'), true);
+test('steer needs a running worker, no pending native input, valid text and reason', async () => {
+  const f = await ready();
+  const idle = await f.session({ action: 'steer', taskId: 'issue-1', text: 'x' });
+  assert.equal(idle.ok, false);
+  assert.match(idle.error, /没有运行中的回合；空闲会话请用 gitlab_leader_session send/u);
+  f.sessions.set('worker-a', sessionState({ running: true, pendingInput: ['approval'] }));
+  const pending = await f.session({ action: 'steer', taskId: 'issue-1', text: 'x' });
+  assert.equal(pending.ok, false);
+  assert.match(pending.error, /等待原生审批\/问答，只能由人类在 worker 会话内回答/u);
+  f.sessions.set('worker-a', sessionState({ running: true }));
+  assert.equal((await f.session({ action: 'steer', taskId: 'issue-1', text: '' })).ok, false);
+  assert.equal((await f.session({ action: 'steer', taskId: 'issue-1', text: 'x', reason: 7 })).ok, false);
+  assert.equal((await f.session({ action: 'steer', taskId: 'issue-1', text: 'x', reason: 'r'.repeat(501) })).ok, false);
+  assert.equal((await f.session({ action: 'steer', taskId: 'issue-1', text: 'x', requestId: '' })).ok, false);
+  assert.equal(f.calls.prompt.filter((entry) => entry.mode === 'steer').length, 0);
 });
 
-test('send relays a human answer as a Leader message without verifying human text and works while paused', async () => {
-  const { runtime, setup, invoke, issue, agent, advance, calls } = fixture(); await setup();
-  await invoke('note', { ...issue(), needsHuman: '采用方案 A 还是 B？' }, agent());
-  assert.equal((await advance({ text: '人类回复：请采用方案 B' })).ok, true);
-  assert.match(calls.deliver.at(-1).body, /来自 WorkStation Leader/); assert.match(calls.deliver.at(-1).body, /方案 B/);
-  assert.equal(runtime.leaderState.items[0].alerts[0].status, 'acknowledged');
-  assert.equal((await invoke('pause')).ok, true);
-  assert.equal((await advance({ text: '先别合并' })).ok, true); assert.equal(calls.deliver.length, 2);
+test('steer cannot reach the Leader session, human sessions or archived workers', async () => {
+  const f = await ready();
+  f.sessions.set('worker-a', sessionState({ running: true }));
+  f.addTodo('todo-9', 'human', { routed: true });
+  f.sessions.set('human', sessionState({ running: true }));
+  assert.equal((await f.session({ action: 'steer', taskId: 'todo-9', text: 'x' })).ok, false);
+  assert.equal((await f.session({ action: 'steer', taskId: 'issue-1', sessionId: 'human', text: 'x' })).ok, false);
+  f.archivedSessionIds.push('worker-a');
+  assert.equal((await f.session({ action: 'steer', taskId: 'issue-1', text: 'x' })).ok, false);
+  assert.equal(f.calls.prompt.filter((entry) => entry.mode === 'steer').length, 0);
 });
 
-test('send never answers native questions and waits for an idle worker', async () => {
-  const { setup, issue, advance, sessions, calls } = fixture(); await setup();
-  for (const patch of [{ pendingInput: ['question'] }, { running: true }, { queue: [{}] }]) {
-    sessions.set('worker-a', sessionState(patch));
-    assert.equal((await advance()).ok, false);
+test('a Host-rejected steer is dropped and can be retried; an unclear failure is uncertain and not resent', async () => {
+  let mode = 'reject';
+  const f = await ready({ prompt: (request) => {
+    if (request.mode !== 'steer') return { accepted: true };
+    if (mode === 'reject') throw remote('turn finished', 'session/rejected');
+    if (mode === 'throw') throw new Error('socket reset');
+    return { accepted: true };
+  } });
+  f.sessions.set('worker-a', sessionState({ running: true }));
+  const rejected = await f.session({ action: 'steer', taskId: 'issue-1', text: 'go left', requestId: 's-1' });
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error, /宿主拒绝纠偏：turn finished/u);
+  assert.deepEqual(f.runtime.leaderState.deliveries, []);
+  mode = 'throw';
+  const unclear = await f.session({ action: 'steer', taskId: 'issue-1', text: 'go left', requestId: 's-1' });
+  assert.equal(unclear.ok, false);
+  assert.match(unclear.error, /纠偏投递结果不确定，不会自动重发/u);
+  assert.equal(f.runtime.leaderState.deliveries[0].status, 'uncertain');
+  mode = 'ok';
+  const retry = await f.session({ action: 'steer', taskId: 'issue-1', text: 'go left', requestId: 's-1' });
+  assert.equal(retry.ok, false);
+  assert.match(retry.error, /不自动重发/u);
+  assert.equal(f.calls.prompt.filter((entry) => entry.mode === 'steer').length, 2);
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// rename / model / archive
+// ---------------------------------------------------------------------------------------------------------------
+
+test('rename keeps the #iid prefix for Issue sessions, accepts any title for ad-hoc tasks and updates the records', async () => {
+  const f = await ready();
+  const bad = await f.session({ action: 'rename', taskId: 'issue-1', title: '随便取名' });
+  assert.equal(bad.ok, false);
+  assert.match(bad.error, /Issue 会话标题必须以 #1 开头/u);
+  assert.equal((await f.session({ action: 'rename', taskId: 'issue-1', title: '#12 看错号' })).ok, false, '#12 is not #1');
+  assert.equal((await f.session({ action: 'rename', taskId: 'issue-1', title: '' })).ok, false);
+  assert.equal((await f.session({ action: 'rename', taskId: 'issue-1', title: 'x'.repeat(81) })).ok, false);
+  assert.equal(f.calls.rename.filter((entry) => entry.sessionId === 'worker-a').length, 0);
+  const ok = await f.session({ action: 'rename', taskId: 'issue-1', title: '#1 修复登录' });
+  assert.equal(ok.ok, true);
+  assert.deepEqual(f.calls.rename.at(-1), { sessionId: 'worker-a', title: '#1 修复登录' });
+  assert.equal(f.runtime.state.handled['issue-1'].sessionTitle, '#1 修复登录');
+  assert.ok(f.calls.persistQuiet.includes('会话标题'));
+
+  const task = (await f.session({ action: 'create', title: 'T', brief: 'B' })).result;
+  const renamed = await f.session({ action: 'rename', taskId: task.taskId, title: '任意标题' });
+  assert.equal(renamed.ok, true);
+  assert.equal(f.runtime.leaderState.tasks[0].title, '任意标题');
+  const todoItem = f.addTodo('todo-5', 'worker-b');
+  assert.equal((await f.session({ action: 'rename', taskId: todoItem.id, title: 'free form' })).ok, true);
+});
+
+test('rename, model and archive refuse the Leader session, human sessions, archived and missing sessions', async () => {
+  const f = await ready();
+  f.addTodo('todo-9', 'human', { routed: true });
+  const item = f.addIssue(2);
+  f.runtime.state.handled[item.id] = handledRecord(item, 'leader');
+  for (const args of [{ action: 'rename', title: '#1 x' }, { action: 'model', model: { provider: 'prov', model: 'm1' } }, { action: 'archive', reason: 'cleanup' }]) {
+    for (const target of [{ taskId: 'todo-9' }, { taskId: 'issue-2' }, { taskId: 'issue-1', sessionId: 'human' }, { taskId: 'leader' }, { taskId: 'issue-1', sessionId: 'leader' }]) {
+      const result = await f.session({ ...args, ...target });
+      assert.equal(result.ok, false, `${args.action} ${JSON.stringify(target)}`);
+    }
   }
-  assert.equal(calls.deliver.length, 0); void issue;
-});
-test('read_issue exposes pending native question text for the human, and wake lines stay short', async () => {
-  const { runtime, setup, invoke, issue, agent, sessions, logs, calls } = fixture(); await setup();
-  runtime.leaderAdapter.questions = async () => ['要不要删除旧分支？ 选项：是 / 否'];
-  sessions.set('worker-a', sessionState({ cursor: 11, pendingInput: ['question'] }));
-  logs.get('worker-a').push({ seq: 11, type: 'assistant/message', data: { text: 'x'.repeat(5000) } });
-  const read = await invoke('read', issue(), agent()); assert.deepEqual(read.result.pendingQuestions, ['要不要删除旧分支？ 选项：是 / 否']);
-  await runtime.reconcileLeader(); const body = calls.notify.at(-1).body;
-  assert.ok(body.length < 2000, `wake body ${body.length}`); assert.doesNotMatch(body, /xxxxxxxxxx/); assert.match(body, /taskId=issue-1-a/);
+  assert.equal(f.calls.model.filter((entry) => entry.sessionId !== 'leader').length, 0);
+  assert.equal(f.calls.setArchived.length + f.calls.archive.length, 0);
+  assert.equal(f.calls.rename.filter((entry) => entry.sessionId !== 'leader').length, 0);
+  f.archivedSessionIds.push('worker-a');
+  assert.equal((await f.session({ action: 'rename', taskId: 'issue-1', title: '#1 x' })).ok, false);
+  f.archivedSessionIds.length = 0;
+  f.sessions.delete('worker-a');
+  assert.equal((await f.session({ action: 'rename', taskId: 'issue-1', title: '#1 x' })).ok, false);
 });
 
-test('a running worker silent for 20 minutes wakes the Leader once per stall', async () => {
-  const { runtime, setup, sessions, calls } = fixture(); await setup();
-  sessions.set('worker-a', sessionState({ running: true })); await runtime.reconcileLeader();
-  const count = calls.notify.length;
-  runtime.leaderState.items[0].lastActivityAt = Date.now() - 21 * 60 * 1000; await runtime.reconcileLeader();
-  assert.equal(calls.notify.length, count + 1); assert.match(calls.notify.at(-1).body, /stalled/);
-  await runtime.reconcileLeader(); assert.equal(calls.notify.length, count + 1);
+test('model change needs a catalog model and a quiet active session', async () => {
+  const f = await ready();
+  const model = { provider: 'prov', model: 'm2', reasoningEffort: 'high' };
+  const ok = await f.session({ action: 'model', taskId: 'issue-1', model });
+  assert.equal(ok.ok, true);
+  assert.deepEqual(f.calls.model.at(-1), { sessionId: 'worker-a', ...model });
+  const unknown = await f.session({ action: 'model', taskId: 'issue-1', model: { provider: 'prov', model: 'nope' } });
+  assert.equal(unknown.ok, false);
+  assert.match(unknown.error, /该模型不在宿主模型目录中/u);
+  assert.deepEqual(unknown.result.available, [{ provider: 'prov', model: 'm1' }, { provider: 'prov', model: 'm2' }]);
+  assert.equal((await f.session({ action: 'model', taskId: 'issue-1', model: null })).ok, false);
+  assert.equal((await f.session({ action: 'model', taskId: 'issue-1', model: { provider: '', model: 'm1' } })).ok, false);
+  assert.equal((await f.session({ action: 'model', taskId: 'issue-1' })).ok, false);
+  f.sessions.set('worker-a', sessionState({ running: true }));
+  const busy = await f.session({ action: 'model', taskId: 'issue-1', model });
+  assert.equal(busy.ok, false);
+  assert.match(busy.error, /会话忙碌\/状态不可验证，未换模型/u);
+  f.sessions.set('worker-a', sessionState({ pendingInput: ['approval'] }));
+  assert.equal((await f.session({ action: 'model', taskId: 'issue-1', model })).ok, false);
+  f.runtime.host.modelCatalog = async () => { throw new Error('catalog offline'); };
+  f.sessions.set('worker-a', sessionState());
+  assert.match((await f.session({ action: 'model', taskId: 'issue-1', model })).error, /模型目录不可用：catalog offline/u);
+  assert.equal(f.calls.model.filter((entry) => entry.sessionId === 'worker-a').length, 1);
 });
 
-// ---- Leader ad-hoc task sessions (v2.38: work without a GitLab Issue) ----
+test('archive needs a reason and a quiet session; Issue workers go through setSessionArchived, ad-hoc tasks through the Host', async () => {
+  const f = await ready();
+  assert.match((await f.session({ action: 'archive', taskId: 'issue-1' })).error, /归档必须说明理由/u);
+  assert.equal((await f.session({ action: 'archive', taskId: 'issue-1', reason: '   ' })).ok, false);
+  assert.equal((await f.session({ action: 'archive', taskId: 'issue-1', reason: 'r'.repeat(501) })).ok, false);
+  f.sessions.set('worker-a', sessionState({ running: true }));
+  const busy = await f.session({ action: 'archive', taskId: 'issue-1', reason: 'done' });
+  assert.equal(busy.ok, false);
+  assert.match(busy.error, /会话仍在运行\/有排队\/等待原生审批，未归档/u);
+  f.sessions.set('worker-a', sessionState({ pendingInput: ['question'] }));
+  assert.equal((await f.session({ action: 'archive', taskId: 'issue-1', reason: 'done' })).ok, false);
+  f.sessions.set('worker-a', sessionState());
+  const ok = await f.session({ action: 'archive', taskId: 'issue-1', reason: '  已合并  ' });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.result.archived, true);
+  assert.equal(ok.result.reason, '已合并');
+  assert.deepEqual(f.calls.setArchived, [{ sessionId: 'worker-a', archived: true }]);
+  assert.equal(f.calls.archive.length, 0);
+  const again = await f.session({ action: 'archive', taskId: 'issue-1', reason: 'again' });
+  assert.equal(again.ok, true);
+  assert.equal(again.result.already, true);
+  assert.equal(f.calls.setArchived.length, 1);
 
-const withTaskHost = (runtime, sessions, sessionId = 'task-s') => {
-  const created = []; const prompts = []; const archived = [];
-  runtime.host.createSession = async (request) => { created.push(copy(request)); sessions.set(sessionId, sessionState()); return sessionId; };
-  runtime.host.prompt = async (request) => { prompts.push(copy(request)); };
-  runtime.host.archiveSession = async (id) => { archived.push(id); };
-  return { created, prompts, archived };
-};
-
-test('session_create without taskId opens an enrolled ad-hoc task session with its brief, even while paused', async () => {
-  const { runtime, setup, invoke, agent, sessions, calls, session } = fixture(); await setup();
-  const host = withTaskHost(runtime, sessions);
-  for (const request of [{}, { title: '调查 IAM' }, { brief: '梳理' }, { title: 'x'.repeat(71), brief: '梳理' }, { title: '调查', brief: 'x'.repeat(8001) }]) {
-    assert.equal((await session('create', request, agent())).ok, false, JSON.stringify(request).slice(0, 40));
-  }
-  assert.equal(host.created.length, 0);
-  assert.equal((await invoke('pause')).ok, true);
-  const result = await session('create', { title: '调查 IAM 架构', brief: '梳理 IAM 服务的模块边界与鉴权链路，输出结论。' }, agent());
-  assert.equal(result.ok, true, result.error);
-  const { taskId } = result.result;
-  assert.match(taskId, /^leader-task-[0-9a-f]{12}$/u); assert.equal(result.result.kind, 'task'); assert.equal(result.result.briefDelivered, true);
-  assert.deepEqual(host.created, [{ workspaceId: 'issue-workspace' }]);
-  assert.deepEqual(calls.rename.at(-1), ['task-s', '[临时] 调查 IAM 架构']);
-  assert.equal(host.prompts.length, 1); assert.equal(host.prompts[0].requestId, `${taskId}-brief`); assert.equal(host.prompts[0].mode, 'queue');
-  assert.match(host.prompts[0].content[0].text, /临时任务/); assert.match(host.prompts[0].content[0].text, /梳理 IAM 服务的模块边界/);
-  const projection = runtime.leaderProjection();
-  const item = projection.items.find((entry) => entry.taskId === taskId);
-  assert.equal(item.kind, 'task'); assert.equal(item.provenance, 'leader'); assert.equal(item.sessionId, 'task-s');
-  assert.deepEqual(projection.tasks.map((task) => [task.taskId, task.status]), [[taskId, 'created']]);
-  assert.equal(projection.audit.at(-1).action, 'task-create');
-  // No count limit: a second task is just another session.
-  withTaskHost(runtime, sessions, 'task-t');
-  assert.equal((await session('create', { title: '第二个调查', brief: '另一个独立问题。' }, agent())).ok, true);
-  assert.equal(runtime.leaderProjection().tasks.length, 2);
+  const task = (await f.session({ action: 'create', title: 'T', brief: 'B' })).result;
+  assert.equal((await f.session({ action: 'archive', taskId: task.taskId, reason: 'finished' })).ok, true);
+  assert.deepEqual(f.calls.archive, [task.sessionId]);
+  assert.equal(f.runtime.leaderState.tasks[0].status, 'archived');
+  assert.equal(f.calls.setArchived.length, 1);
 });
 
-test('ad-hoc tasks are read, continued, renamed and archived like Issue workers', async () => {
-  const { runtime, setup, invoke, agent, sessions, calls, session } = fixture(); await setup();
-  const host = withTaskHost(runtime, sessions);
-  const { taskId } = (await session('create', { title: '调查 IAM 架构', brief: '梳理 IAM 鉴权链路。' }, agent())).result;
-  const target = { taskId, sessionId: 'task-s' };
-  let gitlab = 0; runtime.leaderIssueGitlab = async () => { gitlab += 1; return {}; };
-  const read = await invoke('read', target, agent()); assert.equal(read.ok, true, read.error);
-  assert.equal(read.result.kind, 'task'); assert.match(read.result.brief, /IAM 鉴权链路/); assert.equal(gitlab, 0); assert.equal(read.result.gitlab, undefined);
-  const continued = await session('send', { ...target, text: '补充：只看 paas-iam 仓。' }, agent());
-  assert.equal(continued.ok, true, continued.error); assert.match(calls.deliver.at(-1).body, /仅限原临时任务：调查 IAM 架构/);
-  const renamed = await session('rename', { ...target, title: 'IAM 架构调查（已出结论）' }, agent()); assert.equal(renamed.ok, true, renamed.error);
-  assert.deepEqual(calls.rename.at(-1), ['task-s', 'IAM 架构调查（已出结论）']);
-  assert.equal(runtime.leaderProjection().tasks[0].title, 'IAM 架构调查（已出结论）');
-  const archived = await session('archive', { ...target, reason: '调查已完成并已汇报' }, agent()); assert.equal(archived.ok, true, archived.error);
-  assert.deepEqual(host.archived, ['task-s']);
-  assert.equal(runtime.leaderState.items.some((entry) => entry.taskId === taskId), false);
-  assert.deepEqual(runtime.leaderProjection().tasks, []);
-  assert.equal(runtime.leaderState.tasks[0].status, 'archived');
+test('archive failures are reported: unverifiable state, and a Host refusal from setSessionArchived', async () => {
+  const f = await ready({ setArchived: () => ({ ok: false, error: '会话仍在执行，结算后再变更归档状态。' }) });
+  const refused = await f.session({ action: 'archive', taskId: 'issue-1', reason: 'done' });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error, '会话仍在执行，结算后再变更归档状态。');
+  f.runtime.host.sessionState = async () => { throw remote('host exploded', 'session/internal'); };
+  const unknown = await f.session({ action: 'archive', taskId: 'issue-1', reason: 'done' });
+  assert.equal(unknown.ok, false);
+  assert.match(unknown.error, /会话状态不可验证，未归档/u);
 });
 
-test('ad-hoc task workspace must be registered and failures list the available workspaces', async () => {
-  const { runtime, setup, invoke, agent, sessions, session } = fixture(); await setup();
-  const host = withTaskHost(runtime, sessions);
-  runtime.resolveWorkspaceId = () => { throw new Error('配置的工作区文件夹未在 DSH 工作区中注册：D:\\nope'); };
-  runtime.ctx.workspaceRegistry.list = () => [{ path: 'D:\\agent-workspace' }, { cwd: 'D:\\other' }];
-  const result = await session('create', { title: '调查', brief: '说明', workingDirectory: 'D:\\nope' }, agent());
-  assert.equal(result.ok, false); assert.deepEqual(result.result.available, ['D:\\agent-workspace', 'D:\\other']);
-  assert.equal(host.created.length, 0); assert.deepEqual(runtime.leaderState.tasks, []);
+test('a cold quiet session can be archived; a missing session cannot be acted on', async () => {
+  const f = await ready();
+  f.sessions.set('worker-a', sessionState({ active: false, queue: null }));
+  assert.equal((await f.session({ action: 'archive', taskId: 'issue-1', reason: 'done' })).ok, true);
+  const g = await ready();
+  g.sessions.delete('worker-a');
+  const result = await g.session({ action: 'archive', taskId: 'issue-1', reason: 'done' });
+  assert.equal(result.ok, false);
+  assert.equal(g.calls.setArchived.length, 0);
 });
 
-test('uncertain ad-hoc creation is never retried and only the human can dismiss it', async () => {
-  const { runtime, setup, invoke, agent, session } = fixture(); await setup();
-  runtime.host.createSession = async () => { throw new Error('timeout'); };
-  const failed = await session('create', { title: '调查 IAM', brief: '说明' }, agent());
-  assert.equal(failed.ok, false); assert.match(failed.error, /timeout/);
-  const { taskId } = failed.result;
-  assert.equal(runtime.leaderProjection().tasks[0].status, 'uncertain');
-  assert.equal(runtime.leaderState.items.some((entry) => entry.taskId === taskId), false);
-  // A crash between reservation and Host create also latches as uncertain.
-  const reloaded = normalizeLeaderState({ ...copy(runtime.leaderState), tasks: [{ taskId: 'leader-task-0123456789ab', sessionId: null, title: 't', brief: 'b', workspace: '', status: 'creating', createdAt: 1, error: '' }] });
-  assert.equal(reloaded.tasks[0].status, 'uncertain'); assert.match(reloaded.tasks[0].error, /禁止自动重建/);
-  assert.equal((await invoke('resolveTask', { taskId, action: 'dismiss' }, agent())).ok, false);
-  assert.equal((await invoke('resolveTask', { taskId, action: 'retry' })).ok, false);
-  const dismissed = await invoke('resolveTask', { taskId, action: 'dismiss' }); assert.equal(dismissed.ok, true, dismissed.error);
-  assert.deepEqual(dismissed.result.tasks, []); assert.equal(runtime.leaderProjection().audit.at(-1).action, 'task-dismiss');
-  assert.equal((await invoke('resolveTask', { taskId, action: 'dismiss' })).ok, false);
+// ---------------------------------------------------------------------------------------------------------------
+// resolve_delivery
+// ---------------------------------------------------------------------------------------------------------------
+
+async function uncertainDelivery() {
+  const f = await ready({ deliver: () => { throw new Error('socket closed'); } });
+  await f.session({ action: 'send', taskId: 'issue-1', text: 'hello', requestId: 'r-1' });
+  return f;
+}
+
+test('resolve_delivery lets the Leader or the UI settle an uncertain delivery as delivered or not delivered', async () => {
+  const viaAgent = await uncertainDelivery();
+  const delivered = await viaAgent.session({ action: 'resolve_delivery', requestId: 'r-1', resolution: 'delivered' });
+  assert.equal(delivered.ok, true);
+  assert.equal(delivered.result.status, 'sent');
+  assert.equal(delivered.result.resolvedBy, 'leader');
+  assert.equal(viaAgent.runtime.leaderState.deliveries[0].status, 'sent');
+  assert.equal((await viaAgent.board()).result.openDeliveries.length, 0);
+
+  const viaUi = await uncertainDelivery();
+  const denied = await viaUi.invoke('resolveDelivery', { requestId: 'r-1', outcome: 'not-delivered' });
+  assert.equal(denied.ok, true);
+  assert.equal(denied.result.status, 'rejected');
+  assert.equal(denied.result.resolvedBy, 'ui');
+  assert.match(denied.result.error, /未送达；不会自动重发/u);
+  assert.equal(viaUi.calls.deliver.length, 1, 'resolving never resends');
+  viaUi.runtime.leaderAdapter.deliver = async (request) => ({ ok: true, status: 'delivered', requestId: request.requestId });
+  assert.equal((await viaUi.session({ action: 'send', taskId: 'issue-1', text: 'new', requestId: 'r-2' })).ok, true);
 });
 
-// ---- Leader orchestration (v2.39): running cap + queue, dependencies, completion, Todo routing ----
-
-const gitlabFacts = (patch = {}) => ({ available: true, state: 'opened', mergeRequests: [], ...patch });
-const auditActions = (runtime) => runtime.leaderState.audit.map((entry) => entry.action);
-
-test('running-worker cap queues continue/create FIFO, dedupes, never dequeues while paused and lets the human cancel', async () => {
-  const { runtime, setup, invoke, issue, agent, sessions, calls, advance, session } = fixture(); await setup(2);
-  const host = withTaskHost(runtime, sessions);
-  assert.equal((await invoke('configure', { settings: { maxRunningWorkers: 1 } })).ok, true);
-  assert.equal(runtime.leaderProjection().settings.maxRunningWorkers, 1);
-  sessions.set('worker-a', sessionState({ running: true })); await runtime.reconcileLeader();
-  const queued = await advance({}, 'b');
-  assert.equal(queued.ok, true, queued.error); assert.equal(queued.result.queued, true); assert.equal(queued.result.position, 1);
-  assert.equal(calls.deliver.length, 0);
-  const again = await advance({ text: '换个说法也算同一个续办请求' }, 'b');
-  assert.equal(again.result.queueId, queued.result.queueId); assert.equal(again.result.duplicate, true);
-  const create = await session('create', { title: '调查 IAM', brief: '梳理鉴权链路。' }, agent());
-  assert.equal(create.ok, true, create.error); assert.equal(create.result.queued, true); assert.equal(create.result.position, 2);
-  assert.equal(host.created.length, 0);
-  assert.deepEqual(runtime.leaderProjection().queue.map((entry) => [entry.kind, entry.taskId, entry.position]), [['continue', 'issue-1-b', 1], ['create', null, 2]]);
-  // Paused Leader never dequeues, even when slots are free.
-  assert.equal((await invoke('pause')).ok, true);
-  sessions.set('worker-a', sessionState()); await runtime.reconcileLeader();
-  assert.equal(runtime.leaderState.queue.length, 2); assert.equal(calls.deliver.length, 0);
-  assert.equal((await invoke('start')).ok, true);
-  await runtime.reconcileLeader();
-  // FIFO: the continue runs first and occupies the only slot; the create keeps waiting.
-  assert.equal(calls.deliver.length, 1); assert.equal(calls.deliver[0].sessionId, 'worker-b');
-  assert.match(calls.deliver[0].body, /继续核查原 Issue 的 CI 结果/);
-  assert.equal(host.created.length, 0); assert.deepEqual(runtime.leaderState.queue.map((entry) => entry.kind), ['create']);
-  assert.ok(auditActions(runtime).includes('queue')); assert.ok(auditActions(runtime).includes('dequeue'));
-  const queueId = runtime.leaderState.queue[0].id;
-  assert.equal((await invoke('cancelQueued', { queueId }, agent())).ok, false);
-  assert.equal((await invoke('note', { ...issue('a'), complete: { summary: 'x' } })).ok, false);
-  assert.equal((await invoke('cancelQueued', { queueId: 'leader-queue-nope' })).ok, false);
-  const cancelled = await invoke('cancelQueued', { queueId }); assert.equal(cancelled.ok, true, cancelled.error);
-  assert.deepEqual(cancelled.result.queue, []); assert.equal(auditActions(runtime).at(-1), 'queue-drop');
+test('resolve_delivery rejects bad input, unknown requests and deliveries that are not uncertain', async () => {
+  const f = await ready();
+  await f.session({ action: 'send', taskId: 'issue-1', text: 'ok', requestId: 'sent-1' });
+  assert.match((await f.session({ action: 'resolve_delivery', requestId: 'sent-1' })).error, /必须提供 requestId 和 resolution/u);
+  assert.match((await f.session({ action: 'resolve_delivery', requestId: 'sent-1', resolution: 'maybe' })).error, /必须提供 requestId 和 resolution/u);
+  assert.match((await f.session({ action: 'resolve_delivery', requestId: 'nope', resolution: 'delivered' })).error, /找不到该投递记录/u);
+  const settled = await f.session({ action: 'resolve_delivery', requestId: 'sent-1', resolution: 'not-delivered' });
+  assert.equal(settled.ok, false);
+  assert.match(settled.error, /只有“结果不确定”的投递可以人工核对/u);
+  assert.equal(f.runtime.leaderState.deliveries[0].status, 'sent');
+  // A delivery still in flight cannot be resolved either.
+  f.runtime.leaderState.deliveries.push({ requestId: 'flying', kind: 'send', taskId: 'issue-1', sessionId: 'worker-a', status: 'sending', at: 1, error: '' });
+  assert.equal((await f.session({ action: 'resolve_delivery', requestId: 'flying', resolution: 'delivered' })).ok, false);
 });
 
-test('queued create runs when a slot frees; queue is bounded at 50', async () => {
-  const { runtime, setup, invoke, agent, sessions, session } = fixture(); await setup();
-  const host = withTaskHost(runtime, sessions);
-  assert.equal((await invoke('configure', { settings: { maxRunningWorkers: 1 } })).ok, true);
-  sessions.set('worker-a', sessionState({ running: true })); await runtime.reconcileLeader();
-  const create = await session('create', { title: '调查 IAM', brief: '梳理鉴权链路。' }, agent());
-  assert.equal(create.result.queued, true);
-  sessions.set('worker-a', sessionState()); await runtime.reconcileLeader();
-  assert.equal(host.created.length, 1); assert.equal(host.prompts.length, 1); assert.deepEqual(runtime.leaderState.queue, []);
-  assert.equal(runtime.leaderState.tasks.at(-1).status, 'created');
-  // The new task counts as running until observed, so the next request queues again.
-  const next = await session('create', { title: '另一个调查', brief: '独立问题。' }, agent());
-  assert.equal(next.result.queued, true);
-  runtime.leaderState.queue = Array.from({ length: 50 }, (_, index) => ({ id: `leader-queue-${index}`, kind: 'create', taskId: null, sessionId: null,
-    request: { title: `t${index}`, brief: 'b', workingDirectory: '', taskId: null }, fingerprint: `f${index}`, queuedAt: Date.now(), requestedBy: 'leader' }));
-  const full = await session('create', { title: '第 51 个', brief: '超出上限。' }, agent());
-  assert.equal(full.ok, false); assert.match(full.error, /50/);
+test('the worker cannot resolve deliveries and the Leader cannot use the UI-only operation name', async () => {
+  const f = await uncertainDelivery();
+  assert.equal((await f.invoke('resolveDelivery', { requestId: 'r-1', resolution: 'delivered' }, f.agent())).ok, false);
+  assert.equal((await f.invoke('session', { action: 'resolve_delivery', requestId: 'r-1', resolution: 'delivered' }, f.worker('worker-a'))).ok, false);
+  assert.equal(f.runtime.leaderState.deliveries[0].status, 'uncertain');
 });
 
-test('a queued continue that no longer validates is dropped with audit and a one-line wake notice', async () => {
-  const { runtime, setup, sessions, calls, advance } = fixture(); await setup(2);
-  assert.equal((await runtime.leaderOperation('configure', { settings: { maxRunningWorkers: 1 } }, createLeaderUiCaller())).ok, true);
-  sessions.set('worker-a', sessionState({ running: true })); await runtime.reconcileLeader();
-  assert.equal((await advance({}, 'b')).result.queued, true);
-  sessions.set('worker-a', sessionState()); sessions.set('worker-b', sessionState({ pendingInput: ['approval'] }));
-  await runtime.reconcileLeader();
-  assert.equal(calls.deliver.length, 0); assert.deepEqual(runtime.leaderState.queue, []);
-  const drop = runtime.leaderState.audit.at(-1); assert.equal(drop.action, 'queue-drop'); assert.match(drop.detail, /需人类处理|原生审批/);
-  await runtime.reconcileLeader();
-  assert.match(calls.notify.at(-1).body, /出队失败已丢弃/); assert.deepEqual(runtime.leaderState.queueNotices, []);
-});
-
-test('dependsOn rejects self, unknown and cyclic edges, blocks continue and wakes downstream on completion', async () => {
-  const { runtime, setup, invoke, issue, agent, sessions, calls, advance, session } = fixture(); await setup(2);
-  const host = withTaskHost(runtime, sessions);
-  const { taskId } = (await session('create', { title: '前置调查', brief: '先调查依赖。' }, agent())).result;
-  const archived = []; runtime.setSessionArchived = async (sessionId, value) => { archived.push([sessionId, value]); return { ok: true }; };
-  runtime.leaderIssueGitlab = async () => gitlabFacts({ state: 'closed', mergeRequests: [{ iid: 5, state: 'merged', pipeline: null }] });
-  assert.match((await invoke('note', { ...issue('a'), dependsOn: ['issue-1-a'] }, agent())).error, /不能依赖自己/);
-  assert.match((await invoke('note', { ...issue('a'), dependsOn: ['issue-1-zzz'] }, agent())).error, /既未纳管也不在已完成记录中/);
-  assert.equal((await invoke('note', { ...issue('a'), dependsOn: Array.from({ length: 11 }, (_, i) => `x${i}`) }, agent())).ok, false);
-  const linked = await invoke('note', { ...issue('a'), dependsOn: ['issue-1-b', taskId] }, agent());
-  assert.equal(linked.ok, true, linked.error); assert.deepEqual(linked.result.notes.dependsOn, ['issue-1-b', taskId]);
-  assert.match((await invoke('note', { ...issue('b'), dependsOn: ['issue-1-a'] }, agent())).error, /依赖成环：issue-1-b → issue-1-a → issue-1-b/);
-  assert.deepEqual(runtime.leaderProjection().items[0].blockedBy, ['issue-1-b', taskId]);
-  const blocked = await advance(); assert.equal(blocked.ok, false); assert.match(blocked.error, /依赖 issue-1-b、leader-task-[0-9a-f]+ 未完成；如需绕过先用 gitlab_leader_note 调整 dependsOn/);
-  await runtime.reconcileLeader(); const before = calls.notify.length;
-  const doneB = await invoke('note', { ...issue('b'), complete: { summary: 'MR !5 已合并，验收通过。' } }, agent());
-  assert.equal(doneB.ok, true, doneB.error); assert.deepEqual(doneB.result.woken, [{ taskId: 'issue-1-a', reason: 'dependency:issue-1-b' }]);
-  assert.deepEqual(runtime.leaderState.items.find((item) => item.taskId === 'issue-1-a').pendingWake, ['dependency:issue-1-b']);
-  const doneTask = await invoke('note', { taskId, sessionId: 'task-s', complete: { summary: '调查结论已汇报。' } }, agent());
-  assert.equal(doneTask.ok, true, doneTask.error); assert.deepEqual(host.archived, ['task-s']);
-  assert.equal(runtime.leaderState.tasks.find((task) => task.taskId === taskId).status, 'archived');
-  const itemA = runtime.leaderProjection().items.find((item) => item.taskId === 'issue-1-a');
-  assert.deepEqual(itemA.blockedBy, []); assert.deepEqual(itemA.pendingWake, ['dependency:issue-1-b', 'unblocked']);
-  await runtime.reconcileLeader(); assert.equal(calls.notify.length, before + 1);
-  assert.match(calls.notify.at(-1).body, /全部依赖已完成/); assert.match(calls.notify.at(-1).body, /原因 dependency:issue-1-b,unblocked/);
-  assert.equal((await advance()).ok, true);
-  // dependsOn may point at completed taskIds.
-  assert.equal((await invoke('note', { ...issue('a'), dependsOn: ['issue-1-b'] }, agent())).ok, true);
-});
-
-test('complete verifies quiet worker and GitLab facts, archives and records history', async () => {
-  const { runtime, setup, invoke, issue, agent, sessions } = fixture(); await setup(2);
-  const archived = []; runtime.setSessionArchived = async (sessionId, value) => { archived.push([sessionId, value]); return { ok: true }; };
-  let facts = gitlabFacts(); let reads = 0;
-  runtime.leaderIssueGitlab = async (id) => { reads += 1; assert.equal(id, 'issue-1-a'); return facts; };
-  assert.equal((await invoke('note', { ...issue(), complete: { summary: '' } }, agent())).ok, false);
-  sessions.set('worker-a', sessionState({ running: true }));
-  assert.match((await invoke('note', { ...issue(), complete: { summary: '完成' } }, agent())).error, /静默/);
-  sessions.set('worker-a', sessionState({ pendingInput: ['approval'] }));
-  assert.match((await invoke('note', { ...issue(), complete: { summary: '完成' } }, agent())).error, /原生审批/);
-  assert.equal(reads, 0); sessions.set('worker-a', sessionState());
-  assert.match((await invoke('note', { ...issue(), complete: { summary: '完成' } }, agent())).error, /acceptWithoutMr/);
-  assert.equal((await invoke('note', { ...issue(), complete: { summary: '完成', acceptWithoutMr: true } }, agent())).ok, false);
-  facts = gitlabFacts({ mergeRequests: [{ iid: 7, state: 'opened', pipeline: { status: 'failed', url: 'https://gitlab.test/p/-/pipelines/1' } }, { iid: 6, state: 'merged', pipeline: null }] });
-  assert.match((await invoke('note', { ...issue(), complete: { summary: '完成', acceptWithoutMr: true, reason: '纯调查' } }, agent())).error, /!7 仍 open 且最新流水线失败/);
-  facts = gitlabFacts({ available: false, errors: ['glab timeout'] });
-  assert.match((await invoke('note', { ...issue(), complete: { summary: '完成' } }, agent())).error, /glab timeout/);
-  assert.equal(archived.length, 0); assert.equal(runtime.leaderState.items.length, 2);
-  facts = gitlabFacts();
-  runtime.leaderState.queue.push({ id: 'leader-queue-x', kind: 'continue', taskId: 'issue-1-a', sessionId: 'worker-a', request: { text: 'b' }, fingerprint: 'f', queuedAt: Date.now(), requestedBy: 'leader' });
-  const done = await invoke('note', { ...issue(), complete: { summary: '纯调查，结论已在 Issue 评论。', acceptWithoutMr: true, reason: '调查类 Issue，无需代码变更' } }, agent());
-  assert.equal(done.ok, true, done.error); assert.equal(done.result.archived, true);
-  assert.deepEqual(archived, [['worker-a', true]]); assert.deepEqual(runtime.leaderState.queue, []);
-  assert.equal(runtime.leaderState.items.some((item) => item.taskId === 'issue-1-a'), false);
-  const record = runtime.leaderProjection().completed.at(-1);
-  assert.equal(record.taskId, 'issue-1-a'); assert.equal(record.kind, 'issue'); assert.equal(record.acceptWithoutMr, true);
-  assert.deepEqual(record.verification, { issueState: 'opened', mergedMrs: [], pipeline: null });
-  assert.equal(auditActions(runtime).at(-1), 'complete');
-  assert.equal((await invoke('note', { ...issue(), complete: { summary: '再来' } }, agent())).ok, false);
-  // archiveOnComplete=false keeps the worker; a failed archive never rolls back the completion.
-  assert.equal((await invoke('configure', { settings: { archiveOnComplete: false } })).ok, true);
-  runtime.leaderIssueGitlab = async () => gitlabFacts({ state: 'closed', mergeRequests: [{ iid: 9, state: 'merged', pipeline: null }] });
-  const kept = await invoke('note', { ...issue('b'), complete: { summary: 'MR !9 已合并。' } }, agent());
-  assert.equal(kept.ok, true, kept.error); assert.equal(kept.result.archived, false); assert.equal(archived.length, 1);
-  assert.deepEqual(runtime.leaderProjection().completed.at(-1).verification.mergedMrs, [9]);
-});
-
-test('a failed archive on completion is audited but the completion stands', async () => {
-  const { runtime, setup, invoke, issue, agent } = fixture(); await setup();
-  runtime.setSessionArchived = async () => ({ ok: false, error: '宿主拒绝' });
-  runtime.leaderIssueGitlab = async () => gitlabFacts({ state: 'closed', mergeRequests: [{ iid: 3, state: 'merged', pipeline: null }] });
-  const done = await invoke('note', { ...issue(), complete: { summary: '已合并。' } }, agent());
-  assert.equal(done.ok, true, done.error); assert.equal(done.result.archived, false); assert.match(done.result.archiveError, /宿主拒绝/);
-  assert.deepEqual(auditActions(runtime).slice(-2), ['archive-failed', 'complete']); assert.equal(runtime.leaderState.items.length, 0);
-});
-
-test('leaderWorkerForTarget finds only healthy unblocked enrolled Issue workers; noteLeaderTodo wakes the Leader', async () => {
-  const { runtime, setup, invoke, issue, agent, calls } = fixture(); await setup(2);
-  const url = 'https://GITLAB.test/project/-/issues/a#note_9';
-  assert.deepEqual(runtime.leaderWorkerForTarget(url), { taskId: 'issue-1-a', sessionId: 'worker-a' });
-  assert.equal(runtime.leaderWorkerForTarget('https://gitlab.test/project/-/issues/zzz'), null);
-  assert.equal(runtime.leaderWorkerForTarget('not a url'), null);
-  assert.equal((await invoke('note', { ...issue(), dependsOn: ['issue-1-b'] }, agent())).ok, true);
-  assert.equal(runtime.leaderWorkerForTarget(url), null);
-  assert.equal((await invoke('note', { ...issue(), dependsOn: [] }, agent())).ok, true);
-  assert.equal((await invoke('pause')).ok, true); assert.equal(runtime.leaderWorkerForTarget(url), null);
-  assert.equal((await invoke('start')).ok, true); assert.ok(runtime.leaderWorkerForTarget(url));
-  assert.equal((await runtime.noteLeaderTodo('issue-1-zzz', { todoId: 't0' })).ok, false);
-  const noted = await runtime.noteLeaderTodo('issue-1-a', { todoId: 't1', title: '请看看 CI 为什么红', url: 'https://gitlab.test/project/-/issues/a#note_9', author: 'alice' });
-  assert.equal(noted.ok, true, noted.error);
-  const item = runtime.leaderProjection().items[0];
-  assert.deepEqual(item.pendingWake, ['todo:t1']); assert.equal(item.lastTodo.title, '请看看 CI 为什么红'); assert.equal(item.lastTodo.author, 'alice');
-  assert.equal(auditActions(runtime).at(-1), 'todo-routed');
-  await runtime.reconcileLeader();
-  assert.match(calls.notify.at(-1).body, /Issue a｜状态 watching｜原因 todo:t1｜有新的 @我 Todo，已排入该 worker：请看看 CI 为什么红/);
-});
-
-test('orchestration journal fields migrate from older journals and survive normalization', () => {
-  const legacy = copy(initialLeaderState()); delete legacy.queue; delete legacy.completed; delete legacy.queueNotices;
-  legacy.settings = { model: null, autoEnrollNew: true };
-  const migrated = normalizeLeaderState(legacy);
-  assert.deepEqual(migrated.queue, []); assert.deepEqual(migrated.completed, []);
-  assert.equal(migrated.settings.maxRunningWorkers, 3); assert.equal(migrated.settings.archiveOnComplete, true); assert.equal(migrated.settings.autoEnrollNew, true);
-  const restored = normalizeLeaderState({ ...copy(initialLeaderState()), settings: { ...initialLeaderState().settings, maxRunningWorkers: 5 },
-    queue: [{ id: 'q1', kind: 'continue', taskId: 't', sessionId: 's', request: { body: 'b', reason: 'r' }, fingerprint: 'f', queuedAt: 1 }, { id: 'q2', kind: 'bogus', queuedAt: 1, request: {} }],
-    completed: [{ taskId: 't0', completedAt: 2, summary: 'ok', verification: { issueState: 'closed', mergedMrs: [1, 'x'] } }] });
-  assert.equal(restored.settings.maxRunningWorkers, 5);
-  assert.deepEqual(restored.queue.map((entry) => entry.id), ['q1']);
-  assert.deepEqual(restored.completed[0].verification, { issueState: 'closed', mergedMrs: [1], pipeline: null });
-  const projection = buildLeaderProjection(restored);
-  assert.deepEqual(projection.queue[0], { id: 'q1', kind: 'continue', taskId: 't', sessionId: 's', position: 1, title: '', reason: '', queuedAt: 1 });
-});
-// v2.43 base tools: overview, session enroll/unenroll/resolve_delivery, run, and lenient old-journal load.
-test('overview shows every assigned Issue with enrollment state and optional refresh', async () => {
-  const { runtime, setup, invoke, agent } = fixture(); await setup();
-  runtime.state.issues.push({ id: 'issue-1-171', title: 'Fresh issue', source: 'issue', url: 'https://gitlab.test/project/-/issues/171', project: 'project', iid: '171', projectId: '1' });
-  let refreshed = 0; runtime.refreshIssues = async () => { refreshed += 1; };
-  const listed = await invoke('overview', { refresh: true }, agent()); assert.equal(listed.ok, true, listed.error);
-  assert.equal(refreshed, 1); assert.equal(listed.result.refreshError, undefined);
-  assert.equal(listed.result.run.enabled, true); assert.equal(listed.result.run.gitlabWrite, false); assert.equal(listed.result.untrusted, true);
-  const byId = Object.fromEntries(listed.result.issues.map((entry) => [entry.taskId, entry]));
-  assert.equal(byId['issue-1-a'].enrolled, true); assert.equal(byId['issue-1-a'].worker.status, 'watching');
-  assert.equal(byId['issue-1-b'].enrolled, false); assert.equal(byId['issue-1-b'].sessionId, 'worker-b');
-  assert.equal(byId['issue-1-171'].sessionId, null); assert.equal(byId['issue-1-171'].iid, '171');
-  runtime.refreshIssues = async () => { throw new Error('glab timeout'); };
-  const failed = await invoke('overview', { refresh: true }, agent());
-  assert.equal(failed.ok, true); assert.match(failed.result.refreshError, /glab timeout/); assert.equal(failed.result.issues.length, 3);
-  assert.equal((await invoke('overview', {}, createLeaderAgentCaller({ sessionId: 'outside', agentId: 'x' }))).ok, false);
-  assert.equal((await invoke('overview', {})).ok, false); // UI caller has no reason to use the agent tool.
-});
-
-test('session enroll/unenroll lets the Leader manage plugin-created Issue sessions with audit, never itself or human sessions', async () => {
-  const { runtime, setup, issue, session } = fixture(); await setup();
-  const enrolled = await session('enroll', issue('b')); assert.equal(enrolled.ok, true, enrolled.error);
-  const item = runtime.leaderState.items.find((entry) => entry.taskId === 'issue-1-b');
-  assert.equal(item.provenance.kind, 'leader'); assert.equal(item.status, 'watching');
-  assert.equal((await session('unenroll', issue('b'))).ok, true);
-  assert.equal(runtime.leaderState.items.some((entry) => entry.taskId === 'issue-1-b'), false);
-  assert.equal((await session('enroll', { taskId: 'issue-1-b' })).ok, true); // taskId alone finds the plugin-created session.
-  for (const sessionId of ['leader', 'outside']) assert.equal((await session('enroll', { taskId: 'issue-1-b', sessionId })).ok, false, sessionId);
-  assert.equal((await session('enroll', { taskId: 'not-an-issue' })).ok, false);
-  assert.equal((await session('grant', issue('b'))).ok, false);
-  assert.deepEqual(auditActions(runtime).filter((action) => action.startsWith('session-')), ['session-enroll', 'session-unenroll', 'session-enroll']);
-});
-
-test('run start resumes without a new bootstrap; run pause only stops automatic wakes', async () => {
-  const { runtime, setup, invoke, agent, calls, advance } = fixture(); await setup();
-  const paused = await invoke('run', { action: 'pause' }, agent()); assert.equal(paused.ok, true, paused.error);
-  assert.equal(runtime.leaderState.enabled, false); assert.equal(runtime.leaderState.items[0].status, 'standby');
-  assert.equal((await advance()).ok, true); // paused never refuses Leader actions.
-  const notices = calls.notify.length;
-  const started = await invoke('run', { action: 'start' }, agent()); assert.equal(started.ok, true, started.error);
-  assert.equal(runtime.leaderState.enabled, true); assert.equal(runtime.leaderState.items[0].status, 'watching');
-  assert.equal(calls.notify.length, notices); // the Leader is mid-turn: no bootstrap brief.
-  assert.equal((await invoke('run', { action: 'renew' }, agent())).ok, false);
-  assert.deepEqual(auditActions(runtime).filter((action) => action.startsWith('run-')), ['run-pause', 'run-start']);
-});
-
-test('session resolve_delivery is recorded as the Leader and never resends', async () => {
-  const { runtime, setup, calls, advance, lastAdvance, session } = fixture(); await setup();
-  runtime.leaderAdapter.deliver = async (request) => { calls.deliver.push(copy(request)); throw new Error('socket closed'); };
-  await advance(); const entry = lastAdvance(); assert.equal(entry.status, 'uncertain');
-  const before = calls.deliver.length;
-  assert.equal((await session('resolve_delivery', { requestId: entry.requestId, outcome: 'maybe' })).ok, false);
-  const resolved = await session('resolve_delivery', { requestId: entry.requestId, outcome: 'delivered' });
-  assert.equal(resolved.ok, true, resolved.error);
-  assert.equal(entry.status, 'sent'); assert.equal(entry.resolvedBy, 'leader'); assert.equal(calls.deliver.length, before);
-  assert.equal(runtime.leaderState.items[0].status, 'watching');
-  assert.equal((await session('resolve_delivery', { requestId: entry.requestId, outcome: 'delivered' })).ok, false);
-  assert.ok(auditActions(runtime).includes('session-resolve_delivery'));
-});
-
-test('log truncation never pauses an Issue and clears after a clean observation', async () => {
-  const { runtime, setup, sessions, advance } = fixture(); await setup();
-  const normal = runtime.leaderAdapter.observe;
-  runtime.leaderAdapter.observe = async () => ({ cursor: 10, highWater: 10, events: [], truncated: true, epoch: 'live-log' });
-  sessions.set('worker-a', sessionState({ cursor: 10 }));
-  await runtime.reconcileLeader();
-  const item = runtime.leaderState.items[0];
-  assert.equal('paused' in item, false); assert.match(item.error, /自动清除/);
-  runtime.leaderAdapter.observe = normal; sessions.set('worker-a', sessionState({ cursor: 12 }));
-  await runtime.reconcileLeader(); assert.equal(item.error, '');
-  const continued = await advance(); assert.equal(continued.ok, true, continued.error);
-});
-
-test('native question marks needs-human without pausing, only the human answers, and recovers once answered', async () => {
-  const { runtime, setup, sessions, advance, calls } = fixture(); await setup();
-  sessions.set('worker-a', sessionState({ cursor: 11, pendingInput: ['question'] }));
-  await runtime.reconcileLeader();
-  const item = runtime.leaderState.items[0];
-  assert.equal(item.status, 'needs-human'); assert.equal('paused' in item, false); assert.match(item.error, /worker 会话内回答/);
-  assert.equal((await advance()).ok, false); assert.equal(calls.deliver.length, 0);
-  sessions.set('worker-a', sessionState({ cursor: 12 }));
-  await runtime.reconcileLeader(); assert.equal(item.status, 'watching'); assert.equal(item.error, '');
-  assert.equal((await advance()).ok, true);
-});
-
-test('old journals with budgets, leases, per-Issue pause and evidence fields load leniently and drop them', async () => {
-  const { runtime, setup } = fixture(); await setup();
-  const old = copy(runtime.leaderState);
-  Object.assign(old, { expiresAt: Date.now() + 1000, budgetLedger: [{ taskId: 'x', actions: 3 }], relays: [{ seq: 1 }] });
-  old.settings = { ...old.settings, issueComments: true }; delete old.settings.gitlabWrite;
-  Object.assign(old.items[0], { status: 'paused', paused: true, actions: 20, maxActions: 20, expiresAt: 1, commentCount: 3, reportCount: 2,
-    lastSteerAt: 1, lastCommentAt: 1, lastReportAt: 1, lastSteerRequestId: 'leader-steer-1', lastSteerStatus: 'sending' });
-  const state = normalizeLeaderState(old);
-  for (const key of ['expiresAt', 'budgetLedger', 'relays']) assert.equal(key in state, false, key);
-  assert.equal(state.settings.gitlabWrite, true); assert.equal('issueComments' in state.settings, false);
-  const [item] = state.items;
-  for (const key of ['paused', 'actions', 'maxActions', 'expiresAt', 'commentCount', 'reportCount', 'lastSteerAt', 'lastCommentAt', 'lastReportAt']) assert.equal(key in item, false, key);
-  assert.notEqual(item.status, 'paused'); assert.equal(item.lastSteerStatus, 'uncertain'); assert.equal(item.lastSteerRequestId, 'leader-steer-1');
-  const projection = buildLeaderProjection(state); assert.equal('maxActions' in projection.items[0], false); assert.equal('expiresAt' in projection.run, false);
-});
+export { copy, issueItem };
