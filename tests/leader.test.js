@@ -1372,3 +1372,66 @@ test('persisting plugin state refreshes worker tool bindings so new workers get 
   const block = source.slice(source.indexOf('async persistQuietly'), source.indexOf('resetTimer() {'));
   assert.match(block, /this\.syncLeaderWorkerTools\?\.\(\)/);
 });
+
+// ---------------------------------------------------------------------------------------------------------------
+// gitlab_leader_inbox: list / acknowledge the needs-human inbox
+// ---------------------------------------------------------------------------------------------------------------
+
+test('inbox list returns only unacknowledged needs-human records, newest first, marked untrusted', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.addTodo('t1', 'worker-a', { closure: 'needs-human', completedAt: 10, closureNote: 'Todo 仍为 pending' });
+  f.addTodo('t2', 'worker-b', { closure: 'needs-human', completedAt: 20, lastReply: { id: 'n1', body: 'reply', url: '', createdAt: 1 } });
+  f.addTodo('t3', 'worker-b', { closure: 'needs-human', completedAt: 30, acknowledgedAt: 5 });
+  f.addTodo('t4', 'worker-b', { closure: 'closed', completedAt: 40 });
+  const result = await f.invoke('inbox', {}, f.agent());
+  assert.equal(result.ok, true);
+  assert.equal(result.result.total, 2);
+  assert.deepEqual(result.result.items.map((item) => item.todoId), ['t2', 't1']);
+  assert.equal(result.result.items[0].untrusted, true);
+  assert.equal(result.result.items[0].lastReply.body, 'reply');
+  const limited = await f.invoke('inbox', { action: 'list', limit: 1 }, f.agent());
+  assert.deepEqual(limited.result.items.map((item) => item.todoId), ['t2']);
+  assert.equal(limited.result.total, 2);
+  assert.equal((await f.invoke('inbox', { action: 'list', todoIds: ['t1'] }, f.agent())).ok, false);
+});
+
+test('inbox acknowledge uses the UI acknowledge path per item with the Leader reason and reports each result', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.addTodo('t1', 'worker-a', { closure: 'needs-human' });
+  const seen = [];
+  f.runtime.acknowledgeNeedsHuman = async function (todoId, options) {
+    seen.push({ todoId, options });
+    const record = this.state.handled[todoId];
+    if (!record || record.closure !== 'needs-human') return { ok: false, error: '该 Todo 不在需人工收件箱中。' };
+    Object.assign(record, { closure: 'closed', acknowledgedAt: 1, closureNote: options.note, archived: true });
+    return { ok: true };
+  };
+  const missingReason = await f.invoke('inbox', { action: 'acknowledge', todoIds: ['t1'] }, f.agent());
+  assert.equal(missingReason.ok, false);
+  assert.match(missingReason.error, /reason/u);
+  assert.equal((await f.invoke('inbox', { action: 'acknowledge', todoIds: ['t1', 't1'], reason: 'x' }, f.agent())).ok, false);
+  assert.equal((await f.invoke('inbox', { action: 'acknowledge', reason: 'x' }, f.agent())).ok, false);
+  assert.equal(seen.length, 0);
+  const result = await f.invoke('inbox', { action: 'acknowledge', todoIds: ['t1', 'ghost'], reason: ' MR 已合并 ' }, f.agent());
+  assert.equal(result.ok, true);
+  assert.equal(result.result.acknowledged, 1);
+  assert.equal(result.result.failed, 1);
+  assert.deepEqual(result.result.results.map((entry) => [entry.todoId, entry.ok]), [['t1', true], ['ghost', false]]);
+  assert.equal(seen[0].options.note, 'Leader 确认已处理：MR 已合并');
+  assert.equal(f.runtime.state.handled.t1.acknowledgedAt, 1);
+  const again = await f.invoke('inbox', { action: 'acknowledge', todoIds: ['t1'], reason: 'again' }, f.agent());
+  assert.equal(again.ok, false);
+  assert.equal(again.result.failed, 1);
+});
+
+test('only the Leader Agent can call the inbox tool', async () => {
+  const f = fixture();
+  await f.createLeader();
+  const fromUi = await f.invoke('inbox', {}, f.ui);
+  assert.equal(fromUi.ok, false);
+  assert.match(fromUi.error, /仅限 Leader Agent 工具调用/u);
+  assert.equal((await f.invoke('inbox', {}, f.worker())).ok, false);
+  assert.equal((await f.invoke('inbox', {}, f.agent('worker-a'))).ok, false);
+});

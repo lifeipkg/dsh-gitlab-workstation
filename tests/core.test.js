@@ -1562,9 +1562,10 @@ test('needs-human stays unarchived until explicit acknowledgement even when the 
   assert.equal(runtime.snapshot().closure.needsHuman, 1);
   // 只有明确的“我已处理”才闭环并按设置归档。
   runtime.markTodoDone = async () => {};
-  const acknowledged = await runtime.acknowledgeNeedsHuman(record.id);
+  const acknowledged = await runtime.acknowledgeNeedsHuman(record.id, { note: 'Leader 确认已处理：MR 已合并' });
   assert.equal(acknowledged.ok, true);
   assert.equal(record.closure, 'closed');
+  assert.equal(record.closureNote, 'Leader 确认已处理：MR 已合并');
   assert.ok(record.acknowledgedAt > 0);
   assert.deepEqual(calls.archives, ['session-1']);
   await runtime.stop();
