@@ -11,8 +11,6 @@ export const MAX_RULE_SKIPS_PER_POLL = 20;
 export const PRECHECK_CONCURRENCY = 3;
 /** 同一 Todo 预检连续失败这么多轮后降级为直接派发（此前每轮都会跳过）。 */
 export const PRECHECK_MAX_SKIPS = 2;
-/** 等待探测：连续这么多次“无变化而推迟”后放行一次心跳续办会话。 */
-export const WAIT_PROBE_MAX_DEFERS = 4;
 /** 同一会话最多被后续轮次接力复用的次数（含首轮共 1+N 个回合），避免上下文无限增长。 */
 export const MAX_SESSION_REUSE = 2;
 /** 规则即可判定无需处理的类别 → 标记理由（零模型调用）。 */

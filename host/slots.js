@@ -184,7 +184,6 @@ export const slotsMethods = {
       dispatchFailures: 0,
       reused: pending.reused === true,
       reuseCount: Number.isSafeInteger(pending.reuseCount) ? pending.reuseCount : 0,
-      waitProbes: 0,
       openMrs: Array.isArray(pending.openMrs)
         ? pending.openMrs
         : (Array.isArray(previous?.openMrs) ? previous.openMrs : []),
@@ -196,9 +195,6 @@ export const slotsMethods = {
       reportStatus: '',
       reportSummary: '',
       resumeAfterMinutes: null,
-      // 合并组的关联字段随 pending 一起落到 handled（供 UI 展示与结算归因）。
-      ...(typeof pending.batchId === 'string' && pending.batchId
-        ? { batchId: pending.batchId, mergedWith: Array.isArray(pending.mergedWith) ? [...pending.mergedWith] : [] } : {}),
     };
     this.state.handled[todoId] = record;
     delete this.state.pending[todoId];

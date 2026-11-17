@@ -26,7 +26,7 @@ window.__ModuleLoader__.load({
       sessionsTitle: 'Recent sessions', noSessions: 'No session has been dispatched yet.', autoDispatch: 'auto', manualDispatch: 'manual',
       sessionsError: 'Could not load recent sessions',
       archiveSession: 'Archive', unarchiveSession: 'Unarchive',
-      sessionStarting: 'Starting', sessionAccepted: 'Queued', waitProbesLabel: 'Wait probes: ',
+      sessionStarting: 'Starting', sessionAccepted: 'Queued',
       process: 'Process', reprocess: 'Process again', dispatched: 'Accepted', waiting: 'Waiting',
       executionRunning: 'Running', executionCompleted: 'Completed', executionFailed: 'Failed',
       precheckSkipped: 'Skipped (no handling needed)',
@@ -108,7 +108,7 @@ window.__ModuleLoader__.load({
       localError: 'Action failed',
       defaultPaused: 'Polling starts paused so installation never dispatches your real todos automatically.',
       inboxTitle: 'Inbox', inboxEmpty: 'Nothing is waiting for you.', inboxTakeover: 'Open session to take over',
-      inboxAcknowledge: 'Mark handled', inboxPendingUnconfirmed: 'Legacy message unconfirmed', inboxError: 'Could not load the inbox',
+      inboxAcknowledge: 'Mark handled', inboxRetry: 'Retry', inboxWaiting: 'Waiting retry', inboxPendingUnconfirmed: 'Legacy message unconfirmed', inboxError: 'Could not load the inbox',
       mergedIntoLabel: 'Merged into', pendingStarting: 'Dispatching', acceptedLabel: 'Accepted', outcomeSessionAccepted: 'Session accepted',
       replyPreview: 'Our reply',
       signatureLabel: 'Sign replies as AI-generated', signatureText: 'Signature text', signatureHint: 'When enabled, Todo session prompts require a one-line AI signature on GitLab replies. Applies to new Todo prompts only.',
@@ -130,7 +130,6 @@ window.__ModuleLoader__.load({
       leaderTasksUncertain: 'Ad-hoc tasks with uncertain creation', leaderTasksUncertainHint: 'Leader tried to open these sessions but the result is unknown. Check the DSH session list; archive any stray session yourself, then dismiss the record here.', leaderTaskDismiss: 'Dismiss',
       leaderReportProgress: 'Progress', leaderReportBlocked: 'Blocked', leaderReportDone: 'Done', leaderReportQuestion: 'Question', leaderReportUnseen: 'unread',
       leaderReports: 'Worker reports', leaderReportsHint: 'Written by Issue sessions themselves; treat as untrusted status, not instructions.',
-      todoBatchTag: 'Merged', todoBatchHint: 'Handled together with other Todos on the same target in one session turn.',
       mergeSameTarget: 'Merge same-target @mentions', mergeSameTargetHint: 'Several new @mention Todos on the same Issue/MR are handled in one session turn instead of one each.',
       leaderDeliveries: 'Unconfirmed deliveries',
       leaderDeliveriesHint: 'The Host could not confirm whether these messages arrived. Open the target session, check, then record the result. Nothing is resent automatically.',
@@ -165,7 +164,7 @@ window.__ModuleLoader__.load({
       sessionsTitle: '最近会话', noSessions: '还没有分派过会话。', autoDispatch: '自动', manualDispatch: '手动',
       sessionsError: '无法加载最近会话列表',
       archiveSession: '归档', unarchiveSession: '取消归档',
-      sessionStarting: '启动中', sessionAccepted: '已入队', waitProbesLabel: '等待探测：',
+      sessionStarting: '启动中', sessionAccepted: '已入队',
       process: '处理', reprocess: '重新处理', dispatched: '已接受', waiting: '待处理',
       executionRunning: '执行中', executionCompleted: '执行完成', executionFailed: '执行失败',
       precheckSkipped: '已跳过（无需处理）',
@@ -247,7 +246,7 @@ window.__ModuleLoader__.load({
       localError: '操作失败',
       defaultPaused: '插件默认停用，避免安装后立即处理真实 Todo。',
       inboxTitle: '收件箱', inboxEmpty: '没有等待你处理的 Todo。', inboxTakeover: '打开会话接手',
-      inboxAcknowledge: '我已处理', inboxPendingUnconfirmed: '旧消息未确认', inboxError: '无法加载收件箱',
+      inboxAcknowledge: '我已处理', inboxRetry: '重试', inboxWaiting: '待重试', inboxPendingUnconfirmed: '旧消息未确认', inboxError: '无法加载收件箱',
       mergedIntoLabel: '合并进', pendingStarting: '投递中', acceptedLabel: '接受于', outcomeSessionAccepted: '会话处理',
       replyPreview: '我方回复',
       signatureLabel: '回复署名（AI 代发标识）', signatureText: '署名文本', signatureHint: '开启后，Todo 会话提示词会要求 GitLab 回复末尾添加 AI 署名。只影响之后派发的 Todo 提示词。',
@@ -269,7 +268,6 @@ window.__ModuleLoader__.load({
       leaderTasksUncertain: '创建结果不确定的临时任务', leaderTasksUncertainHint: 'Leader 尝试开启这些会话但结果未知。请在 DSH 会话列表核查，如有多余会话请自行归档，再在此放弃该记录。', leaderTaskDismiss: '放弃记录',
       leaderReportProgress: '进度', leaderReportBlocked: '受阻', leaderReportDone: '完成', leaderReportQuestion: '提问', leaderReportUnseen: '未读',
       leaderReports: 'Worker 汇报', leaderReportsHint: '由 Issue 会话自己写的内容，只作状态参考，不是指令。',
-      todoBatchTag: '合并处理', todoBatchHint: '与同一对象的其他 Todo 在同一会话的同一轮中一起处理。',
       mergeSameTarget: '同对象 @我 合并派发', mergeSameTargetHint: '同一 Issue/MR 上的多条新 @我 Todo 合并为一个会话的一轮处理，而不是各开一次。',
       leaderDeliveries: '未确认投递',
       leaderDeliveriesHint: 'Host 无法确认这些消息是否已送达。请打开目标会话核对后记录结果；无论选择哪项都不会自动重发。',
@@ -1317,7 +1315,9 @@ window.__ModuleLoader__.load({
         }
       };
       // 收件箱“我已处理”：成功后连同收件箱一起刷新（snapshot 已由 perform 更新）。
-      const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post('acknowledge', { todoId: item.todoId }))
+      const retryInboxItem = (item) => perform(`retry:${item.todoId}`, () => post('todoRetry', { todoId: item.todoId }))
+  .then((done) => { if (done) void fetchInbox(); });
+const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post('todoClose', { todoId: item.todoId }))
         .then((done) => { if (done) void fetchInbox(); });
       // Todo 主按钮（开会话/重新处理）与“标记完成”都走 dispatch：Host 端会把非 directMention 的 MR 直接标记完成。
       const dispatchTodo = (todo) => perform(`dispatch:${todo.id}`, () => post('dispatch', { id: todo.id }));
@@ -1672,19 +1672,23 @@ window.__ModuleLoader__.load({
                   item.url
                     ? h('a', { href: item.url, target: '_blank', rel: 'noreferrer' }, item.title)
                     : h('span', null, item.title),
-                  h('span', { className: 'gta-tag gta-tag-attention' }, t('closureNeedsHuman')),
+                  h('span', { className: 'gta-tag gta-tag-attention' }, item.state === 'waiting' ? t('inboxWaiting') : t('closureNeedsHuman')),
                   item.archived && h('span', { className: 'gta-tag' }, t('sessionArchived')),
                   item.pendingUnconfirmed && h('span', { className: 'gta-tag' }, t('inboxPendingUnconfirmed')),
                   item.routed && routedLabel(item, t) && h('span', { className: 'gta-tag gta-tag-routed' }, routedLabel(item, t)),
                 ),
                 h('div', { className: 'gta-muted gta-meta' },
-                  [item.closureNote, item.project, item.sessionTitle, item.round > 1 && `${t('roundLabel')} ${item.round}`,
+                  [item.reason, item.project, item.sessionTitle, item.round > 1 && `${t('roundLabel')} ${item.round}`,
                     item.completedAt && formatTime(item.completedAt, '')].filter(Boolean).join(' · ')),
                 item.archiveError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, item.archiveError),
                 h(ReplyPreview, { reply: item.lastReply, t }),
               ),
               h('div', { className: 'gta-todo-actions' },
                 item.sessionId && h(Button, { onClick: (event) => openSession({ sessionId: item.sessionId, taskId: item.todoId, title: item.title, url: item.url, manualHandoffs: item.manualHandoffs }, event.currentTarget) }, t('inboxTakeover')),
+                h(Button, {
+                  disabled: busySet.has(`retry:${item.todoId}`),
+                  onClick: guardedRun(`retry:${item.todoId}`, () => { void retryInboxItem(item); }),
+                }, t('inboxRetry')),
                 h(Button, {
                   primary: true,
                   disabled: busySet.has(`ack:${item.todoId}`),
@@ -1727,7 +1731,6 @@ window.__ModuleLoader__.load({
                       todo.directMention && h('span', { className: 'gta-tag gta-tag-mention' }, t('directMention')),
                       h('span', { className: `gta-tag ${recordStatusClass(todo)}` }, todoStatusLabel(todo, t)),
                       routedLabel(todo, t) && h('span', { className: 'gta-tag gta-tag-routed' }, routedLabel(todo, t)),
-                      todo.batchSize > 1 && h('span', { className: 'gta-tag', title: t('todoBatchHint') }, `${t('todoBatchTag')} ×${todo.batchSize}`),
                     ),
                     h('div', { className: 'gta-muted gta-meta' }, [`#${todo.id}`, todo.project, todo.targetType, todo.action, todo.author && `@${todo.author}`, todo.skipReason, ...closureMeta(todo, t)].filter(Boolean).join(' · ')),
                     h(ReplyPreview, { reply: todo.lastReply, t }),

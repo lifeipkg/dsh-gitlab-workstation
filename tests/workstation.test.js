@@ -44,7 +44,7 @@ test('Workstation package identity aligns while legacy runtime and task protocol
   assert.match(runtime, /join\(resolveDshHome\(env\), 'storages', STORAGE_NAME\)/);
   // 旧目录只作为迁移来源保留，不再是默认数据目录。
   assert.match(runtime, /LEGACY_STORAGE_DIRECTORY = join\(homedir\(\), '\.dsh-plugins', 'gitlabtodo'\)/);
-  assert.equal(STATE_VERSION, 6);
+  assert.equal(STATE_VERSION, 7);
   assert.ok(core.includes("CLOSURE_MARKER = '[TODO-CLOSURE]'"));
   assert.ok(dispatch.includes('`gitlab-todo-${randomUUID()}`'));
   assert.ok(host.includes("startsWith('gitlab-todo-')"));

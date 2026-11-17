@@ -108,13 +108,14 @@ test('inbox tool schema is strict, describes its semantics, and forwards to the 
   const fixture = await ready();
   const { definition } = fixture.definitions.get('gitlab_leader_inbox');
   assert.deepEqual(definition.parameters.properties.action.enum, [...LEADER_INBOX_ACTIONS]);
-  assert.deepEqual(LEADER_INBOX_ACTIONS, ['list', 'acknowledge']);
+  assert.deepEqual(LEADER_INBOX_ACTIONS, ['list', 'retry', 'close', 'resume']);
   assert.equal(definition.parameters.additionalProperties, false);
   assert.deepEqual(definition.parameters.required, []);
   assert.equal(definition.parameters.properties.todoIds.maxItems, 50);
-  assert.match(definition.description, /needs-human/u);
-  assert.match(definition.description, /我已处理/u);
-  await definition.execute({ action: 'acknowledge', todoIds: ['t1'], reason: 'MR merged' }, exec(fixture));
+  assert.match(definition.description, /需人工/u);
+  assert.match(definition.description, /attention/u);
+  assert.match(definition.description, /retry/u);
+  await definition.execute({ action: 'close', todoIds: ['t1'], reason: 'MR merged' }, exec(fixture));
   assert.equal(fixture.operations.at(-1).operation, 'inbox');
   assert.deepEqual(fixture.operations.at(-1).request.todoIds, ['t1']);
   await assert.rejects(definition.execute({ action: 'list', sessionId: 'x' }, exec(fixture)), /未知权限/);
