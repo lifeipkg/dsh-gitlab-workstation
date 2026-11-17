@@ -1333,3 +1333,42 @@ test('the worker cannot resolve deliveries and the Leader cannot use the UI-only
 });
 
 export { copy, issueItem };
+test('creating the Leader binds the plugin tools after the ID is saved and before the first rename or prompt', async () => {
+  const f = fixture();
+  const order = [];
+  const { refreshBindings } = f.runtime.leaderAdapter;
+  f.runtime.leaderAdapter.refreshBindings = function bind() { order.push(`bind:${f.runtime.leaderState.sessionId}`); return refreshBindings.call(this); };
+  const { renameSession, prompt } = f.runtime.host;
+  f.runtime.host.renameSession = async (...args) => { order.push('rename'); return renameSession(...args); };
+  f.runtime.host.prompt = async (...args) => { order.push('prompt'); return prompt(...args); };
+  assert.equal((await f.invoke('create', {})).ok, true);
+  assert.deepEqual(order, ['bind:leader', 'rename', 'prompt']);
+});
+
+test('a live Leader whose tools cannot be bound is reported as an error instead of ready', async () => {
+  const f = fixture({ bindLeader: false, bindStatus: 'tools 服务不支持 register' });
+  f.runtime.leaderServicesContext = { agents: { get: (id) => (id === 'leader' ? { id } : undefined) } };
+  const result = await f.invoke('create', {});
+  assert.equal(result.ok, false);
+  assert.match(result.error, /插件工具未能绑定（tools 服务不支持 register）/);
+  assert.equal(f.runtime.leaderState.sessionId, 'leader');
+  assert.equal(f.runtime.leaderState.phase, 'error');
+  assert.equal(f.calls.prompt.length, 0);
+});
+
+test('a Leader that is not resident yet is created normally; its tools bind when the session opens', async () => {
+  const warnings = [];
+  const f = fixture({ bindLeader: false, bindStatus: 'Leader agent 当前不在宿主 agent 注册表中（未常驻）' });
+  f.runtime.logger = { warn: (line) => warnings.push(line), error() {}, info() {} };
+  f.runtime.leaderServicesContext = { agents: { get: () => undefined } };
+  const result = await f.invoke('create', {});
+  assert.equal(result.ok, true);
+  assert.equal(result.result.phase, 'ready');
+  assert.ok(warnings.some((line) => /尚未常驻/.test(line)));
+});
+
+test('persisting plugin state refreshes worker tool bindings so new workers get the report tool', async () => {
+  const { default: source } = await import('node:fs').then((fs) => ({ default: fs.readFileSync(new URL('../index.js', import.meta.url), 'utf8') }));
+  const block = source.slice(source.indexOf('async persistQuietly'), source.indexOf('resetTimer() {'));
+  assert.match(block, /this\.syncLeaderWorkerTools\?\.\(\)/);
+});
