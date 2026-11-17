@@ -77,7 +77,7 @@
 
 Issue Tab 顶部提供折叠的 **Leader** 区域。点「创建 Leader」新建一个独立的 Leader 会话（可选模型），之后你只和它对话。Leader 没有启动／暂停、托管授权、预算或后台唤醒循环：它是一个普通的 DSH 会话，需要时由你发消息驱动。
 
-Leader 使用 DSH 的**标准 preset**，保留读取与执行所需的通用工具（Shell、`read`／`glob`／`grep`、`skill`、`todo_write`、`web_fetch`、后台任务、`ask_user_question` 等），所以读代码、查 GitLab、跑命令都直接用这些工具，不再经插件转手。运行时插件隐藏另一批工具（`subagent`／`workflow`／Agent Team、`plugin_manager`、`schedule_*`、目标工具、`edit`／`write`）：Leader 自己不写文件、不派生子 agent，也不改插件或定时任务；要动手改东西，用 `gitlab_leader_session` 交给 worker。插件额外给它两个工具：
+Leader 使用 DSH 的**标准 preset**，保留读取与执行所需的通用工具（Shell、`read`／`glob`／`grep`、`skill`、`todo_write`、`web_fetch`、后台任务、`ask_user_question` 等），所以读代码、查 GitLab、跑命令都直接用这些工具，不再经插件转手。运行时插件隐藏另一批工具（`subagent`／`workflow`／Agent Team、`plugin_manager`、`schedule_*`、目标工具、`edit`／`write`）：Leader 自己不写文件、不派生子 agent，也不改插件或定时任务；要动手改东西，用 `gitlab_leader_session` 交给 worker。插件额外给它三个工具：
 
 - `gitlab_leader_board`：看板。返回你被指派的 open Issue、收件箱 Todo、需要人工处理的清单、临时任务、worker 汇报（最近 20 条，标为不可信数据）、未确认投递和插件管理的会话列表。`refresh=true` 先刷新 GitLab（失败时返回缓存和 `refreshError`）。传 `taskId` 返回单个会话详情：状态、最近事件、待回答的原生问题原文、汇报，并把该会话的汇报标为已读。
 - `gitlab_leader_session`：按 `action` 操作 worker 会话：
@@ -86,6 +86,7 @@ Leader 使用 DSH 的**标准 preset**，保留读取与执行所需的通用工
   - `steer`：在运行中的 worker 当前回合插入一条纠偏。
   - `rename`、`model`（换成宿主模型目录中的模型）、`archive`（可带理由）。
   - `resolve_delivery`：投递结果不确定时，先用 `board` 核对，再用 `requestId` 和 `outcome`（`delivered`／`not-delivered`）判定；两种结果都不会重发。
+- `gitlab_leader_inbox`：管理「需人工」收件箱（与收件箱 Tab 同一份数据）。`action=list`（默认）按结算时间倒序列出未确认的 needs-human 条目及原因（`limit` 默认 100、最多 200，`total` 为全部未确认数）；`action=acknowledge` 传 `todoIds`（1–50 个）和 `reason`，逐条执行与「我已处理」相同的操作：GitLab Todo 标记完成（Issue 记录不调 GitLab）、记为已关闭、按设置归档会话，`reason` 以「Leader 确认已处理：…」写入闭环结论。何时可以确认写在工具定义里，不在角色简报中重复。
 
 被管理的 worker 会话多一个工具 `gitlab_leader_report`（`kind`：`progress`／`blocked`／`done`／`question`，加 `text`）。Host 把汇报保存（最近 200 条，同文去重）并显示在 `board` 中，不会自动唤醒 Leader，也不让 worker 控制其他会话。
 
@@ -338,3 +339,4 @@ MIT License。发布到 npm（`npm publish`，scoped 包需公开访问，`publi
 - v2.44.2（状态版本不变）：Leader 会话被删除（宿主明确返回 `session/not-found`）后，面板轮询、创建或托管巡检会自动清空已存的 Leader 会话 ID 并回到“未创建”，托管项、笔记、队列与审计保留，由人类自己点“创建 Leader”重建；超时/不可验证或仅被归档的会话不会触发重置，也绝不自动重建。
 - v3.0.0（Todo 状态版本不变；Leader journal 升至版本 2，旧 v1 自动迁移并备份为 `leader.json.v1.bak`）：**Leader 重新设计（不兼容变更）**。Leader 改用 DSH 标准 preset，保留 Shell／文件／`glab` 等通用工具，插件只提供 `gitlab_leader_board`（看板）与 `gitlab_leader_session`（create／send／steer／rename／model／archive／resolve_delivery）两个工具，worker 保留 `gitlab_leader_report`。移除启动／暂停、纳管／解除、预算与租约、并发队列、依赖、完成验收、笔记、会话交接、GitLab API 工具与评论设置、审计、后台唤醒循环以及 Todo 转交 Leader；被管理会话改由插件创建记录推导。面板只保留创建／模型／放弃创建／放弃任务／确认投递；创建 Leader 后发送一次角色简报。`leaderAgentPreset` 默认不再指定随附 preset。
 - v3.0.1（状态版本不变）：修复 Leader 会话没有拿到插件工具的问题。宿主在写入 Leader 会话 ID 之前就触发 `agent/created`，插件把它当成普通会话，`gitlab_leader_board`／`gitlab_leader_session` 因此从未注册。现在创建流程在保存会话 ID 后立即绑定；已常驻却绑定失败时创建返回错误，不再显示就绪；未常驻时记录警告，会话打开时自动绑定。同时每次持久化后同步 worker 的 `gitlab_leader_report`。Leader 运行时隐藏 `subagent`／`workflow`／Agent Team／`plugin_manager`／`schedule_*`／目标工具／`edit`／`write`，保留 Shell、读取与搜索、`skill`、`todo_write`、`web_fetch`、后台任务和 `ask_user_question`。已存在的 Leader 会话需重新打开后才会绑定工具（宿主日志出现「Leader 工具已绑定」）。
+- v3.1.0（Todo 状态版本与 Leader journal 版本不变）：Leader 新增 `gitlab_leader_inbox` 工具，可列出「需人工」收件箱并按条确认（等同「我已处理」，需写明核实依据）；用法只放在工具定义里，角色简报与 persona 不再写死插件工具数量。

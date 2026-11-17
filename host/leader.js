@@ -25,7 +25,7 @@ export function createLeaderWorkerCaller({ sessionId, agentId } = {}) {
 const MISSING_CHECK_MS = 10000;
 // UI: only the Leader session's own lifecycle. Everything about worker sessions is the Leader Agent's job (v3).
 const uiOperations = new Set(['snapshot', 'create', 'configure', 'resolveCreation', 'resolveTask', 'resolveDelivery']);
-const agentOperations = new Set(['board', 'session']);
+const agentOperations = new Set(['board', 'session', 'inbox']);
 const workerOperations = new Set(['workerReport']);
 
 export const leaderMethods = {
@@ -160,6 +160,10 @@ export const leaderMethods = {
     if (operation === 'session' && request.action === 'create') {
       // dispatch() awaits the Leader lock internally, so creation must run outside it.
       try { return await this.leaderCreateSessionRecord(request); } catch (error) { return failure(errorMessage(error), this.leaderProjection()); }
+    }
+    if (operation === 'inbox') {
+      // The inbox lives in Todo state, not the Leader journal; acknowledge takes the same path as the UI button.
+      try { return await this.leaderInboxRecord(request); } catch (error) { return failure(errorMessage(error)); }
     }
     const context = {};
     if (operation === 'board' && request.refresh === true) {

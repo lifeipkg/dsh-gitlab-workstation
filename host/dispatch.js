@@ -544,19 +544,20 @@ export const dispatchMethods = {
    * 记录确认时间（收件箱据此移出）、闭环并按设置归档会话。
    * 标记完成失败不阻塞确认，原因写进结论。
    */
-  async acknowledgeNeedsHuman(todoId) {
+  async acknowledgeNeedsHuman(todoId, options = {}) {
     const record = this.state.handled[String(todoId ?? '')];
     if (!record?.sessionId || record.closure !== 'needs-human') {
       return { ok: false, error: '该 Todo 不在需人工收件箱中。' };
     }
     const item = record.item ?? this.state.todos.find((todo) => todo.id === record.id) ?? null;
-    let note = '人工确认已处理';
+    const base = typeof options.note === 'string' && options.note ? options.note.slice(0, 300) : '人工确认已处理';
+    let note = base;
     // Issue 记录没有对应 GitLab Todo，mark_as_done 必然 404；人工确认只做状态与归档处理。
     if (item && !isIssueItem(item)) {
       try {
         await this.markTodoDone(item);
       } catch (error) {
-        note = `人工确认已处理（标记完成失败：${errorMessage(error).slice(0, 200)}）`;
+        note = `${base}（标记完成失败：${errorMessage(error).slice(0, 200)}）`;
       }
     }
     record.acknowledgedAt = Date.now();
