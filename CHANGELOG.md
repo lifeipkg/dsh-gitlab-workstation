@@ -1,6 +1,6 @@
 # Changelog
 
-## 4.0.0
+## 4.0（未发版，包版本待发版时提升）
 
 - Todo 路径重写为台账 + 线程模型（core/todo-machine.js、host/todo-cycle.js）：一线程一会话、批次追加、`gitlab_todo_report` 报告工具、熔断器、30 天保留。
 - 收件箱改为 attention/waiting 条目，动作 重试/我已处理；Leader inbox 工具改为 list/retry/close/resume，board 新增 threads/breaker。
