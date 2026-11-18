@@ -24,12 +24,15 @@ test('a managed worker records a report on the board; the Leader reads it unseen
 
   const board = (await f.board()).result;
   assert.equal(board.reports.length, 1);
-  assert.equal(board.reports[0].seen, false);
+  assert.equal(board.unreadReports, 1);
   assert.equal(board.reports[0].kind, 'progress');
+  assert.equal('seen' in board.reports[0], false);
   const detail = (await f.board({ taskId: 'issue-1' })).result.detail;
   assert.equal(detail.reports.length, 1);
   assert.equal(f.runtime.leaderState.reports[0].seen, true);
-  assert.equal((await f.board()).result.reports[0].seen, true);
+  // Once read through the detail view, the report leaves the unread list.
+  assert.equal((await f.board()).result.reports.length, 0);
+  assert.equal((await f.board()).result.unreadReports, 0);
 });
 
 test('every report kind is accepted, anything else is not', async () => {
@@ -142,7 +145,8 @@ test('the journal keeps a bounded history: the oldest reports are dropped past m
   assert.equal(reports[0].text, 'step 7');
   assert.equal(reports.at(-1).text, `step ${LEADER_LIMITS.maxReports + 6}`);
   const board = (await f.board()).result;
-  assert.ok(board.reports.length <= 20);
+  assert.ok(board.reports.length <= 5);
+  assert.equal(board.unreadReports, LEADER_LIMITS.maxReports);
   assert.equal(board.reports.at(-1).text, `step ${LEADER_LIMITS.maxReports + 6}`);
 });
 

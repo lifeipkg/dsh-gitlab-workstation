@@ -154,12 +154,12 @@ export const leaderMethods = {
       return result.ok ? result : failure(result.error);
     }
     if (this.leaderJournalUnreadable && operation !== 'snapshot') {
-      return failure('Leader journal 未知/损坏；只读冻结，先人工修复再 reload，绝不覆盖或重新创建。', this.leaderProjection());
+      return failure('Leader journal 未知/损坏；只读冻结，先人工修复再 reload，绝不覆盖或重新创建。', this.leaderFailureProjection(caller));
     }
     if (!request || typeof request !== 'object' || Array.isArray(request)) return failure('Leader 参数必须是对象。');
     if (operation === 'session' && request.action === 'create') {
       // dispatch() awaits the Leader lock internally, so creation must run outside it.
-      try { return await this.leaderCreateSessionRecord(request); } catch (error) { return failure(errorMessage(error), this.leaderProjection()); }
+      try { return await this.leaderCreateSessionRecord(request); } catch (error) { return failure(errorMessage(error), this.leaderFailureProjection(caller)); }
     }
     const context = {};
     if (operation === 'board' && request.refresh === true) {
@@ -197,9 +197,14 @@ export const leaderMethods = {
           this.leaderState = before;
           if (this.leaderStorageFault) { this.leaderState.phase = 'error'; this.leaderState.error = errorMessage(error); }
         }
-        return failure(errorMessage(error), this.leaderProjection());
+        return failure(errorMessage(error), this.leaderFailureProjection(caller));
       }
     });
+  },
+
+  /** Agent callers get only the error: the full projection (reports, tasks, deliveries) is not repeated into every failed tool call. */
+  leaderFailureProjection(caller) {
+    return callers.get(caller)?.kind === 'agent' ? null : this.leaderProjection();
   },
 
   // ---- Managed sessions: every session the plugin itself created (Issue workers, Leader ad-hoc tasks) ----
