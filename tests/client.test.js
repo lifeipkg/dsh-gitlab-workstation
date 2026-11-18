@@ -56,23 +56,6 @@ test('issue refresh and log clearing use POST while cached issue reads stay GET'
   assert.equal(calls[1].options.body, undefined);
 });
 
-test('issue rows have no manual route action while todo routing remains available', async () => {
-  const source = await clientSource();
-  const panel = (name, nextName) => {
-    const start = source.indexOf(`activeTab === '${name}' && snapshot && h('section'`);
-    const end = source.indexOf(`activeTab === '${nextName}' &&`, start);
-    assert.ok(start >= 0 && end > start, `${name} panel markers must remain present`);
-    return source.slice(start, end);
-  };
-
-  const issues = panel('issues', 'workspaces');
-  const todos = panel('todos', 'issues');
-  assert.doesNotMatch(issues, /openRouteTargets\(issue\)/);
-  assert.doesNotMatch(issues, /t\('routeToSession'\)/);
-  assert.match(todos, /openRouteTargets\(todo, event\.currentTarget\)/);
-  assert.match(todos, /t\('routeToSession'\)/);
-});
-
 test('panel drops repeated introductions and long settings help while retaining feedback', async () => {
   const source = await clientSource();
   const start = source.indexOf("\n      return h('div', { className: 'gta-root' }");
@@ -167,18 +150,6 @@ test('issue session controls use exact-model reasoning metadata and independent 
   assert.match(source, /const dispatchIssue = \(issue\) => \{\s*if \(busyKeysRef\.current\.has\('settings'\)\) return Promise\.resolve\(false\)/);
 });
 
-test('inbox exposes the real archived state and unarchive errors', async () => {
-  const source = await clientSource();
-  const start = source.indexOf("activeTab === 'inbox' && snapshot && h('section'");
-  const end = source.indexOf("activeTab === 'todos' &&", start);
-  assert.ok(start >= 0 && end > start, 'inbox panel markers must remain present');
-  const inbox = source.slice(start, end);
-  assert.match(inbox, /item\.archived/);
-  assert.match(inbox, /t\('sessionArchived'\)/);
-  assert.match(inbox, /item\.archiveError/);
-  assert.match(source, /\.gta-banner\{[^}]*overflow-wrap:anywhere/);
-});
-
 test('compact styles keep controls small and wrap list content responsively', async () => {
   const source = await clientSource();
   const start = source.indexOf('    const CSS = `');
@@ -206,7 +177,7 @@ async function loadWorkstationHelpers() {
   const marker = '    function PanelIcon({ size = 20 }) {';
   assert.ok(source.includes(marker));
   const instrumented = source.replace(marker,
-    `    globalThis.__workstationForTest = { WORKSTATION_TABS, nextWorkstationTab, filterWorkstationItems, recordStatusClass, issueSettingsSummary, changedSettingsPatch, canProcessTodo, finishCurrentViewOperation };\n${marker}`);
+    `    globalThis.__workstationForTest = { WORKSTATION_TABS, nextWorkstationTab, filterWorkstationItems, recordStatusClass, issueSettingsSummary, changedSettingsPatch, finishCurrentViewOperation };\n${marker}`);
   let definition;
   const context = vm.createContext({
     window: { __ModuleLoader__: { load(value) { definition = value; } } },
@@ -422,13 +393,13 @@ test('journal rollback preserves known handoff identity and text while adopting 
   assert.match(source, /\['creating', 'creation-unknown'\]\.includes\(sessionEntry\.handoff\.status\) \? 'sessionHandoffUncertain'/);
 });
 
-test('all five session entries share the guard, archived rows remain reachable, and locales match', async () => {
+test('all three session entries share the guard, archived rows remain reachable, and locales match', async () => {
   const source = await clientSource();
-  assert.equal((source.match(/=> openSession\(\{/g) || []).length, 5);
+  assert.equal((source.match(/=> openSession\(\{/g) || []).length, 3);
   assert.equal((source.match(/ctx\.uiWorkspace\.openSession\(sessionId\)/g) || []).length, 1);
   assert.doesNotMatch(source, /item\.sessionId && !item\.archived && h\(Button/);
   assert.doesNotMatch(source, /session\.archived\s*\? h\('span'/);
-  assert.match(source, /taskId: item\.todoId/); assert.match(source, /taskId: todo\.id/); assert.match(source, /taskId: issue\.id/);
+  assert.match(source, /taskId: issue\.id/);
   assert.match(source, /requestId = entry\.handoff\?\.requestId/);
   assert.match(source, /readOnly: true, rows: 7/);
   assert.match(source, /inject: \['slots', 'locale', 'uiWorkspace', 'sessions', 'workspaces', 'connection'\]/);
@@ -442,15 +413,15 @@ test('all five session entries share the guard, archived rows remain reachable, 
 
 test('grouped workstation tabs navigate across groups, wrap, and ignore unrelated keys', async () => {
   const { WORKSTATION_TABS: tabs, nextWorkstationTab } = await loadWorkstationHelpers();
-  assert.deepEqual(Array.from(tabs, (tab) => tab.id), ['inbox', 'todos', 'issues', 'workspaces', 'logs']);
-  assert.deepEqual(Array.from(tabs, (tab) => tab.group), ['tasksGroup', 'tasksGroup', 'tasksGroup', 'environmentGroup', 'environmentGroup']);
+  assert.deepEqual(Array.from(tabs, (tab) => tab.id), ['issues', 'workspaces', 'logs']);
+  assert.deepEqual(Array.from(tabs, (tab) => tab.group), ['tasksGroup', 'environmentGroup', 'environmentGroup']);
   assert.equal(nextWorkstationTab('issues', 'ArrowRight'), 'workspaces');
   assert.equal(nextWorkstationTab('workspaces', 'ArrowLeft'), 'issues');
-  assert.equal(nextWorkstationTab('inbox', 'ArrowLeft'), 'logs');
-  assert.equal(nextWorkstationTab('logs', 'ArrowRight'), 'inbox');
-  assert.equal(nextWorkstationTab('issues', 'Home'), 'inbox');
-  assert.equal(nextWorkstationTab('todos', 'End'), 'logs');
-  assert.equal(nextWorkstationTab('todos', 'Enter'), null);
+  assert.equal(nextWorkstationTab('issues', 'ArrowLeft'), 'logs');
+  assert.equal(nextWorkstationTab('logs', 'ArrowRight'), 'issues');
+  assert.equal(nextWorkstationTab('logs', 'Home'), 'issues');
+  assert.equal(nextWorkstationTab('issues', 'End'), 'logs');
+  assert.equal(nextWorkstationTab('issues', 'Enter'), null);
   assert.equal(nextWorkstationTab('missing', 'ArrowRight'), null);
 
   const source = await clientSource();
@@ -466,7 +437,7 @@ test('local list search filters loaded metadata without mutating records or pagi
   const { filterWorkstationItems } = await loadWorkstationHelpers();
   const items = Object.freeze([
     Object.freeze({ id: 'issue:alpha:7', title: 'Fix focus', project: 'Team/Workbench', author: 'Ada', labels: Object.freeze(['UX', '紧凑']) }),
-    Object.freeze({ todoId: 81, title: 'Pipeline failed', project: 'Team/CI', sessionTitle: 'Investigate', closure: 'needs-human' }),
+    Object.freeze({ iid: 81, title: 'Pipeline failed', project: 'Team/CI', sessionTitle: 'Investigate', closure: 'needs-human' }),
     Object.freeze({ id: 9, title: 'Literal [test].', project: 'Docs' }),
   ]);
   assert.equal(filterWorkstationItems(items, '   '), items);
@@ -513,44 +484,7 @@ test('general settings only save user-edited baseline fields and preserve quick 
   assert.deepEqual(plain(changedSettingsPatch({ ...draft, issueSessionModel: { provider: 'x', model: 'ignored' } }, current, baseline)), { intervalSeconds: 300 });
 });
 
-test('Todo quick controls stay in Todo context and MR completion cannot bypass confirmation', async () => {
-  const { canProcessTodo } = await loadWorkstationHelpers();
-  assert.equal(canProcessTodo({ targetType: 'MergeRequest', directMention: false, handled: false }), false);
-  assert.equal(canProcessTodo({ url: 'https://gitlab.local/project/-/merge_requests/8', handled: false }), false);
-  assert.equal(canProcessTodo({ targetType: 'MergeRequest', directMention: true, handled: false }), true);
-  assert.equal(canProcessTodo({ targetType: 'Issue', handled: false }), true);
-  assert.equal(canProcessTodo({ targetType: 'Issue', handled: true, outcome: 'session-accepted' }), true);
-  assert.equal(canProcessTodo({ targetType: 'MergeRequest', directMention: true, handled: true, outcome: 'merge-request-done' }), false);
-  const source = await clientSource();
-  const header = source.slice(source.indexOf("h('header', { className: 'gta-header' }"), source.indexOf("!snapshot && !error"));
-  assert.doesNotMatch(header, /quickModelKey|post\('poll'\)|updateSettings\(\{ enabled:/);
-  const todos = source.slice(source.indexOf("activeTab === 'todos' && snapshot && h('section'"), source.indexOf("activeTab === 'issues' && snapshot && h('section'"));
-  assert.match(todos, /quickModelKey/);
-  assert.match(todos, /post\('poll'\)/);
-  assert.match(todos, /pressed: settings\.enabled/);
-  assert.match(todos, /canProcessTodo\(todo\) && h\(Button/);
-  assert.match(todos, /todo\.executionStatus === 'running' \|\| todo\.executionStatus === 'starting'/);
-  assert.match(todos, /guardedRun\(`markdone:\$\{todo\.id\}`/);
-  assert.match(todos, /guardedRun\(`reprocess:\$\{todo\.id\}`/);
-  assert.match(source, /Date\.now\(\) - pendingAt <= 3000/);
-  assert.match(source, /confirmTimers\.current\.forEach\(\(timer\) => clearTimeout\(timer\)\)/);
-});
-
-test('routing uses native radios with dialog initial focus, focus containment and restoration', async () => {
-  const source = await clientSource();
-  assert.match(source, /type: 'radio', name: `\$\{PANEL_ID\}-route-target`/);
-  assert.doesNotMatch(source, /role: 'listbox'|role: 'option'/);
-  assert.match(source, /dialog\?\.querySelector\('button:not\(:disabled\)'\)\?\.focus\(\)/);
-  assert.match(source, /event\.shiftKey && \(focused === first/);
-  assert.match(source, /!event\.shiftKey && \(focused === last/);
-  assert.match(source, /trigger\?\.focus\(\)/);
-  assert.match(source, /radios\.find\(\(node\) => node\.checked\) \?\? radios\[0\]/);
-  assert.match(source, /window\.removeEventListener\('keydown', onKeyDown\)/);
-  assert.match(source, /selectedRouteTarget = routeItems\.find\(/);
-  assert.doesNotMatch(source, /selectedRouteTarget = allRouteItems\.find\(/);
-});
-
-test('old route and settings completions cannot close a reopened view', async () => {
+test('old settings completions cannot close a reopened view', async () => {
   const { finishCurrentViewOperation } = await loadWorkstationHelpers();
   for (const view of ['route', 'settings']) {
     const generation = { current: 1 };
@@ -570,10 +504,6 @@ test('old route and settings completions cannot close a reopened view', async ()
     assert.equal(completed, 1);
   }
   const source = await clientSource();
-  assert.match(source, /finishCurrentViewOperation\(perform\(`route:/);
-  assert.match(source, /generation, routeGeneration, closeRouteTargets\)/);
-  assert.match(source, /routeGeneration\.current === generation && data\.result\?\.ok === false/);
-  assert.match(source, /if \(routeGeneration\.current === generation\) setRouteError\(cause\.message\)/);
   assert.match(source, /finishCurrentViewOperation\(saveGeneralSettings\(\), generation, draftGeneration, closeGeneralSettings\)/);
   assert.match(source, /onClick: closeGeneralSettings/);
   assert.match(source, /draftGeneration\.current \+= 1; draftBaseline\.current = settings/);

@@ -1,6 +1,5 @@
 // Shared in-memory harness for the Leader v3 tests (not a test file itself).
 import { initialState, initialLeaderState } from '../core.js';
-import { ingestTodos, retryTodo, closeTodo, resumeBreaker } from '../core/todo-machine.js';
 import { leaderMethods, createLeaderUiCaller, createLeaderAgentCaller, createLeaderWorkerCaller } from '../host/leader.js';
 
 export const copy = (value) => JSON.parse(JSON.stringify(value));
@@ -13,11 +12,6 @@ export function issueItem(iid, extra = {}) {
     project: 'g/p', iid, projectId: 7, state: 'opened', ...extra };
 }
 
-export function todoItem(id, extra = {}) {
-  return { id, title: `Todo ${id}`, url: `https://gitlab.example/g/p/-/merge_requests/${id.replace(/\D/gu, '') || 1}`, project: 'g/p',
-    action: 'mentioned', targetType: 'MergeRequest', author: 'someone', body: 'please look', createdAt: '2026-01-01T00:00:00Z', ...extra };
-}
-
 export function handledRecord(item, sessionId, extra = {}) {
   return { id: item.id, sessionId, item, automatic: false, outcome: 'session-accepted', sessionTitle: item.title, ...extra };
 }
@@ -26,7 +20,7 @@ export function handledRecord(item, sessionId, extra = {}) {
 export function fixture(options = {}) {
   const sessions = new Map([['leader', sessionState()], ['worker-a', sessionState()], ['worker-b', sessionState()], ['human', sessionState()]]);
   const calls = { create: [], rename: [], model: [], prompt: [], archive: [], deliver: [], dispatch: [], setArchived: [], persist: [], refresh: [], poll: [],
-    resetModel: [], persistQuiet: [], todoDispatch: [] };
+    resetModel: [], persistQuiet: [] };
   const archivedSessionIds = [];
   let counter = 0;
   const runtime = Object.assign({}, leaderMethods, {
@@ -49,15 +43,6 @@ export function fixture(options = {}) {
       this.state.handled[item.id] = handledRecord(item, sessionId);
       return { ok: true, sessionId };
     },
-    // v4 台账：Todo 的 session create 走 todoManualDispatch（只入队，返回 queued）。
-    async todoManualDispatch(todo) {
-      calls.todoDispatch.push(copy(todo));
-      if (options.todoManualDispatch) return options.todoManualDispatch.call(this, todo);
-      return { ok: true, sessionId: null };
-    },
-    async todoRetry(todoId) { return retryTodo(this.state.ledger, todoId); },
-    async todoClose(todoId, by = 'human') { return closeTodo(this.state.ledger, todoId, by) ? { ok: true } : { ok: false, error: 'Todo 不在台账中。' }; },
-    async todoResume() { return resumeBreaker(this.state.ledger); },
     async setSessionArchived(sessionId, archived) {
       calls.setArchived.push({ sessionId, archived });
       if (options.setArchived) return options.setArchived(sessionId, archived);
@@ -113,23 +98,6 @@ export function fixture(options = {}) {
       const item = issueItem(iid);
       runtime.state.issues.push(item);
       if (sessionId) { runtime.state.handled[item.id] = handledRecord(item, sessionId, record); if (!sessions.has(sessionId)) sessions.set(sessionId, sessionState()); }
-      return item;
-    },
-    /** Adds a Todo to the list; with a ledger record ({ state, reason, attempts, updatedAt }) or a session it is also ingested into the ledger. */
-    addTodo(id, sessionId, record = {}) {
-      const item = todoItem(id);
-      runtime.state.todos.push(item);
-      if (sessionId || Object.keys(record).length) {
-        const ledger = runtime.state.ledger;
-        ingestTodos(ledger, [item], { initialState: record.state ?? 'queued', reason: record.reason ?? '' });
-        const entry = ledger.todos[id];
-        if (record.attempts !== undefined) entry.attempts = record.attempts;
-        if (record.updatedAt !== undefined) entry.updatedAt = record.updatedAt;
-        if (sessionId) {
-          ledger.threads[entry.threadKey].sessionId = sessionId;
-          if (!sessions.has(sessionId)) sessions.set(sessionId, sessionState());
-        }
-      }
       return item;
     },
   };

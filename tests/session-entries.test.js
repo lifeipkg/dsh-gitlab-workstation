@@ -6,7 +6,7 @@ import { GitlabTodoRuntime } from '../index.js';
 
 const stateResponse = () => ({ cursor: 0, active: false, running: false, queue: null, pendingInput: [] });
 const missing = (sessionId) => Object.assign(new Error('not found'), { isDSHRemoteError: true, code: 'session/not-found', details: { sessionId } });
-function fixture(issue = false) {
+function fixture() {
   const calls = { create: [], rename: [], model: [], persist: [] };
   const runtime = Object.assign(Object.create(GitlabTodoRuntime.prototype), {
     state: initialState(), ctx: { workspaceRegistry: { archivedSessionIds: [] } }, config: { agentPreset: 'manual-preset' },
@@ -21,12 +21,10 @@ function fixture(issue = false) {
     resolveWorkspaceId(cwd) { return cwd === 'issue-dir' ? 'issue-workspace' : 'todo-workspace'; },
     snapshot() { return {}; },
   });
-  runtime.state.settings.sessionCwd = 'todo-dir';
   runtime.state.settings.issueSessionCwd = 'issue-dir';
-  runtime.state.settings.sessionModel = { provider: 'p', model: 'todo', reasoning: 'low' };
   runtime.state.settings.issueSessionModel = { provider: 'q', model: 'issue', reasoning: 'high' };
   runtime.state.handled.task = { id: 'task', sessionId: 'old', closure: 'needs-human', archived: true,
-    title: 'A task', reportSummary: 'Historical summary', item: { id: 'task', ...(issue ? { source: 'issue', kind: 'issue' } : {}) } };
+    title: 'A task', reportSummary: 'Historical summary', item: { id: 'task', source: 'issue', iid: 1, projectId: 7, url: 'https://gitlab.example/g/p/-/issues/1' } };
   return { runtime, calls };
 }
 const post = (runtime, body) => runtime.handleFetch(new Request('http://local/api/gitlab-todo-agent', {
@@ -81,13 +79,13 @@ test('attached bridge returns inspect result and explicit handoff state contract
 });
 
 test('manual handoff creates blank session with separate Issue route and preserves original closure/session', async () => {
-  for (const issue of [false, true]) {
-    const { runtime, calls } = fixture(issue);
+  {
+    const { runtime, calls } = fixture();
     const result = await runtime.createHandoff('task', 'old', 'r');
     assert.equal(result.ok, true); assert.match(result.handoffText, /Historical summary/);
-    assert.deepEqual(calls.create, [{ workspaceId: issue ? 'issue-workspace' : 'todo-workspace', agentPreset: 'manual-preset' }]);
-    assert.equal(calls.model[0].model, issue ? 'issue' : 'todo');
-    assert.equal(calls.model[0].reasoning, issue ? 'high' : 'low');
+    assert.deepEqual(calls.create, [{ workspaceId: 'issue-workspace', agentPreset: 'manual-preset' }]);
+    assert.equal(calls.model[0].model, 'issue');
+    assert.equal(calls.model[0].reasoning, 'high');
     assert.equal(runtime.state.handled.task.sessionId, 'old'); assert.equal(runtime.state.handled.task.closure, 'needs-human');
     assert.deepEqual(runtime.state.pending, {}); assert.equal(runtime.slots, undefined);
     assert.equal(runtime.state.manualHandoffs[0].status, 'ready');

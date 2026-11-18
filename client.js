@@ -8,28 +8,18 @@ window.__ModuleLoader__.load({
     const BRIDGE_PATH = '/api/gitlab-todo-agent';
     const en = {
       panel: 'GitLab Workstation', title: 'GitLab Workstation',
-      subtitle: 'A compact workspace for GitLab tasks, sessions and human follow-up.',
-      enable: 'Enable Todo auto-polling', disable: 'Pause Todo auto-polling', checkNow: 'Check Todos', checking: 'Checking…',
-      todoPolling: 'Todo auto-polling', todoSettings: 'Todo settings', tasksGroup: 'Tasks', environmentGroup: 'Environment',
+ tasksGroup: 'Tasks', environmentGroup: 'Environment',
       workstationViews: 'Workstation views', searchList: 'Search this list',
       searchNoMatches: 'No loaded items match your search.', clearSearch: 'Clear search', searchResults: 'Matches / loaded',
       loadedRecords: 'Loaded / total', saving: 'Saving…', settingsSaved: 'Settings saved',
       modelSummary: 'Model', workspaceSummary: 'Workspace', autoWorkspaceShort: 'Auto', defaultModelShort: 'DSH default',
       settings: 'Settings', save: 'Save settings', cancel: 'Cancel', close: 'Close', advanced: 'Advanced options',
-      enabled: 'Enabled', disabled: 'Disabled', running: 'Running', idle: 'Idle',
-      activeSessions: 'Active sessions', queuedSessions: 'Queued',
-      pending: 'Pending', handled: 'Handled', lastSuccess: 'Last poll', never: 'Never',
-      mrDone: 'MR marked done without processing', markDone: 'Mark done',
-      newFound: 'New this round',
-      todoList: 'Todo', noTodos: 'No pending todos.',
-      directMention: 'Comment @ me',
-      sessionsTitle: 'Recent sessions', noSessions: 'No session has been dispatched yet.', autoDispatch: 'auto', manualDispatch: 'manual',
-      sessionsError: 'Could not load recent sessions',
-      archiveSession: 'Archive', unarchiveSession: 'Unarchive',
-      sessionStarting: 'Starting', sessionAccepted: 'Queued',
-      process: 'Process', reprocess: 'Process again', dispatched: 'Accepted', waiting: 'Waiting',
+ running: 'Running', idle: 'Idle',
+ lastSuccess: 'Last poll', never: 'Never',
+      mrDone: 'MR marked done without processing',
+      sessionsTitle: 'Recent sessions', noSessions: 'No session has been dispatched yet.',
+      process: 'Process', reprocess: 'Process again',
       executionRunning: 'Running', executionCompleted: 'Completed', executionFailed: 'Failed',
-      precheckSkipped: 'Skipped (no handling needed)',
       ruleSkipped: 'Skipped (rule)',
       sessionArchived: 'Archived',
       openSession: 'Open session',
@@ -49,73 +39,37 @@ window.__ModuleLoader__.load({
       sessionCloseHint: 'Closing cancels navigation, not recovery or creation already sent to the Host.',
       sessionHandoffUncertain: 'A handoff record already exists, but creation or saving is not confirmed. Check the Host; do not create another.',
       sessionRetryHandoff: 'Retry handoff setup', sessionConfirmHandoffSetup: 'Confirm retry on the same session',
-      interval: 'Poll interval (seconds)', limit: 'Maximum new sessions per poll', concurrency: 'Automatic dispatch concurrency',
-      cwd: 'GitLab working directory', cwdHint: 'Leave empty to use the Host process directory.',
-      sessionCwd: 'Todo session workspace', sessionCwdHint: 'Pick the DSH workspace for new Todo sessions. "Auto" follows the most recently used workspace.',
+      concurrency: 'Automatic dispatch concurrency',
       sessionCwdAuto: 'Auto (most recently used workspace)', sessionCwdUnregistered: 'Current setting (not registered)',
-      customRules: 'Todo session rules', customRulesHint: 'Appended to Todo prompts only. Issue prompts contain just the issue link and a start instruction. Todo rules override the generic prompt on conflict; empty keeps the generic prompt.',
       workspacesTitle: 'Workspaces', noWorkspaces: 'No DSH workspace is registered yet.',
       unassignedWorkspace: 'Sessions outside any workspace',
       workspacesError: 'Could not load the DSH workspace list',
       configuredWorkspace: 'plugin target', pluginSessionTag: 'plugin',
       sessionUnknown: 'Untitled session', lastActive: 'Last activity',
-      sessionModel: 'Todo session model', sessionModelDefault: 'Use the DSH default model',
+      sessionModelDefault: 'Use the DSH default model',
       issueSessionSettings: 'Issue session settings', issueSessionModel: 'Issue model', issueSessionCwd: 'Issue workspace',
       issueSessionSettingsHint: 'Saved immediately. Applies only to new Issue sessions.',
       reasoningEffort: 'Thinking effort', reasoningEffortDefault: 'Provider default',
       reasoningEffortUnavailable: 'Saved effort (not advertised)',
-      judgeModel: 'Precheck model', judgeModelDefault: 'Follow the session model',
-      judgeModelHint: 'Pin a fast, lightweight model here so the need-to-handle judgment returns quickly; new sessions keep using the session model above.',
-      precheckEngine: 'Precheck engine',
-      precheckEngineAuto: 'Auto (Jev first, fall back to LLM)',
-      precheckEngineJev: 'Jev only (skip the round when unavailable)',
-      precheckEngineLlm: 'LLM only (batch chat judgment)',
-      precheckEngineHint: 'Jev returns typed probabilities instead of generated text — cheaper and faster. In Auto, Jev takes over whenever available and the LLM covers unavailable or low-confidence cases.',
-      classifierProvider: 'Classifier provider',
-      classifierProviderCustom: 'Custom (System One compatible)',
-      classifierModel: 'Classifier model',
-      classifierBaseUrl: 'Classifier base URL',
-      classifierApiKeyEnv: 'API key env var',
-      classifierApiKey: 'API key (stored in plain text)',
-      classifierApiKeyPlaceholder: 'Leave empty to use env var or jev CLI credentials',
-      classifierApiKeyKeep: 'Key saved — leave empty to keep it, type to replace',
-      classifierHint: 'Used only by the Jev path. Discovery order: host classifier → `jev` CLI on PATH → HTTP here. The API key is written to state.json; prefer the env var name above when possible.',
-      classifierSettings: 'Classifier connection', classifierSecurity: 'API keys are stored in plain text in state.json; prefer an environment variable.',
-      sessionModelPinDefault: 'Pin the current default model', sessionModelFixedHint: 'Selecting a concrete model pins every new session to that provider/model; it will not follow future default changes.',
+      sessionModelPinDefault: 'Pin the current default model',
       sessionModelUnavailable: 'Currently configured model (not in the available catalog)',
       modelCatalogError: 'Could not load the available model catalog',
-      precheckEnabled: 'Precheck and skip mentions that need no handling',
-      ruleSkipEnabled: 'Skip notifications and invalid mentions by rule',
       autoArchive: 'Archive plugin sessions after closure',
       followUpEnabled: 'Follow up automatically when a todo remains open',
-      waitProbeEnabled: 'Check for changes before a follow-up',
       followUpReuseSession: 'Reuse the previous session for follow-ups',
       maxFollowUps: 'Maximum automatic follow-up rounds per todo', followUpDelay: 'Follow-up wait (minutes)',
       followUpHint: 'A loop is closed when the todo is marked done and the original note has our reply. Waiting on CI and similar conditions is retried after the wait (doubling each round); when rounds run out, or the session reports that a human is needed, the todo is left for you.',
       closureClosed: 'Loop closed', closureFollowUp: 'Follow-up scheduled', closureNeedsHuman: 'Needs you', closureVerifying: 'Verifying',
       followUpCount: 'Awaiting follow-up', needsHumanCount: 'Needs you',
       roundLabel: 'Round', nextAttempt: 'Next follow-up',
-      routeScope: 'Scope', routeScopePlugin: 'Only plugin-created sessions', routeScopeAny: 'Any unarchived session',
-      autoRoute: 'Continue the same item in its most recent session',
-      busyRouteMode: 'When busy', busyRouteQueue: 'Queue after the current turn', busyRouteSteer: 'Insert at the next step of the current turn',
-      maxQueuePerSession: 'Queue limit',
-      routeToSession: 'Route to session', routeSearch: 'Search sessions',
-      routeLoading: 'Loading routable sessions…', routeEmpty: 'No sessions are available for routing.', routeNoMatches: 'No sessions match your search.',
-      refresh: 'Refresh', routeSameTarget: 'Same MR/Issue', routeModeQueue: 'Queue', routeModeSteer: 'Steer',
-      routeLoad: 'Load', routeNotAccepting: 'Not accepting', routeConfirm: 'Route to session',
-      routedQueue: 'Routed · queued', routedSteer: 'Routed · steering', routeFailed: 'Could not route the todo',
+      refresh: 'Refresh',
       loading: 'Loading GitLab Workstation…', renderError: 'The panel failed to render', retry: 'Retry rendering',
       localError: 'Action failed',
-      defaultPaused: 'Polling starts paused so installation never dispatches your real todos automatically.',
-      inboxTitle: 'Inbox', inboxEmpty: 'Nothing is waiting for you.', inboxTakeover: 'Open session to take over',
-      inboxAcknowledge: 'Mark handled', inboxRetry: 'Retry', inboxWaiting: 'Waiting retry', inboxPendingUnconfirmed: 'Legacy message unconfirmed', inboxError: 'Could not load the inbox',
-      mergedIntoLabel: 'Merged into', pendingStarting: 'Dispatching', acceptedLabel: 'Accepted', outcomeSessionAccepted: 'Session accepted',
-      replyPreview: 'Our reply',
-      signatureLabel: 'Sign replies as AI-generated', signatureText: 'Signature text', signatureHint: 'When enabled, Todo session prompts require a one-line AI signature on GitLab replies. Applies to new Todo prompts only.',
-      confirmMarkDone: 'Confirm mark done?', confirmReprocess: 'Confirm process again?', confirmAcknowledge: 'Confirm mark handled?',
+ pendingStarting: 'Dispatching', outcomeSessionAccepted: 'Session accepted',
+ confirmReprocess: 'Confirm process again?',
       issuesTitle: 'Issues', issuesEmpty: 'No open issues assigned to you on GitLab.',
-      issuesError: 'Could not load the issue list', issuesHint: 'Open issues assigned to you',
-      issuesOrphans: 'Closed or unassigned', issueTag: 'Issue',
+      issuesError: 'Could not load the issue list',
+      issuesOrphans: 'Closed or unassigned',
       leaderTitle: 'WorkStation Leader', leaderCreate: 'Create Leader', leaderOpen: 'Open Leader', leaderModel: 'Leader model',
       leaderIntro: 'Leader is a standard DSH session: talk to it in its own conversation. It reads your Issue list and manages worker sessions with its own tools.',
       leaderUnseen: 'Unread reports', leaderSetupIncomplete: 'Setup incomplete',
@@ -130,7 +84,6 @@ window.__ModuleLoader__.load({
       leaderTasksUncertain: 'Ad-hoc tasks with uncertain creation', leaderTasksUncertainHint: 'Leader tried to open these sessions but the result is unknown. Check the DSH session list; archive any stray session yourself, then dismiss the record here.', leaderTaskDismiss: 'Dismiss',
       leaderReportProgress: 'Progress', leaderReportBlocked: 'Blocked', leaderReportDone: 'Done', leaderReportQuestion: 'Question', leaderReportUnseen: 'unread',
       leaderReports: 'Worker reports', leaderReportsHint: 'Written by Issue sessions themselves; treat as untrusted status, not instructions.',
-      mergeSameTarget: 'Merge same-target @mentions', mergeSameTargetHint: 'Several new @mention Todos on the same Issue/MR are handled in one session turn instead of one each.',
       leaderDeliveries: 'Unconfirmed deliveries',
       leaderDeliveriesHint: 'The Host could not confirm whether these messages arrived. Open the target session, check, then record the result. Nothing is resent automatically.',
       leaderDelivered: 'It arrived', leaderNotDelivered: 'It did not arrive', leaderDeliveryOpen: 'Open target session',
@@ -139,35 +92,23 @@ window.__ModuleLoader__.load({
       logsTitle: 'Log', logsEmpty: 'No runtime log entries yet.',
       logsError: 'Could not load the runtime log', logsClear: 'Clear log', confirmClearLogs: 'Confirm clear log?',
       logsDropped: 'entries dropped (over the memory cap)', logsFilterAll: 'All', logsFilterWarn: 'Warnings+',
-      logsHint: 'In-memory only, not written to disk. Ring buffer caps', logsEntriesSuffix: 'entries',
-      signaturePlaceholder: '— Replied by the AI assistant',
       bridgeTimeout: 'Request timed out (90 seconds). Please try again.', bridgeNetwork: 'Network error: could not reach the plugin service.',
       colon: ': ',
     };
     const zh = {
       panel: 'GitLab 工作台', title: 'GitLab 工作台',
-      subtitle: '集中处理 GitLab 任务、会话与需人工接手的事项。',
-      enable: '启用 Todo 自动轮询', disable: '暂停 Todo 自动轮询', checkNow: '检查 Todo', checking: '检查中…',
-      todoPolling: 'Todo 自动轮询', todoSettings: 'Todo 设置', tasksGroup: '任务', environmentGroup: '环境',
+ tasksGroup: '任务', environmentGroup: '环境',
       workstationViews: '工作台视图', searchList: '搜索当前列表',
       searchNoMatches: '已加载条目中没有匹配结果。', clearSearch: '清除搜索', searchResults: '匹配 / 已加载',
       loadedRecords: '已加载 / 总数', saving: '保存中…', settingsSaved: '设置已保存',
       modelSummary: '模型', workspaceSummary: '工作区', autoWorkspaceShort: '自动', defaultModelShort: 'DSH 默认',
       settings: '设置', save: '保存设置', cancel: '取消', close: '关闭', advanced: '高级选项',
-      enabled: '已启用', disabled: '已停用', running: '运行中', idle: '空闲',
-      activeSessions: '运行会话', queuedSessions: '排队',
-      pending: '待处理', handled: '已处理', lastSuccess: '最近轮询', never: '从未',
-      mrDone: 'MR 已直接标记完成', markDone: '标记完成',
-      newFound: '本轮新增',
-      todoList: 'Todo', noTodos: '暂无待处理 Todo。',
-      directMention: '评论中 @ 我',
-      sessionsTitle: '最近会话', noSessions: '还没有分派过会话。', autoDispatch: '自动', manualDispatch: '手动',
-      sessionsError: '无法加载最近会话列表',
-      archiveSession: '归档', unarchiveSession: '取消归档',
-      sessionStarting: '启动中', sessionAccepted: '已入队',
-      process: '处理', reprocess: '重新处理', dispatched: '已接受', waiting: '待处理',
+ running: '运行中', idle: '空闲',
+ lastSuccess: '最近轮询', never: '从未',
+      mrDone: 'MR 已直接标记完成',
+      sessionsTitle: '最近会话', noSessions: '还没有分派过会话。',
+      process: '处理', reprocess: '重新处理',
       executionRunning: '执行中', executionCompleted: '执行完成', executionFailed: '执行失败',
-      precheckSkipped: '已跳过（无需处理）',
       ruleSkipped: '已跳过（规则）',
       sessionArchived: '已归档',
       openSession: '打开会话',
@@ -187,73 +128,37 @@ window.__ModuleLoader__.load({
       sessionCloseHint: '关闭会取消导航，但不会撤销已发送给 Host 的恢复或创建操作。',
       sessionHandoffUncertain: '已有接手记录，但创建或保存结果尚不确定；请核查 Host，避免另建会话。',
       sessionRetryHandoff: '重试补齐接手设置', sessionConfirmHandoffSetup: '确认复用原会话重试',
-      interval: '轮询间隔（秒）', limit: '每轮最多创建 Session 数', concurrency: '自动处理并发数',
-      cwd: 'GitLab 工作目录', cwdHint: '留空使用 Host 进程目录。',
-      sessionCwd: 'Todo 新开会话的工作区', sessionCwdHint: '选择 Todo 新会话归属的 DSH 工作区；“自动”跟随最近使用的工作区。',
+ concurrency: '自动处理并发数',
       sessionCwdAuto: '自动（最近使用的工作区）', sessionCwdUnregistered: '当前配置（未注册）',
-      customRules: 'Todo 会话附加规则', customRulesHint: '仅追加到 Todo 会话提示词；Issue 只发送链接和“开始处理”。Todo 附加规则与其他条款冲突时优先适用；留空使用通用提示词。',
       workspacesTitle: '工作区', noWorkspaces: 'DSH 尚未注册工作区。',
       unassignedWorkspace: '未归属工作区的会话',
       workspacesError: '无法加载 DSH 工作区列表',
       configuredWorkspace: '插件目标', pluginSessionTag: '插件',
       sessionUnknown: '未命名会话', lastActive: '最近活动',
-      sessionModel: 'Todo 会话模型', sessionModelDefault: '跟随 DSH 默认模型',
+ sessionModelDefault: '跟随 DSH 默认模型',
       issueSessionSettings: 'Issue 会话设置', issueSessionModel: 'Issue 模型', issueSessionCwd: 'Issue 工作区',
       issueSessionSettingsHint: '修改后立即保存，仅影响之后新开的 Issue 会话。',
       reasoningEffort: '思考强度', reasoningEffortDefault: '提供方默认',
       reasoningEffortUnavailable: '当前配置（目录未提供）',
-      judgeModel: '预检模型', judgeModelDefault: '跟随会话模型',
-      judgeModelHint: '固定一个更快的轻量模型可显著缩短“是否需要处理”的判断耗时；新会话仍使用上面的会话模型。',
-      precheckEngine: '预检引擎',
-      precheckEngineAuto: '自动（Jev 优先，不可用时回退 LLM）',
-      precheckEngineJev: '仅 Jev（不可用则跳过本轮）',
-      precheckEngineLlm: '仅 LLM（聊天模型批量判定）',
-      precheckEngineHint: 'Jev 返回带概率的结构化判定而不是生成文本——更便宜也更快。自动模式下 Jev 可用即用，不可用或低置信条目自动交给 LLM。',
-      classifierProvider: '分类器提供方',
-      classifierProviderCustom: '自定义（System One 兼容端）',
-      classifierModel: '分类器模型',
-      classifierBaseUrl: '分类器 baseUrl',
-      classifierApiKeyEnv: 'API key 环境变量名',
-      classifierApiKey: 'API key（明文存储）',
-      classifierApiKeyPlaceholder: '留空则走环境变量或 jev CLI 凭证',
-      classifierApiKeyKeep: '已保存密钥——留空保留，输入替换',
-      classifierHint: '仅 Jev 路径使用。通道按序：宿主分类器 → PATH 上的 jev CLI → 这里配置的 HTTP。API key 会写入 state.json；能用上面的环境变量名就优先用环境变量。',
-      classifierSettings: '分类器连接', classifierSecurity: '密钥将明文写入 state.json，建议优先使用环境变量。',
-      sessionModelPinDefault: '固定当前默认模型', sessionModelFixedHint: '选择具体模型后，新会话会固定使用该 provider/model，不再随 DSH 默认模型变化。',
+      sessionModelPinDefault: '固定当前默认模型',
       sessionModelUnavailable: '当前配置模型（不在可用目录中）',
       modelCatalogError: '无法加载可用模型目录',
-      precheckEnabled: '预检并跳过无需处理的提及',
-      ruleSkipEnabled: '按规则跳过通知和无效提及',
       autoArchive: '闭环后自动归档插件会话',
       followUpEnabled: 'Todo 未闭环时自动续办',
-      waitProbeEnabled: '续办前检查是否仍无变化',
       followUpReuseSession: '续办优先复用上一轮会话',
       maxFollowUps: '每条 Todo 最多自动续办轮数', followUpDelay: '续办等待时间（分钟）',
       followUpHint: '闭环 = Todo 已标记完成且原 note 有我方回复。等待 CI 等条件的按等待时间续办（逐轮翻倍）；轮数用尽或会话判定需要人接手时，保留给你处理。',
       closureClosed: '已闭环', closureFollowUp: '待续办', closureNeedsHuman: '需人工', closureVerifying: '核对中',
       followUpCount: '待续办', needsHumanCount: '需人工',
       roundLabel: '轮次', nextAttempt: '下次续办',
-      routeScope: '范围', routeScopePlugin: '仅插件创建的会话', routeScopeAny: '任意未归档会话',
-      autoRoute: '同一事项自动续到最近会话',
-      busyRouteMode: '忙碌时', busyRouteQueue: '当前回合结束后处理', busyRouteSteer: '插入当前回合的下一步引导',
-      maxQueuePerSession: '队列上限',
-      routeToSession: '路由到会话', routeSearch: '搜索会话',
-      routeLoading: '正在加载可路由会话…', routeEmpty: '当前没有可路由的会话。', routeNoMatches: '没有符合搜索条件的会话。',
-      refresh: '刷新', routeSameTarget: '同目标', routeModeQueue: '排队', routeModeSteer: '引导',
-      routeLoad: '负载', routeNotAccepting: '不接受', routeConfirm: '路由到所选会话',
-      routedQueue: '已路由·排队', routedSteer: '已路由·引导', routeFailed: '路由 Todo 失败',
+      refresh: '刷新',
       loading: '正在加载 GitLab 工作台…', renderError: '面板渲染失败', retry: '重新渲染',
       localError: '操作失败',
-      defaultPaused: '插件默认停用，避免安装后立即处理真实 Todo。',
-      inboxTitle: '收件箱', inboxEmpty: '没有等待你处理的 Todo。', inboxTakeover: '打开会话接手',
-      inboxAcknowledge: '我已处理', inboxRetry: '重试', inboxWaiting: '待重试', inboxPendingUnconfirmed: '旧消息未确认', inboxError: '无法加载收件箱',
-      mergedIntoLabel: '合并进', pendingStarting: '投递中', acceptedLabel: '接受于', outcomeSessionAccepted: '会话处理',
-      replyPreview: '我方回复',
-      signatureLabel: '回复署名（AI 代发标识）', signatureText: '署名文本', signatureHint: '开启后，Todo 会话提示词会要求 GitLab 回复末尾添加 AI 署名。只影响之后派发的 Todo 提示词。',
-      confirmMarkDone: '确认标记完成？', confirmReprocess: '确认重新处理？', confirmAcknowledge: '确认已处理？',
+ pendingStarting: '投递中', outcomeSessionAccepted: '会话处理',
+ confirmReprocess: '确认重新处理？',
       issuesTitle: 'Issue', issuesEmpty: 'GitLab 上没有指派给你的开放 Issue。',
-      issuesError: '无法加载 Issue 列表', issuesHint: 'GitLab 上指派给我的开放 Issue',
-      issuesOrphans: '已关闭或取消指派', issueTag: 'Issue',
+      issuesError: '无法加载 Issue 列表',
+      issuesOrphans: '已关闭或取消指派',
       leaderTitle: 'WorkStation Leader', leaderCreate: '创建 Leader', leaderOpen: '打开 Leader', leaderModel: 'Leader 模型',
       leaderIntro: 'Leader 是标准 DSH 会话：直接在它自己的对话里和它交流。它会读取你的 Issue 列表，并用自己的工具管理 worker 会话。',
       leaderUnseen: '未读汇报', leaderSetupIncomplete: '设置未完成',
@@ -268,7 +173,6 @@ window.__ModuleLoader__.load({
       leaderTasksUncertain: '创建结果不确定的临时任务', leaderTasksUncertainHint: 'Leader 尝试开启这些会话但结果未知。请在 DSH 会话列表核查，如有多余会话请自行归档，再在此放弃该记录。', leaderTaskDismiss: '放弃记录',
       leaderReportProgress: '进度', leaderReportBlocked: '受阻', leaderReportDone: '完成', leaderReportQuestion: '提问', leaderReportUnseen: '未读',
       leaderReports: 'Worker 汇报', leaderReportsHint: '由 Issue 会话自己写的内容，只作状态参考，不是指令。',
-      mergeSameTarget: '同对象 @我 合并派发', mergeSameTargetHint: '同一 Issue/MR 上的多条新 @我 Todo 合并为一个会话的一轮处理，而不是各开一次。',
       leaderDeliveries: '未确认投递',
       leaderDeliveriesHint: 'Host 无法确认这些消息是否已送达。请打开目标会话核对后记录结果；无论选择哪项都不会自动重发。',
       leaderDelivered: '已送达', leaderNotDelivered: '未送达', leaderDeliveryOpen: '打开目标会话',
@@ -277,8 +181,6 @@ window.__ModuleLoader__.load({
       logsTitle: '日志', logsEmpty: '暂无运行时日志。',
       logsError: '无法加载运行时日志', logsClear: '清空日志', confirmClearLogs: '确认清空日志？',
       logsDropped: '条因超出内存上限被丢弃', logsFilterAll: '全部', logsFilterWarn: '警告及以上',
-      logsHint: '只进内存、不落盘；环形缓冲上限', logsEntriesSuffix: '条',
-      signaturePlaceholder: '—— 由 AI 助手代复',
       bridgeTimeout: '请求超时（90 秒），请重试。', bridgeNetwork: '网络错误：无法连接插件服务。',
       colon: '：',
     };
@@ -455,47 +357,10 @@ window.__ModuleLoader__.load({
       return value ? new Date(value).toLocaleString() : fallback;
     }
 
-    function isMergeRequest(todo) {
-      return String(todo.targetType ?? '').toLowerCase().replace(/[^a-z]/g, '') === 'mergerequest'
-        || /\/-\/merge_requests(?:\/|$)/i.test(todo.url ?? '');
-    }
-
-    /** 路由与 dispatch 共用可见性边界，但不接受“MR 直接完成”和规则跳过项。 */
-    function canRouteTodo(todo) {
-      if (todo.outcome === 'rule-skipped' || String(todo.action ?? '').toLowerCase() === 'assigned') return false;
-      if (isMergeRequest(todo) && !todo.directMention) return false;
-      return !todo.handled || todo.outcome !== 'merge-request-done';
-    }
-
-    /** 非直接提及的 MR 只能走独立的两击“标记完成”，不能从“处理”绕过确认。 */
-    function canProcessTodo(todo) {
-      return !(isMergeRequest(todo) && !todo.directMention)
-        && (!todo.handled || todo.outcome !== 'merge-request-done');
-    }
-
-    function routedLabel(record, t) {
-      if (record.routed !== true) return '';
-      return record.routeMode === 'steer' ? t('routedSteer') : t('routedQueue');
-    }
-
-    function todoStatusLabel(todo, t) {
-      if (todo.outcome === 'merge-request-done') return t('mrDone');
-      if (todo.outcome === 'precheck-skipped') return t('precheckSkipped');
-      if (todo.outcome === 'rule-skipped') return t('ruleSkipped');
-      if (todo.executionStatus === 'starting') return t('sessionStarting');
-      if (todo.executionStatus === 'running') return t('executionRunning');
-      const closure = closureLabel(todo.closure, t);
-      if (closure) return closure;
-      if (todo.executionStatus === 'completed') return t('executionCompleted');
-      if (todo.executionStatus === 'failed') return t('executionFailed');
-      return todo.handled ? t('dispatched') : t('waiting');
-    }
-
     /** “已处理”页的状态标签：覆盖跳过原因、启动中、执行态与闭环态。 */
     function handledStatusLabel(item, t) {
       if (item.pending === true || item.executionStatus === 'starting') return t('pendingStarting');
       if (item.outcome === 'merge-request-done') return t('mrDone');
-      if (item.outcome === 'precheck-skipped') return t('precheckSkipped');
       if (item.outcome === 'rule-skipped') return t('ruleSkipped');
       if (item.executionStatus === 'running') return t('executionRunning');
       const closure = closureLabel(item.closure, t);
@@ -523,22 +388,6 @@ window.__ModuleLoader__.load({
       ].filter(Boolean);
     }
 
-    /** 回复预览：展开显示本轮发到讨论串的我方回复正文（来自插件结算时的捕获快照）。 */
-    function ReplyPreview({ reply, t }) {
-      const [open, setOpen] = React.useState(false);
-      if (!reply || (!reply.body && !reply.url)) return null;
-      return h('div', { className: 'gta-reply' },
-        h('button', {
-          type: 'button', className: 'gta-reply-toggle',
-          'aria-expanded': open,
-          onClick: () => setOpen(!open),
-        }, `${t('replyPreview')} ${open ? '▲' : '▼'}`),
-        open && h('div', { className: 'gta-reply-body' },
-          reply.url && h('a', { className: 'gta-reply-link', href: reply.url, target: '_blank', rel: 'noreferrer' }, '#'),
-          h('div', { className: 'gta-reply-text' }, reply.body || '—'),
-        ),
-      );
-    }
 
     /**
      * 模型选项的 value 编码：JSON.stringify({provider, model})。
@@ -618,8 +467,6 @@ window.__ModuleLoader__.load({
     }
 
     const WORKSTATION_TABS = [
-      { id: 'inbox', label: 'inboxTitle', group: 'tasksGroup' },
-      { id: 'todos', label: 'todoList', group: 'tasksGroup' },
       { id: 'issues', label: 'issuesTitle', group: 'tasksGroup' },
       { id: 'workspaces', label: 'workspacesTitle', group: 'environmentGroup' },
       { id: 'logs', label: 'logsTitle', group: 'environmentGroup' },
@@ -643,7 +490,7 @@ window.__ModuleLoader__.load({
       if (!normalized) return source;
       const terms = normalized.split(/\s+/);
       return source.filter((item) => {
-        const text = [item.title, item.project, item.author, item.id, item.todoId, item.iid,
+        const text = [item.title, item.project, item.author, item.id, item.iid,
           item.sessionTitle, item.closure, item.closureNote, item.skipReason,
           ...(Array.isArray(item.labels) ? item.labels : [])].filter((value) => value != null).join(' ').toLowerCase();
         return terms.every((term) => text.includes(term));
@@ -653,7 +500,7 @@ window.__ModuleLoader__.load({
     /** 与状态文案保持同一优先级，失败/需人工不能被 completed 的绿色覆盖。 */
     function recordStatusClass(record) {
       if (record.pending === true || record.executionStatus === 'starting' || record.executionStatus === 'running') return 'gta-tag-mention';
-      if (['merge-request-done', 'precheck-skipped', 'rule-skipped'].includes(record.outcome)) return 'gta-tag-success';
+      if (['merge-request-done', 'rule-skipped'].includes(record.outcome)) return 'gta-tag-success';
       if (record.closure === 'needs-human') return 'gta-tag-attention';
       if (record.closure === 'follow-up' || record.closure === 'verifying') return 'gta-tag-attention';
       if (record.closure === 'closed') return 'gta-tag-success';
@@ -798,7 +645,7 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function TodoPanel({ ctx, t }) {
+    function WorkstationPanel({ ctx, t }) {
       const [snapshot, setSnapshot] = React.useState(null);
       // 按 key 隔离的请求互斥：state 驱动各按钮自己的禁用态，ref 保证同 key 重复触发被同步拒绝。
       const [busyKeys, setBusyKeys] = React.useState([]);
@@ -825,16 +672,6 @@ window.__ModuleLoader__.load({
       const [modelCatalogError, setModelCatalogError] = React.useState(null);
       const [workspaceData, setWorkspaceData] = React.useState(null);
       const [workspaceError, setWorkspaceError] = React.useState(null);
-      const [routeTodo, setRouteTodo] = React.useState(null);
-      const [routeData, setRouteData] = React.useState(null);
-      const [routeLoading, setRouteLoading] = React.useState(false);
-      const [routeError, setRouteError] = React.useState(null);
-      const [routeSearch, setRouteSearch] = React.useState('');
-      const [routeSelection, setRouteSelection] = React.useState('');
-      const routeRequest = React.useRef(0);
-      const routeGeneration = React.useRef(0);
-      const routeDialogRef = React.useRef(null);
-      const routeTriggerRef = React.useRef(null);
       const [sessionEntry, setSessionEntry] = React.useState(null);
       const sessionEntryRef = React.useRef(null);
       const sessionDialogRef = React.useRef(null);
@@ -885,30 +722,6 @@ window.__ModuleLoader__.load({
         return () => { disposed = true; };
       }, []);
 
-      // 收件箱（需人工待办）：打开期间每 10s 刷新；确认动作后立即重拉。
-      const [inboxData, setInboxData] = React.useState(null);
-      const [inboxError, setInboxError] = React.useState(null);
-      const inboxInFlight = React.useRef(false);
-      const fetchInbox = async () => {
-        if (inboxInFlight.current) return;
-        inboxInFlight.current = true;
-        try {
-          const data = await post('inbox', {});
-          setInboxData(Array.isArray(data.items) ? data.items : []);
-          setInboxError(null);
-        } catch (cause) {
-          setInboxError(cause.message);
-        } finally {
-          inboxInFlight.current = false;
-        }
-      };
-      React.useEffect(() => {
-        if (activeTab !== 'inbox') return undefined;
-        void fetchInbox();
-        const timer = setInterval(() => void fetchInbox(), 10000);
-        return () => clearInterval(timer);
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [activeTab]);
 
       // Issue 面板：指派给我的开放 Issue + 处理记录投影。打开 Tab 时重拉一次 GitLab，
       // 之后跟随快照轮询缓存投影（GET issues 不触发远端请求）；「刷新」按钮走显式 refresh。
@@ -1148,7 +961,6 @@ window.__ModuleLoader__.load({
       };
       React.useEffect(() => () => {
         draftGeneration.current += 1;
-        routeGeneration.current += 1;
         confirmTimers.current.forEach((timer) => clearTimeout(timer));
         confirmTimers.current.clear();
       }, []);
@@ -1156,87 +968,6 @@ window.__ModuleLoader__.load({
       // 模板拼接用冒号：zh 全角“：”，en 半角“: ”，随当前 locale 取词典。
       const colon = () => t('colon');
 
-      const closeRouteTargets = () => {
-        routeGeneration.current += 1;
-        routeRequest.current += 1;
-        setRouteTodo(null);
-        setRouteData(null);
-        setRouteLoading(false);
-        setRouteError(null);
-        setRouteSearch('');
-        setRouteSelection('');
-      };
-      const loadRouteTargets = async (todoId) => {
-        const request = ++routeRequest.current;
-        setRouteLoading(true);
-        setRouteError(null);
-        setRouteSelection('');
-        try {
-          const data = await post('routeTargets', { todoId });
-          if (request !== routeRequest.current) return;
-          setRouteData({ ...data, items: Array.isArray(data.items) ? data.items : [] });
-        } catch (cause) {
-          if (request !== routeRequest.current) return;
-          setRouteError(cause.message);
-        } finally {
-          if (request === routeRequest.current) setRouteLoading(false);
-        }
-      };
-      const openRouteTargets = (todo, trigger) => {
-        routeGeneration.current += 1;
-        routeTriggerRef.current = trigger ?? null;
-        setRouteTodo(todo);
-        setRouteData(null);
-        setRouteSearch('');
-        setRouteSelection('');
-        setRouteError(null);
-        void loadRouteTargets(todo.id);
-      };
-      React.useEffect(() => {
-        if (!routeTodo) return undefined;
-        const trigger = routeTriggerRef.current;
-        const dialog = routeDialogRef.current;
-        dialog?.querySelector('button:not(:disabled)')?.focus();
-        const onKeyDown = (event) => {
-          if (event.key === 'Escape') { event.preventDefault(); closeRouteTargets(); return; }
-          if (event.key !== 'Tab' || !dialog) return;
-          const controls = Array.from(dialog.querySelectorAll('button:not(:disabled), input:not(:disabled)'));
-          // 原生 radio 一组只有选中项（未选时第一项）参与 Tab，方向键由浏览器负责。
-          const radios = controls.filter((node) => node.type === 'radio');
-          const radioTabStop = radios.find((node) => node.checked) ?? radios[0];
-          const stops = controls.filter((node) => node.type !== 'radio' || node === radioTabStop);
-          const first = stops[0];
-          const last = stops[stops.length - 1];
-          const focused = dialog.ownerDocument.activeElement;
-          if (!first) { event.preventDefault(); dialog.focus(); }
-          else if (event.shiftKey && (focused === first || !dialog.contains(focused))) { event.preventDefault(); last.focus(); }
-          else if (!event.shiftKey && (focused === last || !dialog.contains(focused))) { event.preventDefault(); first.focus(); }
-        };
-        window.addEventListener('keydown', onKeyDown);
-        return () => { window.removeEventListener('keydown', onKeyDown); trigger?.focus(); };
-        // 关闭函数只需跟随当前弹层生命周期，无需随每次渲染重建监听。
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [routeTodo]);
-      const routeToSession = (target) => {
-        if (!routeTodo || !target || target.accepting === false || busySet.has(`route:${routeTodo.id}`)) return;
-        const todoId = routeTodo.id;
-        const generation = routeGeneration.current;
-        setRouteError(null);
-        void finishCurrentViewOperation(perform(`route:${todoId}`, async () => {
-          try {
-            const data = await post('route', { id: todoId, sessionId: target.sessionId });
-            if (routeGeneration.current === generation && data.result?.ok === false) setRouteError(data.result.error || t('routeFailed'));
-            return data;
-          } catch (cause) {
-            if (routeGeneration.current === generation) setRouteError(cause.message);
-            throw cause;
-          }
-        }), generation, routeGeneration, closeRouteTargets).then((done) => {
-          if (!done) return;
-          // Issue 条目路由成功后顺带刷新 Issue 面板。
-          if (routeTodo?.source === 'issue') void fetchIssues(false);
-        });
-      };
 
       const updateSettings = (settings) => {
         setSettingsFeedback('');
@@ -1244,7 +975,7 @@ window.__ModuleLoader__.load({
           .then((saved) => { if (saved) setSettingsFeedback(t('settingsSaved')); return saved; });
       };
       // 对比打开时 baseline，仅提交用户在草稿中改动且当前值尚未生效的字段。
-      // Todo 快捷启停/模型和 Issue 即时设置不会被未编辑的旧草稿回盖（Host 仍浅合并 patch）。
+      // Issue 即时设置不会被未编辑的旧草稿回盖（Host 仍浅合并 patch）。
       const saveGeneralSettings = () => {
         const patch = changedSettingsPatch(draft, snapshot?.settings ?? null, draftBaseline.current);
         return Object.keys(patch).length > 0 ? updateSettings(patch) : Promise.resolve(true);
@@ -1314,13 +1045,6 @@ window.__ModuleLoader__.load({
           if (sessionEntryRef.current === entry) updateSessionEntry({ ...entry, error: cause.message });
         }
       };
-      // 收件箱“我已处理”：成功后连同收件箱一起刷新（snapshot 已由 perform 更新）。
-      const retryInboxItem = (item) => perform(`retry:${item.todoId}`, () => post('todoRetry', { todoId: item.todoId }))
-  .then((done) => { if (done) void fetchInbox(); });
-const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post('todoClose', { todoId: item.todoId }))
-        .then((done) => { if (done) void fetchInbox(); });
-      // Todo 主按钮（开会话/重新处理）与“标记完成”都走 dispatch：Host 端会把非 directMention 的 MR 直接标记完成。
-      const dispatchTodo = (todo) => perform(`dispatch:${todo.id}`, () => post('dispatch', { id: todo.id }));
       // Issue 面板「处理」：同一 dispatch 通道（Host 端按合成 id 找到缓存条目）；
       // 成功后立刻刷新投影，把行状态换成“执行中”。
       const dispatchIssue = (issue) => {
@@ -1348,7 +1072,6 @@ const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post(
           ))),
         ];
       };
-      const quickModelKey = sessionModelKey(settings?.sessionModel);
       const issueModel = settings?.issueSessionModel ?? null;
       const issueReasoning = reasoningForSelection(modelCatalog, issueModel);
       const issueEffort = issueModel?.reasoningEffort ?? '';
@@ -1377,7 +1100,6 @@ const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post(
       const workspaceOptions = Array.isArray(workspaceData) ? workspaceData : [];
       const normalizePathKey = (value) => String(value ?? '').replace(/[\\/]+$/, '').replace(/\\/g, '/').toLowerCase();
       const registeredWorkspacePaths = new Set(workspaceOptions.map((workspace) => normalizePathKey(workspace.path)));
-      const draftSessionCwdUnregistered = Boolean(draft?.sessionCwd) && !registeredWorkspacePaths.has(normalizePathKey(draft.sessionCwd));
       const issueSessionCwdUnregistered = Boolean(settings?.issueSessionCwd)
         && !registeredWorkspacePaths.has(normalizePathKey(settings.issueSessionCwd));
       const sessionDisplayName = (session, label, workspacePath) => {
@@ -1388,32 +1110,13 @@ const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post(
         }
         return label;
       };
-      const allRouteItems = Array.isArray(routeData?.items) ? routeData.items : [];
-      const routeQuery = routeSearch.trim().toLowerCase();
-      const routeUpdatedAt = (value) => {
-        const parsed = typeof value === 'number' ? value : Date.parse(value ?? '');
-        return Number.isFinite(parsed) ? parsed : 0;
-      };
-      const routeItems = allRouteItems
-        .filter((item) => !routeQuery || [item.title, item.sessionId, item.cwd]
-          .some((value) => String(value ?? '').toLowerCase().includes(routeQuery)))
-        .sort((a, b) => Number(b.sameTarget === true) - Number(a.sameTarget === true)
-          || routeUpdatedAt(b.updatedAt) - routeUpdatedAt(a.updatedAt));
-      const selectedRouteTarget = routeItems.find((item) => item.sessionId === routeSelection) ?? null;
-      const routeMaxQueue = routeData?.maxQueuePerSession ?? 3;
       const listQuery = listSearches[activeTab] ?? '';
-      const visibleTodos = filterWorkstationItems(snapshot?.todos, listQuery);
-      const visibleInbox = filterWorkstationItems(inboxData, listQuery);
       const visibleIssues = filterWorkstationItems(issuesData?.items, listQuery);
       const visibleOrphans = filterWorkstationItems(issuesData?.orphans, listQuery);
       const searchableList = {
-        todos: { loaded: snapshot?.todos.length ?? 0, matches: visibleTodos.length, ready: Boolean(snapshot) },
-        inbox: { loaded: inboxData?.length ?? 0, matches: visibleInbox.length, ready: inboxData !== null },
         issues: { loaded: (issuesData?.items.length ?? 0) + (issuesData?.orphans.length ?? 0), matches: visibleIssues.length + visibleOrphans.length, ready: issuesData !== null },
       }[activeTab];
       const tabCounts = {
-        inbox: snapshot?.closure?.needsHuman ?? 0,
-        todos: snapshot?.todos.length ?? 0,
         issues: issuesData?.items.length ?? snapshot?.issueCount ?? 0,
         workspaces: workspaceOptions.length,
         logs: logData?.items.length ?? 0,
@@ -1429,12 +1132,6 @@ const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post(
             ),
           ),
           h('div', { className: 'gta-actions' },
-            snapshot && h('span', { className: `gta-poll-state ${settings.enabled ? 'gta-success' : 'gta-muted'}` },
-              `${t('todoPolling')}${colon()}${settings.enabled ? t('enabled') : t('disabled')}`),
-            snapshot && h(Button, {
-              className: (snapshot.closure?.needsHuman ?? 0) > 0 ? 'gta-needs-human' : '',
-              onClick: () => setActiveTab('inbox'),
-            }, `${t('needsHumanCount')} ${snapshot.closure?.needsHuman ?? 0}`),
             h(Button, {
               disabled: !snapshot,
               expanded: Boolean(draft), controls: `${PANEL_ID}-settings`,
@@ -1442,7 +1139,7 @@ const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post(
                 if (draft) closeGeneralSettings();
                 else { draftGeneration.current += 1; draftBaseline.current = settings; setDraft({ ...settings }); }
               },
-            }, draft ? t('close') : t('todoSettings')),
+            }, draft ? t('close') : t('settings')),
           ),
         ),
         (busySet.has('settings') || settingsFeedback) && h('div', { className: 'gta-feedback gta-muted', role: 'status' }, busySet.has('settings') ? t('saving') : settingsFeedback),
@@ -1450,92 +1147,13 @@ const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post(
         (error || pollError) && h('div', { className: 'gta-banner gta-error', role: 'alert' }, `${t('localError')}${colon()}${error || pollError}`),
         snapshot?.lastPollError && h('div', { className: 'gta-banner gta-error', role: 'alert' }, snapshot.lastPollError),
         snapshot?.lastDispatchError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, snapshot.lastDispatchError),
-        snapshot?.lastPrecheckError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, snapshot.lastPrecheckError),
         modelCatalogError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, `${t('modelCatalogError')}${colon()}${modelCatalogError}`),
         draft && h('section', { className: 'gta-card gta-settings', id: `${PANEL_ID}-settings` },
-          h('h2', null, t('todoSettings')),
+          h('h2', null, t('settings')),
           h('div', { className: 'gta-form-grid' },
-            h('label', null, t('interval'), h('input', {
-              type: 'number', min: 30, max: 86400, value: draft.intervalSeconds,
-              onChange: (event) => setDraft({ ...draft, intervalSeconds: Number(event.target.value) }),
-            })),
-            h('label', null, t('limit'), h('input', {
-              type: 'number', min: 1, max: 10, value: draft.maxSessionsPerPoll,
-              onChange: (event) => setDraft({ ...draft, maxSessionsPerPoll: Number(event.target.value) }),
-            })),
             h('label', null, t('concurrency'), h('input', {
               type: 'number', min: 1, max: 10, value: draft.maxConcurrentSessions,
               onChange: (event) => setDraft({ ...draft, maxConcurrentSessions: Number(event.target.value) }),
-            })),
-            h('label', { title: t('sessionModelFixedHint') }, t('sessionModel'), h('select', {
-              value: sessionModelKey(draft.sessionModel),
-              onChange: (event) => setDraft({
-                ...draft,
-                sessionModel: event.target.value ? JSON.parse(event.target.value) : null,
-              }),
-            }, modelOptions(draft.sessionModel))),
-            h('label', { title: t('judgeModelHint') }, t('judgeModel'), h('select', {
-              value: sessionModelKey(draft.judgeModel),
-              onChange: (event) => setDraft({
-                ...draft,
-                judgeModel: event.target.value ? JSON.parse(event.target.value) : null,
-              }),
-            }, modelOptions(draft.judgeModel, t('judgeModelDefault')))),
-            h('label', { title: t('precheckEngineHint') }, t('precheckEngine'), h('select', {
-              value: draft.precheckEngine ?? 'auto',
-              onChange: (event) => setDraft({ ...draft, precheckEngine: event.target.value }),
-            },
-              h('option', { value: 'auto' }, t('precheckEngineAuto')),
-              h('option', { value: 'jev' }, t('precheckEngineJev')),
-              h('option', { value: 'llm' }, t('precheckEngineLlm')),
-            )),
-            (draft.precheckEngine ?? 'auto') !== 'llm' && h('details', { className: 'gta-advanced gta-wide' },
-              h('summary', null, t('classifierSettings')),
-              h('div', { className: 'gta-classifier' },
-                h('div', { className: 'gta-form-grid' },
-                h('label', null, t('classifierProvider'), h('select', {
-                  value: draft.precheckClassifier?.provider ?? 'typesafe',
-                  onChange: (event) => setDraft({ ...draft, precheckClassifier: { ...(draft.precheckClassifier ?? {}), provider: event.target.value } }),
-                },
-                  h('option', { value: 'typesafe' }, 'TypeSafe'),
-                  h('option', { value: 'openrouter' }, 'OpenRouter'),
-                  h('option', { value: 'custom' }, t('classifierProviderCustom')),
-                )),
-                h('label', null, t('classifierModel'), h('input', {
-                  type: 'text', value: draft.precheckClassifier?.model ?? '', placeholder: 'jev-latest',
-                  onChange: (event) => setDraft({ ...draft, precheckClassifier: { ...(draft.precheckClassifier ?? {}), model: event.target.value } }),
-                })),
-                (draft.precheckClassifier?.provider === 'custom') && h('label', null, t('classifierBaseUrl'), h('input', {
-                  type: 'text', value: draft.precheckClassifier?.baseUrl ?? '', placeholder: 'https://api.typesafe.ai/v1',
-                  onChange: (event) => setDraft({ ...draft, precheckClassifier: { ...(draft.precheckClassifier ?? {}), baseUrl: event.target.value } }),
-                })),
-                (draft.precheckClassifier?.provider === 'custom') && h('label', null, t('classifierApiKeyEnv'), h('input', {
-                  type: 'text', value: draft.precheckClassifier?.apiKeyEnv ?? '', placeholder: 'TYPESAFE_API_KEY',
-                  onChange: (event) => setDraft({ ...draft, precheckClassifier: { ...(draft.precheckClassifier ?? {}), apiKeyEnv: event.target.value } }),
-                })),
-                h('label', null, t('classifierApiKey'), h('input', {
-                  type: 'password', value: draft.precheckClassifier?.apiKey ?? '',
-                  placeholder: draft.precheckClassifier?.apiKeySet ? t('classifierApiKeyKeep') : t('classifierApiKeyPlaceholder'),
-                  autoComplete: 'off',
-                  onChange: (event) => setDraft({ ...draft, precheckClassifier: { ...(draft.precheckClassifier ?? {}), apiKey: event.target.value } }),
-                })),
-                ),
-                h('p', { className: 'gta-muted gta-security-hint' }, t('classifierSecurity')),
-              ),
-            ),
-            h('label', { className: 'gta-wide', title: t('sessionCwdHint') }, t('sessionCwd'), h('select', {
-              value: draft.sessionCwd,
-              onChange: (event) => setDraft({ ...draft, sessionCwd: event.target.value }),
-            },
-              h('option', { value: '' }, t('sessionCwdAuto')),
-              draftSessionCwdUnregistered && h('option', { value: draft.sessionCwd }, `${t('sessionCwdUnregistered')}${colon()}${draft.sessionCwd}`),
-              workspaceOptions.map((workspace) => h('option', { key: workspace.workspaceId, value: workspace.path },
-                `${workspace.title || workspace.path} · ${workspace.path}`)),
-            )),
-            h('label', { className: 'gta-wide', title: t('signatureHint') }, t('signatureText'), h('input', {
-              type: 'text', maxLength: 100, value: draft.signatureText ?? '',
-              disabled: draft.replySignature !== true, placeholder: t('signaturePlaceholder'),
-              onChange: (event) => setDraft({ ...draft, signatureText: event.target.value }),
             })),
             h('label', null, t('maxFollowUps'), h('input', {
               type: 'number', min: 0, max: 10, value: draft.maxFollowUps ?? 3, disabled: draft.followUpEnabled === false,
@@ -1544,49 +1162,11 @@ const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post(
             h('details', { className: 'gta-advanced gta-wide' },
               h('summary', null, t('advanced')),
               h('div', { className: 'gta-form-grid' },
-                h('label', null, t('maxQueuePerSession'), h('input', {
-                  type: 'number', min: 1, max: 10, value: draft.maxQueuePerSession ?? 3,
-                  onChange: (event) => setDraft({ ...draft, maxQueuePerSession: Number(event.target.value) }),
-                })),
-                h('label', { className: 'gta-check', title: t('mergeSameTargetHint') }, h('input', {
-                  type: 'checkbox', checked: draft.mergeSameTarget !== false,
-                  onChange: (event) => setDraft({ ...draft, mergeSameTarget: event.target.checked }),
-                }), t('mergeSameTarget')),
                 h('label', null, t('followUpDelay'), h('input', {
                   type: 'number', min: 1, max: 1440, value: draft.followUpDelayMinutes ?? 15, disabled: draft.followUpEnabled === false,
                   onChange: (event) => setDraft({ ...draft, followUpDelayMinutes: Number(event.target.value) }),
                 })),
-                h('label', null, t('routeScope'), h('select', {
-                  value: draft.routeScope ?? 'plugin',
-                  onChange: (event) => setDraft({ ...draft, routeScope: event.target.value }),
-                },
-                  h('option', { value: 'plugin' }, t('routeScopePlugin')),
-                  h('option', { value: 'any' }, t('routeScopeAny')),
-                )),
-                h('label', null, t('busyRouteMode'), h('select', {
-                  value: draft.busyRouteMode ?? 'queue',
-                  onChange: (event) => setDraft({ ...draft, busyRouteMode: event.target.value }),
-                },
-                  h('option', { value: 'queue' }, t('busyRouteQueue')),
-                  h('option', { value: 'steer' }, t('busyRouteSteer')),
-                )),
-                h('label', { className: 'gta-wide' }, t('cwd'), h('input', {
-                  type: 'text', value: draft.cwd, placeholder: t('cwdHint'),
-                  onChange: (event) => setDraft({ ...draft, cwd: event.target.value }),
-                })),
-                h('label', { className: 'gta-wide', title: t('customRulesHint') }, t('customRules'), h('textarea', {
-                  className: 'gta-rules', rows: 3, maxLength: 4000, value: draft.customRules ?? '',
-                  onChange: (event) => setDraft({ ...draft, customRules: event.target.value }),
-                })),
                 h('div', { className: 'gta-checks' },
-                  h('label', { className: 'gta-check' }, h('input', {
-                    type: 'checkbox', checked: draft.autoRoute !== false,
-                    onChange: (event) => setDraft({ ...draft, autoRoute: event.target.checked }),
-                  }), t('autoRoute')),
-                  h('label', { className: 'gta-check' }, h('input', {
-                    type: 'checkbox', checked: draft.waitProbeEnabled !== false, disabled: draft.followUpEnabled === false,
-                    onChange: (event) => setDraft({ ...draft, waitProbeEnabled: event.target.checked }),
-                  }), t('waitProbeEnabled')),
                   h('label', { className: 'gta-check' }, h('input', {
                     type: 'checkbox', checked: draft.followUpReuseSession !== false, disabled: draft.followUpEnabled === false,
                     onChange: (event) => setDraft({ ...draft, followUpReuseSession: event.target.checked }),
@@ -1597,14 +1177,6 @@ const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post(
           ),
           h('div', { className: 'gta-checks gta-checks-main' },
             h('label', { className: 'gta-check' }, h('input', {
-              type: 'checkbox', checked: draft.precheckEnabled,
-              onChange: (event) => setDraft({ ...draft, precheckEnabled: event.target.checked }),
-            }), t('precheckEnabled')),
-            h('label', { className: 'gta-check' }, h('input', {
-              type: 'checkbox', checked: draft.ruleSkipEnabled,
-              onChange: (event) => setDraft({ ...draft, ruleSkipEnabled: event.target.checked }),
-            }), t('ruleSkipEnabled')),
-            h('label', { className: 'gta-check' }, h('input', {
               type: 'checkbox', checked: draft.autoArchive,
               onChange: (event) => setDraft({ ...draft, autoArchive: event.target.checked }),
             }), t('autoArchive')),
@@ -1612,22 +1184,16 @@ const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post(
               type: 'checkbox', checked: draft.followUpEnabled !== false,
               onChange: (event) => setDraft({ ...draft, followUpEnabled: event.target.checked }),
             }), t('followUpEnabled')),
-            h('label', { className: 'gta-check' }, h('input', {
-              type: 'checkbox', checked: draft.replySignature === true,
-              onChange: (event) => setDraft({ ...draft, replySignature: event.target.checked }),
-            }), t('signatureLabel')),
           ),
           h('div', { className: 'gta-form-actions' },
             h(Button, { primary: true, disabled: busySet.has('settings'), onClick: saveAndCloseGeneralSettings }, t('save')),
             h(Button, { onClick: closeGeneralSettings }, t('cancel')),
           ),
         ),
-        snapshot && h('section', { className: 'gta-stats', 'aria-label': t('todoPolling') },
+        snapshot && h('section', { className: 'gta-stats', 'aria-label': t('title') },
           h('div', { className: 'gta-stat' }, h('strong', { className: snapshot.running ? 'gta-success' : 'gta-muted' }, snapshot.running ? t('running') : t('idle'))),
-          h('div', { className: 'gta-stat' }, h('span', null, t('pending')), h('strong', null, snapshot.pendingCount)),
-          h('div', { className: 'gta-stat' }, h('span', null, t('activeSessions')), h('strong', null, `${snapshot.activeSessions ?? 0}/${snapshot.settings.maxConcurrentSessions}`)),
-          h('div', { className: 'gta-stat' }, h('span', null, t('queuedSessions')), h('strong', null, snapshot.queuedSessions ?? 0)),
           h('div', { className: 'gta-stat' }, h('span', null, t('followUpCount')), h('strong', null, snapshot.closure?.followUp ?? 0)),
+          h('div', { className: 'gta-stat' }, h('span', null, t('needsHumanCount')), h('strong', null, snapshot.closure?.needsHuman ?? 0)),
           h('div', { className: 'gta-stat gta-stat-time' }, h('span', null, t('lastSuccess')), h('strong', null, formatTime(snapshot.lastSuccessAt, t('never')))),
         ),
         snapshot && h('div', { className: 'gta-tabs', role: 'tablist', 'aria-label': t('workstationViews'), 'aria-orientation': 'horizontal' },
@@ -1643,7 +1209,7 @@ const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post(
               className: `gta-tab${activeTab === tab.id ? ' gta-tab-active' : ''}`,
               onClick: () => setActiveTab(tab.id), onKeyDown: (event) => activateTabByKey(event, tab.id),
             }, t(tab.label), h('span', {
-              className: `gta-tab-count${tab.id === 'inbox' && tabCounts.inbox > 0 ? ' gta-attention' : ''}`,
+              className: 'gta-tab-count',
             }, tabCounts[tab.id])),
           )),
         ),
@@ -1659,108 +1225,6 @@ const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post(
           listQuery && h(Button, { onClick: () => setListSearches({ ...listSearches, [activeTab]: '' }) }, t('clearSearch')),
           searchableList.ready && h('span', { className: 'gta-muted', role: 'status' },
             `${listQuery ? t('searchResults') : t('loadedRecords')}${colon()}${listQuery ? `${searchableList.matches}/${searchableList.loaded}` : searchableList.loaded}`),
-        ),
-        activeTab === 'inbox' && snapshot && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-inbox`, 'aria-labelledby': `${PANEL_ID}-tab-inbox`, tabIndex: 0 },
-          inboxError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, `${t('inboxError')}${colon()}${inboxError}`),
-          !inboxData && !inboxError && h('div', { className: 'gta-empty' }, t('loading')),
-          inboxData && inboxData.length === 0 && h('div', { className: 'gta-empty' }, t('inboxEmpty')),
-          inboxData && inboxData.length > 0 && visibleInbox.length === 0 && h('div', { className: 'gta-empty', role: 'status' }, t('searchNoMatches')),
-          visibleInbox.length > 0 && h('div', { className: 'gta-list gta-scroll-list', role: 'list', 'aria-label': t('inboxTitle') },
-            visibleInbox.map((item) => h('article', { role: 'listitem', className: 'gta-todo', key: item.todoId },
-              h('div', { className: 'gta-todo-main' },
-                h('div', { className: 'gta-todo-title' },
-                  item.url
-                    ? h('a', { href: item.url, target: '_blank', rel: 'noreferrer' }, item.title)
-                    : h('span', null, item.title),
-                  h('span', { className: 'gta-tag gta-tag-attention' }, item.state === 'waiting' ? t('inboxWaiting') : t('closureNeedsHuman')),
-                  item.archived && h('span', { className: 'gta-tag' }, t('sessionArchived')),
-                  item.pendingUnconfirmed && h('span', { className: 'gta-tag' }, t('inboxPendingUnconfirmed')),
-                  item.routed && routedLabel(item, t) && h('span', { className: 'gta-tag gta-tag-routed' }, routedLabel(item, t)),
-                ),
-                h('div', { className: 'gta-muted gta-meta' },
-                  [item.reason, item.project, item.sessionTitle, item.round > 1 && `${t('roundLabel')} ${item.round}`,
-                    item.completedAt && formatTime(item.completedAt, '')].filter(Boolean).join(' · ')),
-                item.archiveError && h('div', { className: 'gta-banner gta-warn', role: 'status' }, item.archiveError),
-                h(ReplyPreview, { reply: item.lastReply, t }),
-              ),
-              h('div', { className: 'gta-todo-actions' },
-                item.sessionId && h(Button, { onClick: (event) => openSession({ sessionId: item.sessionId, taskId: item.todoId, title: item.title, url: item.url, manualHandoffs: item.manualHandoffs }, event.currentTarget) }, t('inboxTakeover')),
-                h(Button, {
-                  disabled: busySet.has(`retry:${item.todoId}`),
-                  onClick: guardedRun(`retry:${item.todoId}`, () => { void retryInboxItem(item); }),
-                }, t('inboxRetry')),
-                h(Button, {
-                  primary: true,
-                  disabled: busySet.has(`ack:${item.todoId}`),
-                  onClick: guardedRun(`ack:${item.todoId}`, () => { void acknowledgeInboxItem(item); }),
-                }, busySet.has(`ack:${item.todoId}`) ? '…'
-                  : confirmKeys.has(`ack:${item.todoId}`) ? t('confirmAcknowledge') : t('inboxAcknowledge')),
-              ),
-            ))),
-        ),
-        activeTab === 'todos' && snapshot && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-todos`, 'aria-labelledby': `${PANEL_ID}-tab-todos`, tabIndex: 0 },
-          h('div', { className: 'gta-todo-toolbar' },
-            h('label', { className: 'gta-model-quick', title: t('sessionModelFixedHint') },
-              h('span', null, t('sessionModel')),
-              h('select', {
-                value: quickModelKey, disabled: busySet.has('settings'), 'aria-label': t('sessionModel'),
-                onChange: (event) => updateSettings({ sessionModel: event.target.value ? JSON.parse(event.target.value) : null }),
-              }, modelOptions(settings.sessionModel)),
-            ),
-            h(Button, {
-              pressed: settings.enabled, disabled: busySet.has('settings'),
-              title: settings.enabled ? t('disable') : t('defaultPaused'),
-              label: settings.enabled ? t('disable') : t('enable'),
-              onClick: () => updateSettings({ enabled: !settings.enabled }),
-            }, settings.enabled ? t('disable') : t('enable')),
-            h(Button, {
-              disabled: busySet.has('poll'), onClick: () => perform('poll', () => post('poll')),
-            }, busySet.has('poll') ? t('checking') : t('checkNow')),
-            h('span', { className: 'gta-muted gta-new-count' }, `${t('newFound')}${colon()}${snapshot.lastNewCount}`),
-          ),
-          snapshot.todos.length === 0
-            ? h('div', { className: 'gta-empty' }, t('noTodos'))
-            : visibleTodos.length === 0 ? h('div', { className: 'gta-empty', role: 'status' }, t('searchNoMatches'))
-            : h('div', { className: 'gta-list gta-scroll-list', role: 'list', 'aria-label': t('todoList') }, visibleTodos.map((todo) =>
-                h('article', { role: 'listitem', className: 'gta-todo', key: todo.id },
-                  h('div', { className: 'gta-todo-main' },
-                    h('div', { className: 'gta-todo-title' },
-                      todo.url
-                        ? h('a', { href: todo.url, target: '_blank', rel: 'noreferrer' }, todo.title)
-                        : h('span', null, todo.title),
-                      todo.directMention && h('span', { className: 'gta-tag gta-tag-mention' }, t('directMention')),
-                      h('span', { className: `gta-tag ${recordStatusClass(todo)}` }, todoStatusLabel(todo, t)),
-                      routedLabel(todo, t) && h('span', { className: 'gta-tag gta-tag-routed' }, routedLabel(todo, t)),
-                    ),
-                    h('div', { className: 'gta-muted gta-meta' }, [`#${todo.id}`, todo.project, todo.targetType, todo.action, todo.author && `@${todo.author}`, todo.skipReason, ...closureMeta(todo, t)].filter(Boolean).join(' · ')),
-                    h(ReplyPreview, { reply: todo.lastReply, t }),
-                  ),
-                  h('div', { className: 'gta-todo-actions' },
-                    todo.sessionId && h(Button, { onClick: (event) => openSession({ sessionId: todo.sessionId, taskId: todo.id, title: todo.title, url: todo.url, manualHandoffs: todo.manualHandoffs }, event.currentTarget) }, t('openSession')),
-                    // 主按钮只负责开会话：未处理开新会话；已处理为“重新处理”（不可逆，需二次确认）。
-                    canProcessTodo(todo) && h(Button, {
-                      primary: !todo.handled,
-                      disabled: busySet.has(`dispatch:${todo.id}`) || (todo.executionStatus === 'running' || todo.executionStatus === 'starting'),
-                      onClick: todo.handled
-                        ? guardedRun(`reprocess:${todo.id}`, () => { void dispatchTodo(todo); })
-                        : () => { void dispatchTodo(todo); },
-                    }, busySet.has(`dispatch:${todo.id}`) ? '…'
-                      : todo.handled && confirmKeys.has(`reprocess:${todo.id}`) ? t('confirmReprocess')
-                      : todo.handled ? t('reprocess') : t('process')),
-                    // “标记完成”独立为次级按钮（沿用原显示条件：非 directMention 的 MR），
-                    // 不再与开会话共用按钮；同样不可逆，需二次确认。
-                    !todo.handled && isMergeRequest(todo) && !todo.directMention && h(Button, {
-                      disabled: busySet.has(`dispatch:${todo.id}`) || (todo.executionStatus === 'running' || todo.executionStatus === 'starting'),
-                      onClick: guardedRun(`markdone:${todo.id}`, () => { void dispatchTodo(todo); }),
-                    }, busySet.has(`dispatch:${todo.id}`) ? '…'
-                      : confirmKeys.has(`markdone:${todo.id}`) ? t('confirmMarkDone') : t('markDone')),
-                    canRouteTodo(todo) && h(Button, {
-                      disabled: (todo.executionStatus === 'running' || todo.executionStatus === 'starting'),
-                      onClick: (event) => openRouteTargets(todo, event.currentTarget),
-                    }, t('routeToSession')),
-                  ),
-                ),
-              )),
         ),
         activeTab === 'issues' && snapshot && h('section', { className: 'gta-section', role: 'tabpanel', id: `${PANEL_ID}-panel-issues`, 'aria-labelledby': `${PANEL_ID}-tab-issues`, tabIndex: 0 },
           h('section', { className: 'gta-card gta-leader', 'aria-label': t('leaderTitle') },
@@ -1906,7 +1370,6 @@ const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post(
                       }, `+${issue.labels.length - 2}`),
                     ] : []),
                     issue.handled && h('span', { className: `gta-tag ${recordStatusClass(issue)}` }, handledStatusLabel(issue, t)),
-                    routedLabel(issue, t) && h('span', { className: 'gta-tag gta-tag-routed' }, routedLabel(issue, t)),
                   ),
                   h('div', { className: 'gta-muted gta-meta' }, [
                     `#${issue.iid ?? ''}`, issue.project,
@@ -2067,78 +1530,6 @@ const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post(
                 : t(sessionEntry.confirmCreate ? 'sessionConfirmHandoff' : 'sessionHandoff'))),
           h('p', { className: 'gta-muted' }, t('sessionCloseHint')),
         )),
-        routeTodo && h('div', {
-          className: 'gta-route-backdrop',
-          onMouseDown: (event) => { if (event.target === event.currentTarget) closeRouteTargets(); },
-        },
-          h('section', {
-            className: 'gta-route-dialog', role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'gta-route-title',
-            ref: routeDialogRef, tabIndex: -1,
-          },
-            h('div', { className: 'gta-route-header' },
-              h('div', { className: 'gta-route-heading' },
-                h('h2', { id: 'gta-route-title' }, t('routeToSession')),
-                h('p', { className: 'gta-muted gta-route-todo', title: routeTodo.title }, routeTodo.title),
-              ),
-              h(Button, { onClick: closeRouteTargets }, t('close')),
-            ),
-            routeData && h('div', { className: 'gta-route-summary gta-muted' },
-              h('span', null, `${t('routeScope')}${colon()}${routeData.scope === 'any' ? t('routeScopeAny') : t('routeScopePlugin')}`),
-              h('span', null, `${t('busyRouteMode')}${colon()}${routeData.busyRouteMode === 'steer' ? t('busyRouteSteer') : t('busyRouteQueue')}`),
-              h('span', null, `${t('maxQueuePerSession')}${colon()}${routeMaxQueue}`),
-            ),
-            routeError && h('div', { className: 'gta-banner gta-error gta-route-error', role: 'alert' }, `${t('localError')}${colon()}${routeError}`),
-            h('div', { className: 'gta-route-tools' },
-              h('input', {
-                type: 'text', value: routeSearch, placeholder: t('routeSearch'), 'aria-label': t('routeSearch'),
-                disabled: !routeData || routeLoading,
-                onChange: (event) => setRouteSearch(event.target.value),
-              }),
-              h(Button, {
-                disabled: routeLoading || busySet.has(`route:${routeTodo.id}`),
-                onClick: () => loadRouteTargets(routeTodo.id),
-              }, routeLoading ? '…' : t('refresh')),
-            ),
-            routeLoading && !routeData && h('div', { className: 'gta-empty' }, t('routeLoading')),
-            routeData && !routeLoading && allRouteItems.length === 0 && h('div', { className: 'gta-empty' }, t('routeEmpty')),
-            routeData && !routeLoading && allRouteItems.length > 0 && routeItems.length === 0 && h('div', { className: 'gta-empty' }, t('routeNoMatches')),
-            routeData && routeItems.length > 0 && h('div', { className: 'gta-route-targets', role: 'group', 'aria-label': t('routeToSession') },
-              routeItems.map((item) => h('label', {
-                key: item.sessionId,
-                className: `gta-route-target${routeSelection === item.sessionId ? ' gta-route-target-selected' : ''}`,
-                'aria-disabled': item.accepting === false || busySet.has(`route:${routeTodo.id}`),
-              },
-                h('input', {
-                  type: 'radio', name: `${PANEL_ID}-route-target`, value: item.sessionId,
-                  checked: routeSelection === item.sessionId,
-                  disabled: item.accepting === false || busySet.has(`route:${routeTodo.id}`),
-                  onChange: () => setRouteSelection(item.sessionId),
-                }),
-                h('span', { className: 'gta-route-target-main' },
-                  h('span', { className: 'gta-route-target-title' },
-                    h('span', { className: 'gta-route-target-name', title: item.title }, item.title || t('sessionUnknown')),
-                    item.sameTarget === true && h('span', { className: 'gta-tag gta-tag-mention' }, t('routeSameTarget')),
-                    item.plugin === true && h('span', { className: 'gta-tag gta-tag-mention' }, t('pluginSessionTag')),
-                    item.running === true && h('span', { className: 'gta-tag' }, t('executionRunning')),
-                    item.running === true && h('span', { className: 'gta-tag gta-tag-routed' },
-                      routeData.busyRouteMode === 'steer' ? t('routeModeSteer') : t('routeModeQueue')),
-                    item.accepting === false && h('span', { className: 'gta-tag' }, t('routeNotAccepting')),
-                  ),
-                  h('span', {
-                    className: 'gta-muted gta-route-target-meta', title: [item.sessionId, item.cwd].filter(Boolean).join(' · '),
-                  }, [item.sessionId, item.cwd, item.updatedAt ? `${t('lastActive')}${colon()}${formatTime(item.updatedAt, '')}` : ''].filter(Boolean).join(' · ')),
-                ),
-                h('span', { className: 'gta-route-load', title: t('maxQueuePerSession') }, `${t('routeLoad')} ${item.load ?? 0}/${routeMaxQueue}`),
-              ))),
-            h('div', { className: 'gta-route-footer' },
-              h(Button, {
-                primary: true,
-                disabled: !selectedRouteTarget || selectedRouteTarget.accepting === false || routeLoading || busySet.has(`route:${routeTodo.id}`),
-                onClick: () => routeToSession(selectedRouteTarget),
-              }, busySet.has(`route:${routeTodo.id}`) ? '…' : t('routeConfirm')),
-            ),
-          ),
-        ),
       );
     }
 
@@ -2215,9 +1606,8 @@ const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post(
       .gta-issue-summary{margin-left:10px;overflow-wrap:anywhere}
       .gta-tag.gta-tag-attention{color:var(--dsw-alias-state-warn-primary);border-color:var(--dsw-alias-state-warn-primary)}
       .gta-tag.gta-tag-error{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}
-      .gta-root :is(input,select,textarea,summary,.gta-session-link,.gta-reply-toggle):focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
+      .gta-root :is(input,select,textarea,summary,.gta-session-link):focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
       .gta-section:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
-      .gta-root .gta-route-target input[type=radio]{width:auto;flex:none;accent-color:var(--dsw-alias-brand-primary)}
       .gta-tabs{max-width:1180px;margin:8px auto 0;display:flex;flex-wrap:wrap;align-items:center;gap:2px;border-bottom:1px solid var(--dsw-alias-border-l1);overflow-x:auto;scrollbar-width:thin}
       .gta-tab{appearance:none;flex:none;margin-bottom:-1px;padding:6px 10px;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--dsw-alias-label-secondary);font-family:inherit;font-size:12.5px;cursor:pointer;white-space:nowrap}
       .gta-tab:hover{color:var(--dsw-alias-label-primary);background:var(--dsw-alias-bg-layer-1)}
@@ -2260,38 +1650,16 @@ const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post(
       .gta-empty{padding:14px;border:1px dashed var(--dsw-alias-border-l2);border-radius:8px;text-align:center;color:var(--dsw-alias-label-secondary)}
       .gta-fatal{max-width:720px;margin:48px auto;padding:24px;border:1px solid var(--dsw-alias-state-error-primary);border-radius:12px;background:var(--dsw-alias-bg-layer-1)}
       .gta-fatal p{white-space:pre-wrap;word-break:break-word;margin:12px 0 20px;color:var(--dsw-alias-state-error-primary)}
-      .gta-root .gta-tag-routed{color:var(--dsw-alias-brand-primary);border-color:var(--dsw-alias-brand-primary)}
       .gta-root .gta-route-backdrop{position:fixed;inset:0;z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px;background:color-mix(in srgb,var(--dsw-alias-label-primary) 38%,transparent)}
       .gta-root .gta-route-dialog{display:flex;flex-direction:column;width:min(680px,100%);max-height:min(80dvh,680px);overflow:hidden;padding:14px;border:1px solid var(--dsw-alias-border-l1);border-radius:10px;background:var(--dsw-alias-bg-layer-1);box-shadow:0 18px 60px color-mix(in srgb,var(--dsw-alias-label-primary) 25%,transparent)}
       .gta-root .gta-route-header{display:flex;align-items:center;gap:12px;flex:none}
       .gta-root .gta-route-heading{min-width:0;flex:1}
       .gta-root .gta-route-heading h2{margin:0}
-      .gta-root .gta-route-todo{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .gta-root .gta-route-summary{display:flex;gap:4px 12px;flex-wrap:wrap;flex:none;margin-top:8px}
-      .gta-root .gta-route-error{max-width:none;margin:8px 0;flex:none}
-      .gta-root .gta-route-tools{display:flex;align-items:center;gap:6px;flex:none;margin:10px 0 8px}
-      .gta-root .gta-route-tools input{flex:1;min-width:0}
-      .gta-root .gta-route-dialog>.gta-empty{flex:none}
-      .gta-root .gta-route-targets{display:flex;flex:1 1 auto;flex-direction:column;gap:6px;min-height:80px;overflow-y:auto;overscroll-behavior:contain;padding:2px;scrollbar-width:thin}
-      .gta-root .gta-route-target{appearance:none;width:100%;display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:7px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;text-align:left;cursor:pointer}
-      .gta-root .gta-route-target:hover:not([aria-disabled=true]){border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2)}
-      .gta-root .gta-route-target:focus-within{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:2px}
-      .gta-root .gta-route-target[aria-disabled=true]{opacity:.5;cursor:default}
-      .gta-root .gta-route-target-selected:not([aria-disabled=true]){border-color:var(--dsw-alias-brand-primary);background:var(--dsw-alias-bg-layer-2)}
-      .gta-root .gta-route-target-main{display:block;min-width:0;flex:1}
-      .gta-root .gta-route-target-title{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-weight:550}
-      .gta-root .gta-route-target-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .gta-root .gta-route-target-meta{display:block;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .gta-root .gta-route-load{flex:none;margin-left:auto;color:var(--dsw-alias-label-secondary);font-size:11.5px;white-space:nowrap}
       .gta-root .gta-route-footer{display:flex;justify-content:flex-end;gap:6px;flex:none;padding-top:10px}
       .gta-root .gta-session-dialog{overflow-y:auto;overscroll-behavior:contain;overflow-wrap:anywhere}
       .gta-session-dialog .gta-route-footer{flex-wrap:wrap}
       .gta-handoff-context{min-width:0}
       .gta-handoff-context textarea{box-sizing:border-box;display:block;width:100%;resize:vertical;min-height:100px;padding:7px;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);font:inherit;white-space:pre-wrap}
-      .gta-reply{margin-top:2px}
-      .gta-reply-toggle{appearance:none;min-height:28px;border:0;background:transparent;color:var(--dsw-alias-brand-primary);font:inherit;font-size:12px;padding:0;cursor:pointer}
-      .gta-reply-toggle:hover{text-decoration:underline}
-      .gta-reply-body{margin-top:5px;padding:8px 10px;border:1px solid var(--dsw-alias-border-l1);border-radius:6px;background:var(--dsw-alias-bg-base);max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:12px}
       .gta-reply-link{color:var(--dsw-alias-brand-primary);text-decoration:none;margin-right:6px}
       @media(max-width:720px){.gta-root{padding:12px 12px 20px}
       .gta-header{align-items:flex-start;flex-direction:column}
@@ -2321,7 +1689,7 @@ const acknowledgeInboxItem = (item) => perform(`ack:${item.todoId}`, () => post(
         // bridge 抛错早于任何组件渲染，注入 bind 后的 t 让超时/网络错误文案跟随当前 locale。
         bridgeText = t;
         function MainPanel() {
-          return h(PanelBoundary, { t }, h(TodoPanel, { ctx, t }));
+          return h(PanelBoundary, { t }, h(WorkstationPanel, { ctx, t }));
         }
         ctx.slots.inject('main', () => ctx.slots.register({
           name: 'main', key: PANEL_ID, locale: NS,

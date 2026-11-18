@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { createLeaderAgentAdapter, LEADER_MESSAGE_SOURCE, LEADER_TOOL_NAMES, LEADER_TOOLS, LEADER_WORKER_TOOL, LEADER_SESSION_ACTIONS, LEADER_INBOX_ACTIONS } from '../host/leader-agent.js';
+import { createLeaderAgentAdapter, LEADER_MESSAGE_SOURCE, LEADER_TOOL_NAMES, LEADER_TOOLS, LEADER_WORKER_TOOL, LEADER_SESSION_ACTIONS } from '../host/leader-agent.js';
 
 function setup(options = {}) {
   const residents = new Map();
@@ -61,10 +61,10 @@ function setup(options = {}) {
 async function ready(options) { const fixture = setup(options); assert.equal(await fixture.adapter.refreshBindings(), true); return fixture; }
 const exec = (fixture, agent = fixture.leader) => ({ agent, signal: new AbortController().signal });
 
-test('the Leader gets exactly the three plugin tools without restrict/guard; only the exact live Leader can see or call them', async () => {
+test('the Leader gets exactly the two plugin tools without restrict/guard; only the exact live Leader can see or call them', async () => {
   const fixture = await ready();
   assert.deepEqual(LEADER_TOOLS.map(([name, operation]) => [name, operation]),
-    [['gitlab_leader_board', 'board'], ['gitlab_leader_session', 'session'], ['gitlab_leader_inbox', 'inbox']]);
+    [['gitlab_leader_board', 'board'], ['gitlab_leader_session', 'session']]);
   assert.deepEqual([...fixture.definitions.keys()], [...LEADER_TOOL_NAMES]);
   assert.equal('restrict' in fixture.tools, false); assert.equal('guard' in fixture.tools, false);
   const { definition, config } = fixture.definitions.get('gitlab_leader_board');
@@ -102,23 +102,6 @@ test('session tool schema is strict and exposes the seven actions; unknown field
   // The Leader caller is the opaque branded identity created by the Host, never plain request fields.
   const caller = fixture.operations[0].caller;
   assert.deepEqual(Object.keys(caller), []);
-});
-
-test('inbox tool schema is strict, describes its semantics, and forwards to the inbox operation', async () => {
-  const fixture = await ready();
-  const { definition } = fixture.definitions.get('gitlab_leader_inbox');
-  assert.deepEqual(definition.parameters.properties.action.enum, [...LEADER_INBOX_ACTIONS]);
-  assert.deepEqual(LEADER_INBOX_ACTIONS, ['list', 'retry', 'close', 'resume']);
-  assert.equal(definition.parameters.additionalProperties, false);
-  assert.deepEqual(definition.parameters.required, []);
-  assert.equal(definition.parameters.properties.todoIds.maxItems, 50);
-  assert.match(definition.description, /需人工/u);
-  assert.match(definition.description, /attention/u);
-  assert.match(definition.description, /retry/u);
-  await definition.execute({ action: 'close', todoIds: ['t1'], reason: 'MR merged' }, exec(fixture));
-  assert.equal(fixture.operations.at(-1).operation, 'inbox');
-  assert.deepEqual(fixture.operations.at(-1).request.todoIds, ['t1']);
-  await assert.rejects(definition.execute({ action: 'list', sessionId: 'x' }, exec(fixture)), /未知权限/);
 });
 
 test('idle followup keeps explicit nonhuman attribution; no prompt or human-authority source', async () => {
