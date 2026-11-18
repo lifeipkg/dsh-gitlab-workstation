@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "GitLab 工作台",
-    "description": "紧凑的 GitLab 工作台：自动处理 Todo 提及、手动处理指派 Issue，并跟踪会话、闭环与人工接手。"
+    "description": "紧凑的 GitLab 工作台：处理指派给你的 Issue，并跟踪会话、闭环与人工接手。"
   }
 }

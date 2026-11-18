@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "GitLab Workstation",
-    "description": "A compact GitLab workbench for automatic Todo mentions, manual assigned issues, session tracking, closure and human handoff."
+    "description": "A compact GitLab workbench for assigned issues, session tracking, closure and human handoff."
   }
 }

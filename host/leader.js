@@ -25,7 +25,7 @@ export function createLeaderWorkerCaller({ sessionId, agentId } = {}) {
 const MISSING_CHECK_MS = 10000;
 // UI: only the Leader session's own lifecycle. Everything about worker sessions is the Leader Agent's job (v3).
 const uiOperations = new Set(['snapshot', 'create', 'configure', 'resolveCreation', 'resolveTask', 'resolveDelivery']);
-const agentOperations = new Set(['board', 'session', 'inbox']);
+const agentOperations = new Set(['board', 'session']);
 const workerOperations = new Set(['workerReport']);
 
 export const leaderMethods = {
@@ -161,15 +161,10 @@ export const leaderMethods = {
       // dispatch() awaits the Leader lock internally, so creation must run outside it.
       try { return await this.leaderCreateSessionRecord(request); } catch (error) { return failure(errorMessage(error), this.leaderProjection()); }
     }
-    if (operation === 'inbox') {
-      // The inbox lives in Todo state, not the Leader journal; acknowledge takes the same path as the UI button.
-      try { return await this.leaderInboxRecord(request); } catch (error) { return failure(errorMessage(error)); }
-    }
     const context = {};
     if (operation === 'board' && request.refresh === true) {
       const problems = [];
       try { await this.refreshIssues?.(); } catch (error) { problems.push(`Issue 列表刷新失败：${errorMessage(error)}`); }
-      try { await this.poll?.('leader'); } catch (error) { problems.push(`收件箱刷新失败：${errorMessage(error)}`); }
       if (problems.length) context.refreshError = problems.join('；').slice(0, 500);
     }
     return this.leaderLockedOperation(operation, request, caller, context);
@@ -207,7 +202,7 @@ export const leaderMethods = {
     });
   },
 
-  // ---- Managed sessions: every session the plugin itself created (Issue/Todo workers, Leader ad-hoc tasks) ----
+  // ---- Managed sessions: every session the plugin itself created (Issue workers, Leader ad-hoc tasks) ----
 
   /** Records of plugin-created sessions: taskId → sessionId (routed records point at someone else's session and are excluded). */
   leaderManagedPairs() {
@@ -220,10 +215,6 @@ export const leaderMethods = {
         if (validId(record?.sessionId) && record.routed !== true) pairs.push([taskId, record.sessionId]);
       }
     }
-    for (const thread of Object.values(this.state?.ledger?.threads ?? {})) {
-      const taskId = `thread:${thread.key}`;
-      if (validId(taskId) && validId(thread.sessionId)) pairs.push([taskId, thread.sessionId]);
-    }
     return pairs.filter(([, sessionId]) => sessionId !== this.leaderState?.sessionId);
   },
 
@@ -233,7 +224,7 @@ export const leaderMethods = {
     return validId(sessionId) && sessionId !== this.leaderState?.sessionId && this.leaderManagedPairs().some(([, id]) => id === sessionId);
   },
 
-  /** The taskId a session reports under (latest record wins when several Todos share one session). */
+  /** The taskId a session reports under (latest record wins when several Issues share one session). */
   leaderTaskForSession(sessionId) {
     const pairs = this.leaderManagedPairs().filter(([, id]) => id === sessionId);
     return pairs.length ? pairs[pairs.length - 1][0] : null;
@@ -244,10 +235,6 @@ export const leaderMethods = {
     if (isLeaderTaskId(taskId)) {
       const task = this.leaderState?.tasks?.find((entry) => entry.taskId === taskId && entry.status === 'created');
       return task?.sessionId ?? null;
-    }
-    if (taskId.startsWith('thread:')) {
-      const thread = this.state?.ledger?.threads?.[taskId.slice(7)];
-      return validId(thread?.sessionId) ? thread.sessionId : null;
     }
     const issue = this.leaderIssueEntries().find((entry) => entry.id === taskId && !entry.routed && validId(entry.sessionId));
     if (issue) return issue.sessionId;
@@ -269,21 +256,7 @@ export const leaderMethods = {
     }
     const issue = this.leaderIssueEntries().find((entry) => entry.id === taskId && entry.sessionId === sessionId && !entry.routed);
     if (issue) return { ...issue, kind: 'issue' };
-    return this.leaderTodoMapping(taskId, sessionId);
-  },
-
-  leaderTodoMapping(taskId, sessionId) {
-    if (/^issue-/u.test(taskId)) return null;
-    if (taskId.startsWith('thread:')) {
-      const thread = this.state?.ledger?.threads?.[taskId.slice(7)];
-      if (!thread || thread.sessionId !== sessionId) return null;
-      return { id: taskId, sessionId, title: String(thread.title ?? '').slice(0, 1000), url: String(thread.url ?? ''), kind: 'todo', sessionTitle: thread.sessionTitle ?? '' };
-    }
-    const record = this.state?.handled?.[taskId] ?? this.state?.pending?.[taskId];
-    if (!record || record.sessionId !== sessionId || record.routed === true) return null;
-    const todo = this.state?.todos?.find((entry) => entry.id === taskId) ?? record.item ?? {};
-    return { id: taskId, sessionId, title: String(record.title ?? todo.title ?? record.sessionTitle ?? '').slice(0, 1000),
-      url: String(record.url ?? todo.url ?? ''), kind: 'todo', sessionTitle: record.sessionTitle ?? '' };
+    return null;
   },
 
   /** Resolves an agent request to a verified managed target; sessionId is optional because the Host knows it. */
@@ -293,7 +266,7 @@ export const leaderMethods = {
     const sessionId = validId(request.sessionId) ? request.sessionId : this.leaderSessionForTask(taskId);
     if (!validId(sessionId)) throw new Error(`taskId ${taskId} 当前没有可管理的会话（未创建、已归档或已路由到非插件会话）。`);
     const item = this.leaderIssueMapping(taskId, sessionId);
-    if (!item) throw new Error('会话不属于本插件创建的 Issue/Todo/临时任务，或映射已改变；拒绝任意/历史会话 ID。');
+    if (!item) throw new Error('会话不属于本插件创建的 Issue/临时任务，或映射已改变；拒绝任意/历史会话 ID。');
     return { ...item, taskId: item.id };
   },
 

@@ -71,17 +71,12 @@ test('a worker cannot choose its taskId: the report is filed under the task the 
   assert.deepEqual(f.runtime.leaderState.reports.map((entry) => [entry.taskId, entry.sessionId]), [['issue-2', 'worker-b'], ['issue-1', 'worker-a']]);
 });
 
-test('an ad-hoc task worker and a Todo worker can report too', async () => {
+test('an ad-hoc task worker can report', async () => {
   const f = await ready();
   const task = (await f.session({ action: 'create', title: '调查 IAM', brief: '查一下架构' })).result;
   const fromTask = await f.report({ kind: 'done', text: '结论如下' }, task.sessionId);
   assert.equal(fromTask.ok, true);
   assert.equal(fromTask.result.taskId, task.taskId);
-  f.addTodo('todo-3', 'worker-b');
-  const fromTodo = await f.report({ kind: 'blocked', text: '缺少权限' }, 'worker-b');
-  assert.equal(fromTodo.ok, true);
-  // Todo workers report under their ledger thread, not under the Todo id.
-  assert.equal(fromTodo.result.taskId, `thread:${f.runtime.state.ledger.todos['todo-3'].threadKey}`);
 });
 
 test('sessions the plugin did not create cannot report: the Leader, human sessions, unknown and archived ids', async () => {

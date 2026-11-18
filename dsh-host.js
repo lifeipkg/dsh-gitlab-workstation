@@ -37,7 +37,7 @@ function assistantTexts(message) {
   return out;
 }
 
-/** 一条助手文本里可能有多份报告；逐 marker 切片解析，支持共享回合按 todoId 归因。 */
+/** 一条助手文本里可能有多份报告；逐 marker 切片解析，支持共享回合按 itemId 归因。 */
 function closureReports(source, originUrl) {
   const reports = [];
   let cursor = source.indexOf(CLOSURE_MARKER);
@@ -52,7 +52,7 @@ function closureReports(source, originUrl) {
 
 /**
  * 在本次执行的助手消息里找最后一份结案报告（[TODO-CLOSURE] {...}）。
- * todoId 给出时只接受同 ID 报告；missingTodoIdOnly 用于旧格式兜底，避免共享回合串报。
+ * itemId 给出时只接受同 ID 报告；missingItemIdOnly 用于旧格式兜底，避免共享回合串报。
  */
 function findClosureReport(events, startedAt, originUrl, options = {}) {
   const messages = events
@@ -65,8 +65,8 @@ function findClosureReport(events, startedAt, originUrl, options = {}) {
       const reports = closureReports(texts[index], originUrl);
       for (let reportIndex = reports.length - 1; reportIndex >= 0; reportIndex -= 1) {
         const report = reports[reportIndex];
-        if (options.todoId && report.todoId !== options.todoId) continue;
-        if (options.missingTodoIdOnly && report.todoId) continue;
+        if (options.itemId && report.itemId !== options.itemId) continue;
+        if (options.missingItemIdOnly && report.itemId) continue;
         return report;
       }
     }
@@ -84,7 +84,7 @@ function messageRpcId(event) {
  * 按请求定位各自的回合结束与结案报告。
  * - 带 requestId：先定位 source.rpcId 匹配的 user/message，再取其 seq 之后第一个 turn/end。
  *   steer 可能在同一 turn 的下一步插入，因此多个请求可以共享 turn/end；
- *   报告优先按 todoId 精确归因，旧格式只允许落到下一条插件消息之前。
+ *   报告优先按 itemId 精确归因，旧格式只允许落到下一条插件消息之前。
  * - 不带 requestId（旧记录兼容）：退回 startedAt 之后第一个 turn/end。
  */
 function inspectRequestsFromEvents(events, requests) {
@@ -115,13 +115,13 @@ function inspectRequestsFromEvents(events, requests) {
       : sorted.filter((event) => event.seq <= turnEnd.seq && (startedAt <= 0 || event.time >= startedAt));
     let report = null;
     if (request.requestId) {
-      report = findClosureReport(scoped, 0, request.originUrl ?? '', { todoId: request.key });
+      report = findClosureReport(scoped, 0, request.originUrl ?? '', { itemId: request.key });
       if (!report) {
         const nextPluginMessage = sorted.find((event) => event.seq > fromSeq
           && event?.type === 'user/message'
-          && messageRpcId(event).startsWith('gitlab-todo-'));
+          && messageRpcId(event).startsWith('gitlab-issue-'));
         const legacyScoped = scoped.filter((event) => !nextPluginMessage || event.seq < nextPluginMessage.seq);
-        report = findClosureReport(legacyScoped, 0, request.originUrl ?? '', { missingTodoIdOnly: true });
+        report = findClosureReport(legacyScoped, 0, request.originUrl ?? '', { missingItemIdOnly: true });
       }
     } else {
       report = findClosureReport(scoped, startedAt, request.originUrl ?? '');
@@ -147,7 +147,7 @@ export class DshHostClient {
     this.gateway = ctx.typertGateway;
     const controller = new AbortController();
     this.peer = {
-      id: `gitlab-todo-owner:${randomUUID()}`,
+      id: `gitlab-workstation-owner:${randomUUID()}`,
       ctx,
       principal: { kind: 'owner' },
       signal: controller.signal,

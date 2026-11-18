@@ -2,12 +2,12 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { issueApiPath, normalizeIssue, normalizeTodos } from '../core.js';
-import { MAX_ISSUE_PAGES, MAX_TODO_PAGES, TODO_PAGE_SIZE } from './constants.js';
+import { issueApiPath, normalizeIssue } from '../core.js';
+import { ISSUE_PAGE_SIZE, MAX_ISSUE_PAGES } from './constants.js';
 import { errorMessage } from './util.js';
 
 /**
- * GitLab 访问层：glab 子进程、当前用户、Todo 分页拉取、标记完成。
+ * GitLab 访问层：glab 子进程、当前用户、Issue 列表与闭环核对、Leader REST 调用。
  * 全部方法挂在 GitlabTodoRuntime 原型上（见 index.js attachRuntimeMethods），
  * this 指向运行时实例：state/config/activeChildren/gitlabUserId 等字段共享。
  */
@@ -30,32 +30,6 @@ export const gitlabMethods = {
     return this.gitlabUserId;
   },
 
-  async fetchTodos() {
-    await this.currentGitlabUserId();
-    const items = [];
-    for (let page = 1; page <= MAX_TODO_PAGES; page += 1) {
-      const stdout = await this.runGlab([
-        'api', '-X', 'GET', 'todos',
-        '-F', `per_page=${TODO_PAGE_SIZE}`,
-        '-F', `page=${page}`,
-      ]);
-      let pageItems;
-      try {
-        pageItems = JSON.parse(stdout);
-      } catch (error) {
-        throw new Error(`解析 GitLab Todo 第 ${page} 页失败：${errorMessage(error)}`);
-      }
-      if (!Array.isArray(pageItems)) throw new Error(`GitLab Todo 第 ${page} 页响应不是数组。`);
-      if (pageItems.length === 0) break;
-      items.push(...pageItems);
-      if (pageItems.length < TODO_PAGE_SIZE) break;
-    }
-    return normalizeTodos(items);
-  },
-
-  async markTodoDone(todo) {
-    await this.runGlab(['api', '-X', 'POST', `todos/${encodeURIComponent(todo.id)}/mark_as_done`]);
-  },
 
   /**
    * 指派给我的开放 Issue 列表（Issue 面板数据源）：REST /issues 跨项目聚合接口，
@@ -71,7 +45,7 @@ export const gitlabMethods = {
         '-F', 'state=opened',
         '-F', 'order_by=updated_at',
         '-F', 'sort=desc',
-        '-F', `per_page=${TODO_PAGE_SIZE}`,
+        '-F', `per_page=${ISSUE_PAGE_SIZE}`,
         '-F', `page=${page}`,
       ]);
       let pageItems;
@@ -85,7 +59,7 @@ export const gitlabMethods = {
         const item = normalizeIssue(raw);
         if (item) items.push(item);
       }
-      if (pageItems.length < TODO_PAGE_SIZE) break;
+      if (pageItems.length < ISSUE_PAGE_SIZE) break;
     }
     return items;
   },
@@ -143,7 +117,7 @@ export const gitlabMethods = {
     const executable = process.platform === 'win32' ? 'glab.exe' : 'glab';
     return new Promise((resolve, reject) => {
       const child = spawn(executable, args, {
-        cwd: this.state.settings.cwd || process.cwd(),
+        cwd: process.cwd(),
         env: { ...process.env },
         stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,

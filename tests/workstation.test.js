@@ -16,7 +16,6 @@ test('Workstation branding names the same successor repository and both task typ
   assert.equal(zh.meta.title, 'GitLab 工作台');
   assert.equal(en.meta.title, 'GitLab Workstation');
   for (const description of [manifest.description, zh.meta.description, en.meta.description]) {
-    assert.match(description, /Todo/i);
     assert.match(description, /Issue/i);
   }
   const client = await read('client.js');
@@ -44,10 +43,10 @@ test('Workstation package identity aligns while legacy runtime and task protocol
   assert.match(runtime, /join\(resolveDshHome\(env\), 'storages', STORAGE_NAME\)/);
   // 旧目录只作为迁移来源保留，不再是默认数据目录。
   assert.match(runtime, /LEGACY_STORAGE_DIRECTORY = join\(homedir\(\), '\.dsh-plugins', 'gitlabtodo'\)/);
-  assert.equal(STATE_VERSION, 7);
+  assert.equal(STATE_VERSION, 8);
   assert.ok(core.includes("CLOSURE_MARKER = '[TODO-CLOSURE]'"));
-  assert.ok(dispatch.includes('`gitlab-todo-${randomUUID()}`'));
-  assert.ok(host.includes("startsWith('gitlab-todo-')"));
+  assert.ok(dispatch.includes('`gitlab-issue-${randomUUID()}`'));
+  assert.ok(host.includes("startsWith('gitlab-issue-')"));
 });
 
 test('package rename documents explicit consumer switching without deleting state or claiming publication', async () => {

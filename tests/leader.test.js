@@ -472,13 +472,11 @@ test('unknown operations and unknown session actions fail without side effects',
 // Board
 // ---------------------------------------------------------------------------------------------------------------
 
-test('the board lists Issues, Todos, ad-hoc tasks, reports and open deliveries without granting anything', async () => {
+test('the board lists Issues, ad-hoc tasks, reports and open deliveries without granting anything', async () => {
   const f = fixture();
   await f.createLeader();
   f.addIssue(1, 'worker-a');
   f.addIssue(2);
-  f.addTodo('todo-1');
-  f.addTodo('todo-2', 'worker-b');
   await f.session({ action: 'create', title: 'IAM 架构', brief: '看一下 IAM' });
   await f.report({ kind: 'done', text: '#1 完成' });
   const board = (await f.board()).result;
@@ -486,34 +484,23 @@ test('the board lists Issues, Todos, ad-hoc tasks, reports and open deliveries w
   assert.equal(byId['issue-1'].sessionId, 'worker-a');
   assert.equal(byId['issue-2'].sessionId, null);
   assert.equal(byId['issue-1'].untrusted, true);
-  const todos = Object.fromEntries(board.todos.map((entry) => [entry.taskId, entry]));
-  assert.equal(todos['todo-1'].status, 'new');
-  assert.equal(todos['todo-2'].status, 'queued');
-  assert.equal(todos['todo-2'].attempts, 0);
-  assert.equal(todos['todo-2'].threadTaskId.startsWith('thread:'), true);
-  assert.equal(todos['todo-2'].sessionId, 'worker-b');
-  assert.equal(board.threads.length, 1);
-  assert.equal(board.threads[0].taskId, todos['todo-2'].threadTaskId);
-  assert.equal(board.threads[0].sessionId, 'worker-b');
-  assert.equal(board.breaker.open, false);
   assert.equal(board.tasks.length, 1);
   assert.equal(board.tasks[0].status, 'created');
   assert.equal(board.reports.length, 1);
   assert.equal(board.reports[0].untrusted, true);
-  assert.equal(board.managedSessions, 3);
+  assert.equal(board.managedSessions, 2);
   assert.ok(board.glossary.executionStatus);
   assert.deepEqual(board.openDeliveries, []);
   assert.equal('detail' in board, false);
 });
 
-test('refresh=true refreshes the Issue list and the inbox first and reports refresh problems', async () => {
+test('refresh=true refreshes the Issue list first and reports refresh problems', async () => {
   const f = fixture();
   await f.createLeader();
   const order = [];
   f.runtime.refreshIssues = async () => { order.push('issues'); };
-  f.runtime.poll = async (reason) => { order.push(`poll:${reason}`); };
   assert.equal((await f.board({ refresh: true })).ok, true);
-  assert.deepEqual(order, ['issues', 'poll:leader']);
+  assert.deepEqual(order, ['issues']);
   f.runtime.refreshIssues = async () => { throw new Error('glab killed'); };
   const failed = await f.board({ refresh: true });
   assert.equal(failed.ok, true);
@@ -606,24 +593,6 @@ test('session create for an Issue uses the normal dispatch and makes the worker 
   assert.equal(f.calls.refresh.length > 0, true, 'worker report tool bindings refreshed');
 });
 
-test('session create for an inbox Todo goes through todoManualDispatch and only queues it', async () => {
-  const f = fixture();
-  await f.createLeader();
-  const todo = f.addTodo('todo-3');
-  const result = await f.session({ action: 'create', taskId: todo.id });
-  assert.equal(result.ok, true);
-  assert.equal(result.result.queued, true);
-  assert.equal(result.result.sessionId, null);
-  assert.deepEqual(f.calls.todoDispatch.map((entry) => entry.id), ['todo-3']);
-  assert.equal(f.calls.dispatch.length, 0);
-  const failing = fixture({ todoManualDispatch: () => ({ ok: false, error: 'Todo 当前状态为 done，无需处理。' }) });
-  await failing.createLeader();
-  failing.addTodo('todo-4');
-  const refused = await failing.session({ action: 'create', taskId: 'todo-4' });
-  assert.equal(refused.ok, false);
-  assert.match(refused.error, /无需处理/u);
-});
-
 test('session create for an Issue that already has an active worker takes it over instead of creating another', async () => {
   const f = fixture();
   await f.createLeader();
@@ -651,7 +620,7 @@ test('session create refuses unknown taskIds, in-flight items and Host dispatch 
   await f.createLeader();
   const unknown = await f.session({ action: 'create', taskId: 'issue-999' });
   assert.equal(unknown.ok, false);
-  assert.match(unknown.error, /不在 Issue 列表或收件箱当前列表中/u);
+  assert.match(unknown.error, /该 taskId 不在 Issue 列表当前列表中/u);
   assert.match(unknown.error, /title \+ brief/u);
   assert.equal((await f.session({ action: 'create', taskId: '' })).ok, false);
 
@@ -966,7 +935,7 @@ test('send validates text and requestId before touching anything', async () => {
 
 test('send only reaches plugin-created workers: unknown taskIds, human sessions and archived workers are refused', async () => {
   const f = await ready();
-  for (const args of [{ taskId: 'issue-404' }, { taskId: 'todo-9' }, { taskId: 'human' }, { taskId: 'issue-1', sessionId: 'human' }, { taskId: 'issue-1', sessionId: 'leader' }, {}]) {
+  for (const args of [{ taskId: 'issue-404' }, { taskId: 'ghost-9' }, { taskId: 'human' }, { taskId: 'issue-1', sessionId: 'human' }, { taskId: 'issue-1', sessionId: 'leader' }, {}]) {
     const result = await f.session({ action: 'send', text: 'hi', ...args });
     assert.equal(result.ok, false, JSON.stringify(args));
   }
@@ -1107,7 +1076,7 @@ test('steer cannot reach the Leader session, human sessions or archived workers'
   const f = await ready();
   f.sessions.set('worker-a', sessionState({ running: true }));
   f.sessions.set('human', sessionState({ running: true }));
-  assert.equal((await f.session({ action: 'steer', taskId: 'todo-9', text: 'x' })).ok, false);
+  assert.equal((await f.session({ action: 'steer', taskId: 'ghost-9', text: 'x' })).ok, false);
   assert.equal((await f.session({ action: 'steer', taskId: 'issue-1', sessionId: 'human', text: 'x' })).ok, false);
   f.archivedSessionIds.push('worker-a');
   assert.equal((await f.session({ action: 'steer', taskId: 'issue-1', text: 'x' })).ok, false);
@@ -1162,9 +1131,6 @@ test('rename keeps the #iid prefix for Issue sessions, accepts any title for ad-
   const renamed = await f.session({ action: 'rename', taskId: task.taskId, title: '任意标题' });
   assert.equal(renamed.ok, true);
   assert.equal(f.runtime.leaderState.tasks[0].title, '任意标题');
-  f.addTodo('todo-5', 'worker-b');
-  const threadTaskId = `thread:${f.runtime.state.ledger.todos['todo-5'].threadKey}`;
-  assert.equal((await f.session({ action: 'rename', taskId: threadTaskId, title: 'free form' })).ok, true);
 });
 
 test('rename, model and archive refuse the Leader session, human sessions, archived and missing sessions', async () => {
@@ -1172,7 +1138,7 @@ test('rename, model and archive refuse the Leader session, human sessions, archi
   const item = f.addIssue(2);
   f.runtime.state.handled[item.id] = handledRecord(item, 'leader');
   for (const args of [{ action: 'rename', title: '#1 x' }, { action: 'model', model: { provider: 'prov', model: 'm1' } }, { action: 'archive', reason: 'cleanup' }]) {
-    for (const target of [{ taskId: 'todo-9' }, { taskId: 'issue-2' }, { taskId: 'issue-1', sessionId: 'human' }, { taskId: 'leader' }, { taskId: 'issue-1', sessionId: 'leader' }]) {
+    for (const target of [{ taskId: 'ghost-9' }, { taskId: 'issue-2' }, { taskId: 'issue-1', sessionId: 'human' }, { taskId: 'leader' }, { taskId: 'issue-1', sessionId: 'leader' }]) {
       const result = await f.session({ ...args, ...target });
       assert.equal(result.ok, false, `${args.action} ${JSON.stringify(target)}`);
     }
@@ -1357,96 +1323,3 @@ test('persisting plugin state refreshes worker tool bindings so new workers get 
   assert.match(block, /this\.syncLeaderWorkerTools\?\.\(\)/);
 });
 
-// ---------------------------------------------------------------------------------------------------------------
-// gitlab_leader_inbox: list / acknowledge the needs-human inbox
-// ---------------------------------------------------------------------------------------------------------------
-
-test('inbox list returns only attention/waiting ledger Todos, attention first then oldest, marked untrusted', async () => {
-  const f = fixture();
-  await f.createLeader();
-  f.addTodo('t1', 'worker-a', { state: 'attention', reason: '等人：需要决定方案', updatedAt: 20 });
-  f.addTodo('t2', 'worker-b', { state: 'attention', reason: '会话失败', updatedAt: 10 });
-  f.addTodo('t3', 'worker-b', { state: 'done', updatedAt: 5 });
-  f.addTodo('t4', 'worker-b', { state: 'queued' });
-  f.addTodo('t5', 'worker-b', { state: 'waiting', reason: '上次未收到报告', attempts: 1, updatedAt: 1 });
-  const result = await f.invoke('inbox', {}, f.agent());
-  assert.equal(result.ok, true);
-  assert.equal(result.result.total, 3);
-  assert.deepEqual(result.result.items.map((item) => item.todoId), ['t2', 't1', 't5']);
-  assert.equal(result.result.items[0].untrusted, true);
-  assert.equal(result.result.items[1].needsHuman, true);
-  assert.equal(result.result.items[0].needsHuman, false);
-  assert.equal(result.result.items[2].state, 'waiting');
-  assert.equal(result.result.breaker.open, false);
-  const limited = await f.invoke('inbox', { action: 'list', limit: 1 }, f.agent());
-  assert.deepEqual(limited.result.items.map((item) => item.todoId), ['t2']);
-  assert.equal(limited.result.total, 3);
-  assert.equal((await f.invoke('inbox', { action: 'list', todoIds: ['t1'] }, f.agent())).ok, false);
-  assert.equal((await f.invoke('inbox', { action: 'acknowledge', todoIds: ['t1'], reason: 'x' }, f.agent())).ok, false);
-});
-
-test('inbox retry requeues attention/waiting Todos and reports each result', async () => {
-  const f = fixture();
-  await f.createLeader();
-  f.addTodo('t1', 'worker-a', { state: 'attention', reason: '等人：x', attempts: 2 });
-  f.addTodo('t2', 'worker-a', { state: 'done' });
-  assert.equal((await f.invoke('inbox', { action: 'retry' }, f.agent())).ok, false);
-  assert.equal((await f.invoke('inbox', { action: 'retry', todoIds: ['t1', 't1'] }, f.agent())).ok, false);
-  assert.equal((await f.invoke('inbox', { action: 'retry', todoIds: ['t1'], limit: 1 }, f.agent())).ok, false);
-  assert.equal(f.runtime.state.ledger.todos.t1.state, 'attention');
-  const result = await f.invoke('inbox', { action: 'retry', todoIds: ['t1', 't2', 'ghost'] }, f.agent());
-  assert.equal(result.ok, true);
-  assert.equal(result.result.done, 1);
-  assert.equal(result.result.failed, 2);
-  assert.deepEqual(result.result.results.map((entry) => [entry.todoId, entry.ok]), [['t1', true], ['t2', false], ['ghost', false]]);
-  assert.equal(f.runtime.state.ledger.todos.t1.state, 'queued');
-  assert.equal(f.runtime.state.ledger.todos.t1.attempts, 0);
-  const again = await f.invoke('inbox', { action: 'retry', todoIds: ['t1'] }, f.agent());
-  assert.equal(again.ok, false);
-  assert.equal(again.result.failed, 1);
-});
-
-test('inbox close requires a reason and closes through the ledger as leader', async () => {
-  const f = fixture();
-  await f.createLeader();
-  f.addTodo('t1', 'worker-a', { state: 'attention', reason: '等人：x' });
-  const seen = [];
-  const close = f.runtime.todoClose;
-  f.runtime.todoClose = function (todoId, by) { seen.push([todoId, by]); return close.call(this, todoId, by); };
-  const missingReason = await f.invoke('inbox', { action: 'close', todoIds: ['t1'] }, f.agent());
-  assert.equal(missingReason.ok, false);
-  assert.match(missingReason.error, /reason/u);
-  assert.equal((await f.invoke('inbox', { action: 'close', todoIds: ['t1', 't1'], reason: 'x' }, f.agent())).ok, false);
-  assert.equal((await f.invoke('inbox', { action: 'close', reason: 'x' }, f.agent())).ok, false);
-  assert.equal(seen.length, 0);
-  const result = await f.invoke('inbox', { action: 'close', todoIds: ['t1', 'ghost'], reason: ' MR 已合并 ' }, f.agent());
-  assert.equal(result.ok, true);
-  assert.equal(result.result.done, 1);
-  assert.equal(result.result.failed, 1);
-  assert.deepEqual(result.result.results.map((entry) => [entry.todoId, entry.ok]), [['t1', true], ['ghost', false]]);
-  assert.deepEqual(seen[0], ['t1', 'leader']);
-  assert.equal(f.runtime.state.ledger.todos.t1.state, 'done');
-  const again = await f.invoke('inbox', { action: 'close', todoIds: ['ghost'], reason: 'again' }, f.agent());
-  assert.equal(again.ok, false);
-  assert.equal(again.result.failed, 1);
-});
-
-test('inbox resume reopens the delivery breaker', async () => {
-  const f = fixture();
-  await f.createLeader();
-  f.runtime.state.ledger.breaker = { streak: 5, open: true, since: 1 };
-  const result = await f.invoke('inbox', { action: 'resume' }, f.agent());
-  assert.equal(result.ok, true);
-  assert.equal(result.result.resumed, true);
-  assert.equal(f.runtime.state.ledger.breaker.open, false);
-});
-
-test('only the Leader Agent can call the inbox tool', async () => {
-  const f = fixture();
-  await f.createLeader();
-  const fromUi = await f.invoke('inbox', {}, f.ui);
-  assert.equal(fromUi.ok, false);
-  assert.match(fromUi.error, /仅限 Leader Agent 工具调用/u);
-  assert.equal((await f.invoke('inbox', {}, f.worker())).ok, false);
-  assert.equal((await f.invoke('inbox', {}, f.agent('worker-a'))).ok, false);
-});
