@@ -50,9 +50,9 @@ const nativeDependencies = async () => {
 const descriptions = {
   board: '只读看板。无 taskId：Issue 分页（offset/limit，默认 30；filter 按 project/state/hasSession 过滤）、临时任务、未读汇报、未决投递。'
     + 'refresh=true 先拉 GitLab。传 taskId：只返回该 worker 的会话状态、最近 eventLimit 条日志（默认 10）、待答问题、汇报，并标为已读。',
-  session: '管理插件创建的 worker。action：create（taskId 建 Issue worker；或 title+brief[+workingDirectory] 建临时任务）、'
+  session: '管理插件创建的 worker。action：create（taskId 建 Issue worker，原会话失效时按同 taskId 重新派发新会话；或 title+brief[+workingDirectory] 建临时任务）、'
     + 'send（taskId+text，空闲时）、steer（taskId+text[+reason]，运行中）、rename（taskId+title，Issue 以 #<iid> 开头）、'
-    + 'model（taskId+model）、archive（taskId+reason）、resolve_delivery（requestId+outcome）。',
+    + 'model（taskId+model）、archive（taskId+reason；宿主中已不存在的会话改为清掉条目上的失效绑定）、resolve_delivery（requestId+outcome）。',
 };
 const id = { type: 'string', minLength: 1, maxLength: 200 };
 const text = (max) => ({ type: 'string', minLength: 1, maxLength: max });

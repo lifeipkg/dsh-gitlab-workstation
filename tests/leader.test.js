@@ -572,10 +572,14 @@ test('board detail reports archived, missing and unknown sessions without throwi
   await f.createLeader();
   f.addIssue(1, 'worker-a');
   f.archivedSessionIds.push('worker-a');
-  assert.equal((await f.board({ taskId: 'issue-1' })).result.detail.session.status, 'archived');
+  const archivedDetail = (await f.board({ taskId: 'issue-1' })).result.detail;
+  assert.equal(archivedDetail.session.status, 'archived');
+  assert.match(archivedDetail.sessionNote, /create（同 taskId）重新派发/u);
   f.archivedSessionIds.length = 0;
   f.sessions.delete('worker-a');
-  assert.equal((await f.board({ taskId: 'issue-1' })).result.detail.session.status, 'missing');
+  const missingDetail = (await f.board({ taskId: 'issue-1' })).result.detail;
+  assert.equal(missingDetail.session.status, 'missing');
+  assert.match(missingDetail.sessionNote, /archive 清掉/u);
 });
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -616,6 +620,20 @@ test('session create re-dispatches an Issue whose worker was archived, flagged a
   const result = await f.session({ action: 'create', taskId: 'issue-1' });
   assert.equal(result.ok, true);
   assert.equal(result.result.existing, false);
+  assert.equal(f.calls.dispatch[0].retry, true);
+});
+
+test('session create re-dispatches a missing worker even when the panel cache no longer lists the Issue', async () => {
+  const f = fixture();
+  await f.createLeader();
+  f.addIssue(1, 'worker-a');
+  f.sessions.delete('worker-a');
+  f.runtime.state.issues = [];
+  const result = await f.session({ action: 'create', taskId: 'issue-1' });
+  assert.equal(result.ok, true);
+  assert.equal(result.result.existing, false);
+  assert.equal(f.calls.dispatch.length, 1);
+  assert.equal(f.calls.dispatch[0].item.id, 'issue-1');
   assert.equal(f.calls.dispatch[0].retry, true);
 });
 
@@ -1223,15 +1241,27 @@ test('archive failures are reported: unverifiable state, and a Host refusal from
   assert.match(unknown.error, /会话状态不可验证，未归档/u);
 });
 
-test('a cold quiet session can be archived; a missing session cannot be acted on', async () => {
+test('a cold quiet session can be archived; archiving an Issue whose session is gone clears the dead binding', async () => {
   const f = await ready();
   f.sessions.set('worker-a', sessionState({ active: false, queue: null }));
   assert.equal((await f.session({ action: 'archive', taskId: 'issue-1', reason: 'done' })).ok, true);
   const g = await ready();
   g.sessions.delete('worker-a');
-  const result = await g.session({ action: 'archive', taskId: 'issue-1', reason: 'done' });
-  assert.equal(result.ok, false);
+  const result = await g.session({ action: 'archive', taskId: 'issue-1', reason: '旧会话已被删除' });
+  assert.equal(result.ok, true);
+  assert.equal(result.result.missing, true);
+  assert.equal(result.result.cleared, true);
   assert.equal(g.calls.setArchived.length, 0);
+  assert.equal('issue-1' in g.runtime.state.handled, false);
+  // The entry is still listed (the Issue is open) but carries no dead session binding.
+  const entry = (await g.board()).result.issues.find((row) => row.taskId === 'issue-1');
+  assert.ok(entry);
+  assert.equal(entry.sessionId, undefined);
+  assert.equal(entry.archived, undefined);
+  // And the Issue can be re-dispatched with a fresh session.
+  const reDispatch = await g.session({ action: 'create', taskId: 'issue-1' });
+  assert.equal(reDispatch.ok, true);
+  assert.match(reDispatch.result.sessionId, /^worker-new-/u);
 });
 
 // ---------------------------------------------------------------------------------------------------------------

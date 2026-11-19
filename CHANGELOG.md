@@ -1,5 +1,11 @@
 # Changelog
 
+## 5.0.1
+
+- **修复：Issue 条目的失效会话绑定清理不掉。** `gitlab_leader_session archive` 遇到「宿主中已不存在的会话」时，Issue 记录改为删除 handled 绑定（返回 `cleared: true`），条目回到「无会话」状态、可重新派发；此前该场景一律报「无可归档对象」把记录锁死。临时任务路径行为不变（仍标记 archived 释放 slot）。
+- **修复：`session create` 按 taskId 不再依赖 Issue 面板缓存。** 缓存未命中时回落到 handled/pending 保存的条目快照重新派发，避免 Leader 在缓存陈旧时被迫建临时任务顶替。
+- 改进：`send`/`steer` 对失效会话的失败文案给出下一步指引（create 重新派发 / archive 清理）；看板 detail 对 missing/archived 会话附 `sessionNote` 说明可执行动作。
+
 ## 5.0.0
 
 - **BREAKING：删除 GitLab Todo 自动处理。** 移除 @ 提及自动处理、Todo 收件箱、预检（含 Jev 分类器）、会话路由、同对象合并、批量预检、续办、等待探测、Todo 台账及对应面板与设置（如 `enabled`、`intervalSeconds`、`maxSessionsPerPoll`、`routeScope`、`autoRoute`、`customRules`、`replySignature`、`precheck*`、`waitProbeEnabled`）。

@@ -114,6 +114,10 @@ export const leaderToolMethods = {
       catch (error) { detail.pendingQuestions = [`问题原文不可读取：${errorMessage(error).slice(0, 300)}`]; }
     }
     if (inspection.state?.pendingInput?.length) detail.pendingNote = '该会话在等待原生审批/问答，只能由人类在会话内回答；告诉人类去该会话处理。';
+    if (inspection.status === 'missing') detail.sessionNote = item.kind === 'issue'
+      ? '原会话已不存在：这条绑定已失效，可用 gitlab_leader_session archive 清掉，或用 create（同 taskId）重新派发新会话。'
+      : '原会话已不存在：可用 gitlab_leader_session archive 释放本条记录。';
+    else if (inspection.status === 'archived' && item.kind === 'issue') detail.sessionNote = '会话已归档：要继续处理用 gitlab_leader_session create（同 taskId）重新派发新会话。';
     const sessionReports = this.leaderState.reports.filter((entry) => entry.sessionId === item.sessionId);
     detail.reports = sessionReports.slice(-DETAIL_REPORTS).map(({ sessionId: _sessionId, taskId: _taskId, ...entry }) => entry);
     const deliveries = this.leaderState.deliveries.filter((entry) => entry.sessionId === item.sessionId && OPEN_DELIVERY.has(entry.status));
@@ -151,8 +155,11 @@ export const leaderToolMethods = {
     if (this.leaderStorageFault) return failure('Leader journal 不可写，未创建会话。');
     if (request.taskId === undefined) return this.leaderCreateTaskRecord(request);
     if (!validId(request.taskId)) return failure('必须提供 gitlab_leader_board 里的 taskId；临时任务不传 taskId，改传 title + brief。');
-    const issue = (Array.isArray(this.state.issues) ? this.state.issues : []).find((entry) => entry.id === request.taskId);
-    if (!issue) return failure('该 taskId 不在 Issue 列表当前列表中；先用 gitlab_leader_board（refresh=true）刷新。若任务不对应 GitLab Issue，不传 taskId，改传 title + brief 创建临时任务会话。');
+    // 面板缓存优先；未命中时回落到 handled/pending 保存的条目快照，避免缓存陈旧把续办逼成临时任务。
+    const cached = (Array.isArray(this.state.issues) ? this.state.issues : []).find((entry) => entry.id === request.taskId);
+    const snapshot = this.state.handled?.[request.taskId]?.item ?? this.state.pending?.[request.taskId]?.item ?? null;
+    const issue = cached ?? (isIssueItem(snapshot) ? snapshot : null);
+    if (!issue) return failure('该 taskId 不在 Issue 列表当前列表中，也没有历史处理记录；先用 gitlab_leader_board（refresh=true）刷新后重试。确实不对应 GitLab Issue 的工作才不传 taskId，改传 title + brief 创建临时任务会话。');
     if (this.state.pending?.[issue.id] || this.dispatches?.has?.(issue.id)) return failure('该条目已有正在创建的会话，请稍后用 gitlab_leader_board 查看结果。');
     const handled = this.state.handled?.[issue.id];
     if (validId(handled?.sessionId) && handled.sessionId !== this.leaderState?.sessionId) {
@@ -269,10 +276,20 @@ export const leaderToolMethods = {
     if (inspection.status === 'missing') {
       // A task whose session is gone must not hold a maxTasks slot forever.
       const task = item.kind === 'task' ? this.leaderTask(item.taskId) : null;
-      if (!task) return failure('会话在宿主中已不存在，无可归档对象。');
-      task.status = 'archived'; task.error = '';
-      await this.saveLeaderStrict();
-      return success({ taskId: item.taskId, sessionId: item.sessionId, archived: true, missing: true, reason });
+      if (task) {
+        task.status = 'archived'; task.error = '';
+        await this.saveLeaderStrict();
+        return success({ taskId: item.taskId, sessionId: item.sessionId, archived: true, missing: true, reason });
+      }
+      // An Issue record whose session is gone is pure dead binding on the board: release it so the
+      // entry goes back to "no session" and can be re-dispatched with a fresh round.
+      if (this.state.pending?.[item.taskId]) return failure('该条目仍有 pending 派发记录，先等插件完成核对再清理。');
+      if (this.trackedSessions?.get?.(item.sessionId)?.todos?.has?.(item.taskId)) return failure('该会话仍在结算，结算后再清理失效绑定。');
+      delete this.state.handled[item.taskId];
+      this.state.recent = (this.state.recent ?? []).filter((entry) => entry?.id !== item.taskId);
+      await this.persistQuietly?.('清理失效会话绑定');
+      this.syncLeaderWorkerTools();
+      return success({ taskId: item.taskId, sessionId: item.sessionId, archived: true, missing: true, cleared: true, reason });
     }
     if (inspection.status === 'active' && !quiet(inspection.state)) return failure('会话仍在运行/有排队/等待原生审批，未归档。');
     if (inspection.status === 'archived') return success({ taskId: item.taskId, sessionId: item.sessionId, archived: true, already: true });
@@ -353,7 +370,7 @@ export const leaderToolMethods = {
       if (prepared?.ok === false) return failure(`冷会话未能激活：${prepared.error ?? ''}`);
       inspection = await this.inspectLeaderSession(item.sessionId);
     }
-    if (inspection.status !== 'active') return failure(inspection.error || '会话已归档/不存在，未发送。');
+    if (inspection.status !== 'active') return failure(inspection.error || '会话已归档/不存在，未发送；要继续处理用 action=create（同 taskId）重新派发，或 action=archive 清理失效绑定。');
     if (inspection.state.pendingInput.length) return failure('worker 在等待原生审批/问答，只能由人类在该会话里回答；未投递。');
     if (!idle(inspection.state)) return failure('worker 忙碌或有 queue、或冷会话未能激活，未投递；运行中的 worker 可改用 steer。');
     const body = [SEND_HEADER, this.leaderScopeLine(item), '遵守原项目、工作区与任务授权；原生审批/问答只由人类在本会话回答。', '', text].join('\n');
@@ -393,7 +410,7 @@ export const leaderToolMethods = {
     const early = this.leaderPriorDelivery(requestId, bodyDigest);
     if (early) return early;
     const inspection = await this.inspectLeaderSession(item.sessionId);
-    if (inspection.status !== 'active') return failure(inspection.error || '会话已归档/不存在，未纠偏。');
+    if (inspection.status !== 'active') return failure(inspection.error || '会话已归档/不存在，未纠偏；要继续处理用 action=create（同 taskId）重新派发，或 action=archive 清理失效绑定。');
     if (inspection.state.pendingInput.length) return failure('worker 正在等待原生审批/问答，只能由人类在 worker 会话内回答；告诉人类去该 worker 会话处理。');
     if (!inspection.state.running) return failure('worker 当前没有运行中的回合；空闲会话请用 gitlab_leader_session send。');
     const body = [STEER_HEADER, `范围：${this.leaderScopeLine(item)}`, ...(reason ? [`原因：${reason}`] : []),
