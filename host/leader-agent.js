@@ -26,9 +26,8 @@ export const LEADER_DENIED_TOOLS = Object.freeze([
 export const LEADER_SESSION_ACTIONS = Object.freeze(['create', 'send', 'steer', 'rename', 'model', 'archive', 'resolve_delivery']);
 // The only tool added to plugin-created worker sessions (Host operation workerReport).
 export const LEADER_WORKER_TOOL = 'gitlab_leader_report';
-const WORKER_REPORT_DESCRIPTION = '向托管你的 WorkStation Leader 主动汇报（你所在会话由插件创建并受 Leader 协调）。适用：阶段性进展（progress）、卡住需要决策（blocked）、完成交付（done，附 MR/结论）、需要人类或 Leader 回答的问题（question）。'
-  + '汇报不会直接展示给人类，由 Leader 汇总后再向人类汇报；它不是向人类提问的替代——需要人类当场决定或审批时仍用原生 ask_user_question。'
-  + '你不能直接给其他会话发消息。同类同文重复汇报会被去重。text 简明写事实与需要的决定（≤2000 字）。';
+const WORKER_REPORT_DESCRIPTION = '向托管你的 WorkStation Leader 汇报（你所在会话由插件创建并受其协调）。kind：progress 阶段进展、blocked 卡住需决策、done 完成交付（附 MR/结论）、question 需人类或 Leader 回答。'
+  + '汇报不给人类看，由 Leader 汇总；需要人类当场决定/审批仍用原生 ask_user_question。同类同文去重，text≤2000 字。';
 const WORKER_REPORT_SCHEMA = Object.freeze({ type: 'object', additionalProperties: false, required: ['kind', 'text'], properties: {
   kind: { type: 'string', enum: [...LEADER_REPORT_KINDS] },
   text: { type: 'string', minLength: 1, maxLength: LEADER_LIMITS.maxReportText } } });
@@ -48,11 +47,11 @@ const nativeDependencies = async () => {
 };
 // Rules (untrusted data, no auto-resend, native approvals) live once in LEADER_BOOTSTRAP; descriptions only say how to call.
 const descriptions = {
-  board: '只读看板。无 taskId：Issue 分页（offset/limit，默认 30；filter 按 project/state/hasSession 过滤）、临时任务、未读汇报、未决投递。'
-    + 'refresh=true 先拉 GitLab。传 taskId：只返回该 worker 的会话状态、最近 eventLimit 条日志（默认 10）、待答问题、汇报，并标为已读。',
-  session: '管理插件创建的 worker。action：create（taskId 建 Issue worker，原会话失效时按同 taskId 重新派发新会话；或 title+brief[+workingDirectory] 建临时任务）、'
+  board: '只读看板。无 taskId：Issue 分页（offset/limit，默认 30；filter.project|state|hasSession）、临时任务、未读汇报、未决投递；refresh=true 先拉 GitLab。'
+    + '传 taskId：该 worker 详情（会话状态、最近 eventLimit 条日志、待答问题、汇报），并标汇报已读。',
+  session: '管理插件创建的 worker。action：create（taskId 建 Issue worker，原会话失效时同 taskId 重派；或 title+brief[+workingDirectory] 建临时任务）、'
     + 'send（taskId+text，空闲时）、steer（taskId+text[+reason]，运行中）、rename（taskId+title，Issue 以 #<iid> 开头）、'
-    + 'model（taskId+model）、archive（taskId+reason；宿主中已不存在的会话改为清掉条目上的失效绑定）、resolve_delivery（requestId+outcome）。',
+    + 'model（taskId+model）、archive（taskId+reason；missing 会话改为清死绑定）、resolve_delivery（requestId+outcome；uncertain 一般自动核对）。',
 };
 const id = { type: 'string', minLength: 1, maxLength: 200 };
 const text = (max) => ({ type: 'string', minLength: 1, maxLength: max });

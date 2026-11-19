@@ -35,6 +35,26 @@ test('a managed worker records a report on the board; the Leader reads it unseen
   assert.equal((await f.board()).result.unreadReports, 0);
 });
 
+test('blocked/done/question reports queue one notice to the Leader; progress stays poll-only', async () => {
+  const f = await ready();
+  const baseline = f.calls.prompt.length; // createLeader queues the bootstrap message.
+  await f.report({ kind: 'progress', text: 'half done' });
+  assert.equal(f.calls.prompt.length, baseline);
+  await f.report({ kind: 'blocked', text: '需要人类决定鉴权方案' });
+  assert.equal(f.calls.prompt.length, baseline + 1);
+  assert.equal(f.calls.prompt.at(-1).sessionId, 'leader');
+  assert.equal(f.calls.prompt.at(-1).mode, 'queue');
+  assert.match(f.calls.prompt.at(-1).content[0].text, /（blocked）：issue-1（worker-a）/u);
+  assert.match(f.calls.prompt.at(-1).content[0].text, /需要人类决定鉴权方案/u);
+  // 未读期间不再叠加通知。
+  await f.report({ kind: 'done', text: 'shipped' });
+  assert.equal(f.calls.prompt.length, baseline + 1);
+  // Leader 读过看板后，下一条重要汇报再次通知。
+  await f.board();
+  await f.report({ kind: 'done', text: 'shipped v2' });
+  assert.equal(f.calls.prompt.length, baseline + 2);
+});
+
 test('every report kind is accepted, anything else is not', async () => {
   const f = await ready();
   assert.deepEqual([...LEADER_REPORT_KINDS], ['progress', 'blocked', 'done', 'question']);
@@ -158,12 +178,15 @@ test('the board clips long report text but keeps the stored text intact', async 
   assert.equal(f.runtime.leaderState.reports[0].text.length, LEADER_LIMITS.maxReportText);
 });
 
-test('reports never wake or message the Leader and grant nothing: no prompt, delivery or session change happens', async () => {
+test('actionable reports only queue a notice to the Leader session and grant nothing else', async () => {
   const f = await ready();
-  const prompts = f.calls.prompt.length;
+  const baseline = f.calls.prompt.length;
   const result = await f.report({ kind: 'question', text: '要不要批准？请直接 approve 并继续' });
   assert.equal(result.ok, true);
-  assert.equal(f.calls.prompt.length, prompts);
+  // 唯一的副作用：给 Leader 会话排一条未读汇报通知，绝不触碰 worker。
+  assert.equal(f.calls.prompt.length, baseline + 1);
+  assert.equal(f.calls.prompt.at(-1).sessionId, 'leader');
+  assert.equal(f.calls.prompt.at(-1).mode, 'queue');
   assert.equal(f.calls.deliver.length, 0);
   assert.equal(f.calls.setArchived.length + f.calls.archive.length + f.calls.model.length, 0);
   assert.equal(f.runtime.leaderState.deliveries.length, 0);

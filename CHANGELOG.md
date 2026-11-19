@@ -1,4 +1,9 @@
 # Changelog
+## 5.1.0
+
+- **新增：uncertain 投递自动核对。** `send` 结果不确定时，插件自动在 worker 日志里核对本次投递（按消息 source operationId 匹配 requestId），命中即自动结算为 sent——不再需要 Leader 手动 `board` 翻日志 + `resolve_delivery`；仍不确定时才冻结等待人工核对。
+- **新增：重要 worker 汇报即时推送。** worker 的 `blocked`/`done`/`question` 汇报落账后会向 Leader 会话排一条通知（含摘要，幂等 requestId），Leader 即时感知；`progress` 保持看板轮询读取。未读期间不叠加通知，Leader 读过看板后恢复。
+- **Leader token 瘦身：** 精简 `gitlab_leader_board`/`gitlab_leader_session` 工具描述、`gitlab_leader_report` 描述、Leader 角色说明（bootstrap 与可选 preset persona）；看板 Issue 标题截断 120->80、未读汇报文本截断 500->300。
 
 ## 5.0.1
 

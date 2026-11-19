@@ -1268,6 +1268,25 @@ test('a cold quiet session can be archived; archiving an Issue whose session is 
 // resolve_delivery
 // ---------------------------------------------------------------------------------------------------------------
 
+test('an uncertain send self-verifies as sent when the worker log shows the delivered message', async () => {
+  const f = await ready({ deliver: () => { throw new Error('socket closed'); } });
+  const sent = await f.session({ action: 'send', taskId: 'issue-1', text: 'hello', requestId: 'r-1' });
+  assert.equal(sent.ok, false);
+  assert.equal(f.runtime.leaderState.deliveries[0].status, 'uncertain');
+  f.runtime.leaderAdapter.observe = async () => ({ cursor: 11, highWater: 11, events: [
+    { seq: 11, time: 1, type: 'user/message', data: { sourceKind: 'gitlab-workstation-leader', operationId: 'r-1' } }] });
+  await f.runtime.leaderVerifyUncertain('r-1');
+  assert.equal(f.runtime.leaderState.deliveries[0].status, 'sent');
+  assert.equal((await f.board()).result.openDeliveries.length, 0);
+  // 非本插件来源的消息不能结算 uncertain。
+  const g = await ready({ deliver: () => { throw new Error('socket closed'); } });
+  await g.session({ action: 'send', taskId: 'issue-1', text: 'hello', requestId: 'r-2' });
+  g.runtime.leaderAdapter.observe = async () => ({ cursor: 11, highWater: 11, events: [
+    { seq: 11, time: 1, type: 'user/message', data: { sourceKind: 'human', operationId: 'r-2' } }] });
+  await g.runtime.leaderVerifyUncertain('r-2');
+  assert.equal(g.runtime.leaderState.deliveries[0].status, 'uncertain');
+});
+
 async function uncertainDelivery() {
   const f = await ready({ deliver: () => { throw new Error('socket closed'); } });
   await f.session({ action: 'send', taskId: 'issue-1', text: 'hello', requestId: 'r-1' });

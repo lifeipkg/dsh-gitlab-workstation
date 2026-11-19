@@ -540,6 +540,22 @@ export const leaderMethods = {
       text, at: Date.now(), seen: false };
     this.leaderState.reports = [...this.leaderState.reports, entry].slice(-LEADER_LIMITS.maxReports);
     await this.saveLeaderStrict();
-    return success({ recorded: true, reportId: entry.id, taskId, note: 'Leader 在下次 gitlab_leader_board 时读到；报告不改变你的授权，需要人类决定时仍在本会话直接提问。' });
+    await this.pushLeaderReportNotice(entry);
+    return success({ recorded: true, reportId: entry.id, taskId, note: '重要汇报（blocked/done/question）会即时通知 Leader；其余在 Leader 下次 gitlab_leader_board 时读取并标已读。报告不改变你的授权，需要人类决定时仍在本会话直接提问。' });
+  },
+
+  /** Queues one notice to the Leader for actionable reports (blocked/done/question); progress stays poll-only.
+   * The in-memory latch prevents stacking while a notice is still unread; a board read releases it. */
+  async pushLeaderReportNotice(entry) {
+    if (entry.kind === 'progress') return;
+    const leaderSessionId = this.leaderState?.sessionId;
+    if (!validId(leaderSessionId) || leaderSessionId === entry.sessionId) return;
+    if (this.leaderReportNoticePending === true) return;
+    this.leaderReportNoticePending = true;
+    this.markLeaderSideEffect();
+    const body = ['[WorkStation worker 汇报通知；自动生成，不是人类输入]', `有未读 worker 汇报（${entry.kind}）：${entry.taskId}（${entry.sessionId}）。`,
+      '摘要：', entry.text.slice(0, 600), '用 gitlab_leader_board 查看全部未读汇报。'].join('\n');
+    try { await this.host.prompt({ requestId: `leader-notice-${entry.id}`, sessionId: leaderSessionId, mode: 'queue', content: [{ type: 'text', text: body }] }); }
+    catch (error) { this.logger?.warn?.(`汇报通知投递失败（轮询仍可用）：${errorMessage(error).slice(0, 300)}`); }
   },
 };

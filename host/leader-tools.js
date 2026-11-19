@@ -55,6 +55,7 @@ export const leaderToolMethods = {
   async leaderBoardRecord(request, context = {}) {
     const state = this.state ?? {};
     const errors = {};
+    this.leaderReportNoticePending = false; // A queued report notice has been received: allow the next one.
     if (state.lastPollError) errors.lastPollError = state.lastPollError;
     if (context.refreshError) errors.refreshError = context.refreshError;
     if (request.taskId === undefined) return this.leaderBoardOverview(request, state, errors);
@@ -77,7 +78,7 @@ export const leaderToolMethods = {
     });
     const issues = all.slice(offset, offset + limit).map((entry) => {
       const sessionId = entry.routed ? null : (entry.sessionId ?? null);
-      return { taskId: entry.id, iid: entry.iid ?? this.leaderIssueIid({ taskId: entry.id, url: entry.url }), title: clip(entry.title, 120),
+      return { taskId: entry.id, iid: entry.iid ?? this.leaderIssueIid({ taskId: entry.id, url: entry.url }), title: clip(entry.title, 80),
         state: entry.state ?? '', executionStatus: entry.executionStatus ?? '', ...(sessionId ? { sessionId } : {}), ...(entry.archived === true ? { archived: true } : {}) };
     });
     const unread = this.leaderState.reports.filter((entry) => entry.seen !== true);
@@ -85,7 +86,7 @@ export const leaderToolMethods = {
       tasks: this.leaderState.tasks.filter((task) => task.status !== 'archived').slice(-50).map((task) => ({
         taskId: task.taskId, sessionId: task.sessionId, title: task.title, status: task.status, ...(task.error ? { error: task.error } : {}) })),
       unreadReports: unread.length,
-      reports: unread.slice(-BOARD_REPORTS).map(({ seen: _seen, ...entry }) => ({ ...entry, text: clip(entry.text, 500) })),
+      reports: unread.slice(-BOARD_REPORTS).map(({ seen: _seen, ...entry }) => ({ ...entry, text: clip(entry.text, 300) })),
       openDeliveries: this.leaderState.deliveries.filter((entry) => OPEN_DELIVERY.has(entry.status)),
       managedSessions: new Map(this.leaderManagedPairs()).size, ...errors, untrusted: BOARD_UNTRUSTED };
     return success(board);
@@ -340,6 +341,35 @@ export const leaderToolMethods = {
     await this.saveLeaderStrict();
   },
 
+  /** Post-hoc verification for an uncertain send: a delivered input leaves a user/message event whose
+   * source operationId is the requestId. Settles the ledger without a manual resolve_delivery round. */
+  async leaderVerifyUncertain(requestId) {
+    const entry = this.leaderState.deliveries.find((item) => item.requestId === requestId && item.status === 'uncertain');
+    if (!entry || entry.kind !== 'send' || typeof this.leaderAdapter?.observe !== 'function') return;
+    let observed;
+    try { observed = await this.leaderAdapter.observe(entry.sessionId, -1); } catch { return; }
+    const hit = (observed?.events ?? []).some((event) => event?.type === 'user/message'
+      && event?.data?.sourceKind === 'gitlab-workstation-leader' && event?.data?.operationId === requestId);
+    if (hit) await this.leaderSettleDelivery(requestId, 'sent');
+  },
+
+  /** Retries the post-hoc verification on a short delay; unref'd timers never block shutdown. */
+  scheduleLeaderUncertainVerify(requestId, attempt = 0) {
+    if (attempt === 0) {
+      this.leaderVerifyTimers ??= new Map();
+      if (this.leaderVerifyTimers.has(requestId)) return;
+    }
+    const timer = setTimeout(() => {
+      this.leaderVerifyTimers?.delete(requestId);
+      Promise.resolve(this.leaderVerifyUncertain(requestId)).catch(() => {}).then(() => {
+        const entry = this.leaderState?.deliveries?.find((item) => item.requestId === requestId);
+        if (entry?.status === 'uncertain' && attempt < 2) this.scheduleLeaderUncertainVerify(requestId, attempt + 1);
+      }).catch(() => {});
+    }, attempt === 0 ? 800 : 4000);
+    timer.unref?.();
+    this.leaderVerifyTimers.set(requestId, timer);
+  },
+
   /** requestId reuse rules shared by send and steer; returns a result to return early, or null to continue. */
   leaderPriorDelivery(requestId, bodyDigest) {
     const prior = this.leaderState.deliveries.find((entry) => entry.requestId === requestId);
@@ -384,7 +414,8 @@ export const leaderToolMethods = {
     try { result = await this.leaderAdapter.deliver(freeze({ sessionId: item.sessionId, leaderSessionId, taskId: item.taskId, requestId, body, expectedCursor })); }
     catch (error) {
       await this.leaderSettleDelivery(requestId, 'uncertain', `投递结果不确定，禁止重发：${errorMessage(error)}`);
-      return failure(`投递结果不确定，不会自动重发；先 gitlab_leader_board 核对日志：${errorMessage(error).slice(0, 300)}`);
+      this.scheduleLeaderUncertainVerify(requestId);
+      return failure(`投递结果不确定，不会自动重发；插件会自动核对 worker 日志并结算：${errorMessage(error).slice(0, 300)}`);
     }
     if (result?.ok === true && result.status === 'delivered' && result.requestId === requestId) {
       await this.leaderSettleDelivery(requestId, 'sent');
@@ -395,7 +426,8 @@ export const leaderToolMethods = {
       return failure(`宿主拒绝投递：${String(result.error ?? '').slice(0, 300)}`);
     }
     await this.leaderSettleDelivery(requestId, 'uncertain', '非 human 投递回执不可验证；禁止自动重发。');
-    return failure('投递回执不可验证，不会自动重发；先 gitlab_leader_board 核对日志。');
+    this.scheduleLeaderUncertainVerify(requestId);
+    return failure('投递回执不可验证，不会自动重发；插件会自动核对 worker 日志并结算，无需 resolve_delivery。');
   },
 
   async leaderSteerRecord(request) {
